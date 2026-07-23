@@ -1,0 +1,50 @@
+name: Generate project structure
+
+on:
+  workflow_dispatch:
+    inputs:
+      template:
+        description: 'Path to .mdix structure template'
+        required: false
+        default: '.mdix/project_structure/project_structure.mdix'
+      dry_run:
+        description: 'true = preview only. false = actually write + commit.'
+        required: false
+        type: choice
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
+      override_stubs:
+        description: 'Overwrite existing stub files'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+      file_strategy:
+        description: 'How to handle existing files'
+        required: false
+        type: choice
+        default: 'skip'
+        options:
+          - 'skip'
+          - 'overwrite'
+          - 'backup'
+          - 'rename'
+  push:
+    paths:
+      - '.mdix/project_structure/**'
+
+jobs:
+  generate:
+    uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
+    permissions:
+      contents: write
+    with:
+      template:       ${{ inputs.template || '.mdix/project_structure/project_structure.mdix' }}
+      # Forced 'true' on every push; only a manual dispatch can flip this.
+      dry_run:        ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'true' }}
+      override_stubs: ${{ inputs.override_stubs || 'false' }}
+      file_strategy:  ${{ inputs.file_strategy  || 'skip' }}
