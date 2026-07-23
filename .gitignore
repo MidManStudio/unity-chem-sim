@@ -1,0 +1,35 @@
+# Rust
+target/
+*.log
+
+# Unity
+Library/
+Temp/
+obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+*.csproj
+*.sln
+*.pidb
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.unityproj
+
+# Native DLLs — built locally, not committed
+Assets/Plugins/*.dll
+Assets/Plugins/*.so
+Assets/Plugins/*.dylib
+Assets/Plugins/*.pdb
+
+# DixScript secrets
+*.mdix.enc
+*.mdix.key
+
+# OS
+.DS_Store
+**/.DS_Store
+Thumbs.db

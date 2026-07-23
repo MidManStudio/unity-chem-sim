@@ -1,0 +1,9 @@
+{
+  "rust-analyzer.checkOnSave.command": "clippy",
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "**/Library": true,
+    "**/Temp": true,
+    "**/obj": true
+  }
+}

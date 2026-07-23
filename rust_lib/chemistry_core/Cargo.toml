@@ -1,0 +1,33 @@
+[package]
+name          = "chemistry_core"
+version       = "0.1.0"
+edition       = "2021"
+authors       = ["MidManStudio"]
+description   = "Rust simulation core — LJ forces, spatial hash, velocity Verlet"
+license       = "MIT"
+repository    = "https://github.com/[[github_user]]/[[project_name]]"
+
+[lib]
+name       = "chemistry_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default     = []
+scalar-math = []
+
+# Non-WASM: RwLock-based config store (same pattern as projectile_core)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lazy_static = "1.5"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "sim_bench"
+harness = false
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
