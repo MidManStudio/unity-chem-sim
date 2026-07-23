@@ -1,0 +1,21 @@
+@CONFIG(
+  version    -> "1.0.0"
+  generated  -> "2026-07-23T10:17:28Z"
+  debug_mode -> "off"
+)
+
+@DATA(
+  template      = ".mdix/project_structure/project_structure.mdix"
+  template_hash = "19e169e34a17"
+  last_run      = "2026-07-23T10:17:28Z"
+  new_this_run  = 0
+  overridden    = 0
+  skipped       = 0
+  deleted       = 0
+  renamed       = 0
+  moved         = 0
+  updated       = 0
+
+  created_files::
+    
+)
