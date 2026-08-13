@@ -1,0 +1,318 @@
+// crates/mid-math/src/sse2.rs
+//! Shared SSE2 helper primitives — f32 and f64.
+//!
+//! Used by Vec3, Vec4, Quat, Mat4 (f32) and DVec2, DVec4, DQuat (f64)
+//! on x86 / x86_64. All functions are `pub(crate) unsafe`.
+
+#[cfg(target_arch = "x86")]
+use core::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── F32 (__m128) helpers ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Build a `__m128` from a `[f32; 4]` constant at compile time.
+#[inline(always)]
+pub(crate) const fn m128_from_f32x4(a: [f32; 4]) -> __m128 {
+    unsafe { core::mem::transmute(a) }
+}
+
+/// 3-lane dot product. Result lands in lane 0; lanes 1-3 are unspecified.
+///
+/// **Requires lane 3 of `lhs`/`rhs` to be `0.0`** (the `Vec3` padding invariant).
+///
+/// ## Why this is the only path (no SSE4.1 `_mm_dp_ps` variant)
+///
+/// A `_mm_dp_ps`-based variant used to be gated in here under
+/// `target_feature = "sse4.1"`, on the theory that 1 instruction beats a
+/// mul+2×shuffle+2×add chain. Bench data across build #50/#54/#56/#57
+/// (native/x86-64/x86-64-v2/x86-64-v3) proved that theory wrong: `vec3/dot`
+/// and `vec4/dot` were tied with glam on plain SSE2 (~1.12 ns) but ~30-40%
+/// *slower* than glam (~1.56 ns vs ~1.12-1.14 ns) on every build where
+/// SSE4.1 was active. `DPPS` has notoriously poor latency on most x86
+/// microarchitectures (~11-14 cycles) — fewer instructions does not mean
+/// faster here, the shuffle chain pipelines better despite doing "more work".
+/// Left unconditional now on purpose; don't re-add a `sse4.1`-gated
+/// `_mm_dp_ps` path without a fresh benchmark proving it actually wins.
+#[inline(always)]
+pub(crate) unsafe fn dot3_in_x(lhs: __m128, rhs: __m128) -> __m128 {
+    let mul = _mm_mul_ps(lhs, rhs);
+    let y   = _mm_shuffle_ps::<0b00_00_00_01>(mul, mul);
+    let z   = _mm_shuffle_ps::<0b00_00_00_10>(mul, mul);
+    let xy  = _mm_add_ps(mul, y);
+    _mm_add_ps(xy, z)
+}
+
+/// 4-lane dot product. Result lands in lane 0; lanes 1-3 are unspecified.
+///
+/// See `dot3_in_x` above for why there's no `_mm_dp_ps`/SSE4.1 variant here —
+/// same measured regression applies to `dot4`.
+#[inline(always)]
+pub(crate) unsafe fn dot4_in_x(lhs: __m128, rhs: __m128) -> __m128 {
+    let mul      = _mm_mul_ps(lhs, rhs);
+    let zw_in_xy = _mm_shuffle_ps::<0b00_00_11_10>(mul, mul);
+    let xz_yw    = _mm_add_ps(mul, zw_in_xy);
+    let yw_in_0  = _mm_shuffle_ps::<0b00_00_00_01>(xz_yw, xz_yw);
+    _mm_add_ps(xz_yw, yw_in_0)
+}
+
+/// Broadcast dot3 result to all 4 lanes via pairwise-add — 5 instructions.
+///
+/// **Requires lane 3 of `lhs` and `rhs` to be `0.0`** (the `Vec3` padding invariant).
+/// The zero lane contributes `0` to all 4 output lanes, so the broadcast falls
+/// out of the pairwise-add pattern without a separate shuffle.
+///
+/// ## Why this beats the old path
+///
+/// Old: `dot3_in_x` (1 mul + 2 shuffles + 2 adds, result in lane 0) + 1 broadcast
+/// shuffle = **6 instructions**, result valid only in lane 0 before broadcast.
+///
+/// New: 1 mul + 2 shuffles + 2 adds = **5 instructions**, all 4 lanes already equal.
+///
+/// ## Derivation
+///
+/// ```text
+/// mul = [x·rx, y·ry, z·rz, 0]       (lane 3 = 0 by Vec3 contract)
+/// swp = [y·ry, x·rx, 0,    z·rz]    (adjacent-pair swap)
+/// sum = [x+y,  x+y,  z,    z  ]     (add: lanes 2 & 3 contain z·rz + 0 = z·rz)
+/// shf = [z,    z,    x+y,  x+y]     (half-swap)
+/// res = [x+y+z, x+y+z, x+y+z, x+y+z]  ✓ all equal, no extra broadcast
+/// ```
+///
+/// `swp` IMM `0b10_11_00_01`: out[0]=in[1], out[1]=in[0], out[2]=in[3], out[3]=in[2].
+/// `shf` IMM `0b01_00_11_10`: out[0]=sum[2], out[1]=sum[3], out[2]=sum[0], out[3]=sum[1].
+///
+/// No SSE4.1 `_mm_dp_ps` variant here on purpose — see `dot3_in_x` above,
+/// same measured regression (DPPS latency loses to this shuffle chain).
+#[inline(always)]
+pub(crate) unsafe fn dot3_into_m128(lhs: __m128, rhs: __m128) -> __m128 {
+    let mul = _mm_mul_ps(lhs, rhs);                         // [x,   y,   z,   0  ]
+    let swp = _mm_shuffle_ps::<0b10_11_00_01>(mul, mul);   // [y,   x,   0,   z  ]
+    let sum = _mm_add_ps(mul, swp);                         // [x+y, x+y, z,   z  ]
+    let shf = _mm_shuffle_ps::<0b01_00_11_10>(sum, sum);   // [z,   z,   x+y, x+y]
+    _mm_add_ps(sum, shf)                                    // [dot, dot, dot, dot ]
+}
+
+/// Broadcast dot4 result to all 4 lanes via pairwise-add — 5 instructions.
+///
+/// ## Why this beats the old path
+///
+/// Old: `dot4_in_x` (1 mul + 2 shuffles + 2 adds, result in lane 0) + 1 broadcast
+/// shuffle = **6 instructions**.
+///
+/// New: 1 mul + 2 shuffles + 2 adds = **5 instructions**, all 4 lanes already equal.
+///
+/// Called on every `Vec4::normalize`, `Vec4::dot_into_vec`, `Quat::normalize`,
+/// `Quat::normalize_fast`, `Quat::nlerp`, `Quat::slerp` — the saved shuffle
+/// compounds across the entire codebase.
+///
+/// ## Derivation
+///
+/// ```text
+/// mul = [x·rx, y·ry, z·rz, w·rw]
+/// swp = [y·ry, x·rx, w·rw, z·rz]    (adjacent-pair swap)
+/// sum = [x+y,  x+y,  z+w,  z+w ]
+/// shf = [z+w,  z+w,  x+y,  x+y ]    (half-swap)
+/// res = [dot,  dot,  dot,  dot  ]    ✓ all equal
+/// ```
+///
+/// `swp` IMM `0b10_11_00_01`: out[0]=in[1], out[1]=in[0], out[2]=in[3], out[3]=in[2].
+/// `shf` IMM `0b01_00_11_10`: out[0]=sum[2], out[1]=sum[3], out[2]=sum[0], out[3]=sum[1].
+///
+/// No SSE4.1 `_mm_dp_ps` variant here on purpose — see `dot3_in_x` above,
+/// same measured regression (DPPS latency loses to this shuffle chain).
+/// This one matters most: it's on the hot path for `Vec4::normalize`,
+/// `Quat::normalize`, `Quat::normalize_fast`, `Quat::nlerp`, `Quat::slerp`.
+#[inline(always)]
+pub(crate) unsafe fn dot4_into_m128(lhs: __m128, rhs: __m128) -> __m128 {
+    let mul = _mm_mul_ps(lhs, rhs);                         // [x,   y,   z,   w  ]
+    let swp = _mm_shuffle_ps::<0b10_11_00_01>(mul, mul);   // [y,   x,   w,   z  ]
+    let sum = _mm_add_ps(mul, swp);                         // [x+y, x+y, z+w, z+w]
+    let shf = _mm_shuffle_ps::<0b01_00_11_10>(sum, sum);   // [z+w, z+w, x+y, x+y]
+    _mm_add_ps(sum, shf)                                    // [dot, dot, dot, dot ]
+}
+
+/// Scalar f32 dot3.
+#[inline(always)]
+pub(crate) unsafe fn dot3(lhs: __m128, rhs: __m128) -> f32 {
+    _mm_cvtss_f32(dot3_in_x(lhs, rhs))
+}
+
+/// Scalar f32 dot4.
+#[inline(always)]
+pub(crate) unsafe fn dot4(lhs: __m128, rhs: __m128) -> f32 {
+    _mm_cvtss_f32(dot4_in_x(lhs, rhs))
+}
+
+/// Component-wise absolute value for f32x4. Clears sign bit via ANDNOT.
+#[inline(always)]
+pub(crate) unsafe fn m128_abs(v: __m128) -> __m128 {
+    _mm_andnot_ps(_mm_set1_ps(-0.0), v)
+}
+
+/// Per-lane floor (SSE2, no SSE4.1 assumed).
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) unsafe fn m128_floor(v: __m128) -> __m128 {
+    let i    = _mm_cvttps_epi32(v);
+    let fi   = _mm_cvtepi32_ps(i);
+    let mask = _mm_cmpgt_ps(fi, v);
+    let one  = _mm_set1_ps(1.0);
+    _mm_sub_ps(fi, _mm_and_ps(mask, one))
+}
+
+/// Per-lane ceil (SSE2).
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) unsafe fn m128_ceil(v: __m128) -> __m128 {
+    let i    = _mm_cvttps_epi32(v);
+    let fi   = _mm_cvtepi32_ps(i);
+    let mask = _mm_cmplt_ps(fi, v);
+    let one  = _mm_set1_ps(1.0);
+    _mm_add_ps(fi, _mm_and_ps(mask, one))
+}
+
+/// Per-lane truncation toward zero.
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) unsafe fn m128_trunc(v: __m128) -> __m128 {
+    _mm_cvtepi32_ps(_mm_cvttps_epi32(v))
+}
+
+/// Per-lane round-to-nearest (half-away-from-zero).
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) unsafe fn m128_round(v: __m128) -> __m128 {
+    let sign_mask = _mm_set1_ps(-0.0);
+    let sign_bit  = _mm_and_ps(v, sign_mask);
+    let half      = _mm_or_ps(sign_bit, _mm_set1_ps(0.5));
+    m128_trunc(_mm_add_ps(v, half))
+}
+
+/// Apply `f32::sin` to each lane independently (scalar fallback for slerp/euler).
+#[inline(always)]
+pub(crate) unsafe fn m128_sin(v: __m128) -> __m128 {
+    let x = _mm_cvtss_f32(v);
+    let y = _mm_cvtss_f32(_mm_shuffle_ps::<0b01_01_01_01>(v, v));
+    let z = _mm_cvtss_f32(_mm_shuffle_ps::<0b10_10_10_10>(v, v));
+    let w = _mm_cvtss_f32(_mm_shuffle_ps::<0b11_11_11_11>(v, v));
+    _mm_set_ps(w.sin(), z.sin(), y.sin(), x.sin())
+}
+
+/// Reciprocal square root: `_mm_rsqrt_ps` (14-bit) + one Newton–Raphson step (~23-bit).
+///
+/// Replaces the expensive `sqrt` + `div` pair in `normalize`.  On modern x86,
+/// `rsqrt` is 1–3 cycles; `sqrt`+`div` is ~20–30 cycles combined.
+///
+/// Formula:  r₁ = r₀ · (1.5 − 0.5 · v · r₀²)
+///
+/// `v` must be a broadcast — all 4 lanes holding the same squared-length value.
+/// All 4 output lanes receive the same refined reciprocal sqrt.
+///
+/// Two implementations selected at compile time:
+/// - SSE2 baseline: `half·v·rr` as two muls, then a sub.
+/// - AVX+FMA: `half·v` folded, then `1.5 − half_v·rr` fused into one
+///   `_mm_fnmadd_ps` (negated multiply-add). Saves 1 instruction per call.
+///
+/// This sits underneath `normalize()`/`normalize_fast()` for Vec3, Vec4, and
+/// Quat, plus `Quat::nlerp` — the saving compounds across the whole hot path,
+/// same rationale as `dot4_into_m128` above.
+#[cfg(not(all(target_feature = "avx", target_feature = "fma")))]
+#[inline(always)]
+pub(crate) unsafe fn rsqrt_nr(v: __m128) -> __m128 {
+    let r    = _mm_rsqrt_ps(v);
+    let half = _mm_set1_ps(0.5_f32);
+    let c    = _mm_set1_ps(1.5_f32);
+    // r₁ = r₀ · (1.5 − 0.5 · v · r₀²)
+    let rr   = _mm_mul_ps(r, r);
+    let nr   = _mm_sub_ps(c, _mm_mul_ps(half, _mm_mul_ps(v, rr)));
+    _mm_mul_ps(r, nr)
+}
+
+/// FMA variant of [`rsqrt_nr`] — same formula, `1.5 − half_v·rr` fused via
+/// `_mm_fnmadd_ps(half_v, rr, 1.5)` instead of mul+sub.
+#[cfg(all(target_feature = "avx", target_feature = "fma"))]
+#[inline(always)]
+pub(crate) unsafe fn rsqrt_nr(v: __m128) -> __m128 {
+    let r      = _mm_rsqrt_ps(v);
+    let half_v = _mm_mul_ps(_mm_set1_ps(0.5_f32), v);
+    let rr     = _mm_mul_ps(r, r);
+    // nr = 1.5 - half_v * rr, in one instruction
+    let nr     = _mm_fnmadd_ps(half_v, rr, _mm_set1_ps(1.5_f32));
+    _mm_mul_ps(r, nr)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── F64 (__m128d) helpers ────────────────────────────────────════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Build a `__m128d` from `[f64; 2]` at compile time via transmute.
+///
+/// Layout: lane 0 (lower 64 bits) = a[0], lane 1 (upper 64 bits) = a[1].
+/// Safe: `__m128d` and `[f64; 2]` have identical size and 16-byte alignment.
+#[inline(always)]
+pub(crate) const fn m128d_from_f64x2(a: [f64; 2]) -> __m128d {
+    unsafe { core::mem::transmute(a) }
+}
+
+/// 2-lane f64 dot product. Result in lane 0; lane 1 is unspecified.
+///
+/// Algorithm (SSE2, no HADD):
+///   mul  = [x*rx, y*ry]
+///   shuf = [y*ry, x*rx]  (swap via _mm_shuffle_pd imm=0b01)
+///   sum  = [x*rx + y*ry, ...]
+///
+/// `_mm_shuffle_pd::<0b01>(a, b)`: result[0] = a[1], result[1] = b[0].
+#[inline(always)]
+pub(crate) unsafe fn dot2d_in_x(lhs: __m128d, rhs: __m128d) -> __m128d {
+    let mul  = _mm_mul_pd(lhs, rhs);
+    let shuf = _mm_shuffle_pd::<0b01>(mul, mul); // swap: [y*ry, x*rx]
+    _mm_add_pd(mul, shuf)                         // [x*rx+y*ry, y*ry+x*rx]
+}
+
+/// Scalar f64 dot2 — extracts lane 0.
+#[inline(always)]
+pub(crate) unsafe fn dot2d(lhs: __m128d, rhs: __m128d) -> f64 {
+    _mm_cvtsd_f64(dot2d_in_x(lhs, rhs))
+}
+
+/// Broadcast dot2 result to both lanes.
+#[inline(always)]
+pub(crate) unsafe fn dot2d_into_m128d(lhs: __m128d, rhs: __m128d) -> __m128d {
+    // dot2d_in_x gives [dot, _]; _mm_shuffle_pd::<0b00>(d, d) → [d[0], d[0]]
+    let d = dot2d_in_x(lhs, rhs);
+    _mm_shuffle_pd::<0b00>(d, d)
+}
+
+/// 4-lane f64 dot product from two pairs of `__m128d` (lo=[x,y], hi=[z,w]).
+/// Returns scalar result.
+///
+/// Algorithm:
+///   lo_mul = [x*rx, y*ry];  lo_sum = x*rx + y*ry  (lane 0)
+///   hi_mul = [z*rz, w*rw];  hi_sum = z*rz + w*rw  (lane 0)
+///   total  = lo_sum + hi_sum
+#[inline(always)]
+pub(crate) unsafe fn dot4d(lo_a: __m128d, hi_a: __m128d,
+                            lo_b: __m128d, hi_b: __m128d) -> f64 {
+    let lo_sum = dot2d_in_x(lo_a, lo_b); // [x*rx+y*ry, _]
+    let hi_sum = dot2d_in_x(hi_a, hi_b); // [z*rz+w*rw, _]
+    _mm_cvtsd_f64(_mm_add_pd(lo_sum, hi_sum))
+}
+
+/// Broadcast dot4d result to a `__m128d` (both lanes = dot).
+#[inline(always)]
+pub(crate) unsafe fn dot4d_into_m128d(lo_a: __m128d, hi_a: __m128d,
+                                       lo_b: __m128d, hi_b: __m128d) -> __m128d {
+    let d = dot4d(lo_a, hi_a, lo_b, hi_b);
+    _mm_set1_pd(d)
+}
+
+/// Absolute value for packed doubles — clears sign bit via ANDNOT.
+///
+/// `_mm_andnot_pd(a, b)` = `~a & b`. Clearing the sign bit: `~(-0.0) & v`.
+#[inline(always)]
+pub(crate) unsafe fn m128d_abs(v: __m128d) -> __m128d {
+    _mm_andnot_pd(_mm_set1_pd(-0.0), v)
+        }

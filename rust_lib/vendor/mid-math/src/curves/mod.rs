@@ -1,0 +1,42 @@
+// crates/mid-math/src/curves/mod.rs
+//! Curve and spline primitives for Mid Engine.
+//!
+//! All curve types operate on `Vec2` and `Vec3` via the `Interpolate` trait.
+//! The trait is also implemented for `f32`, `f64`, and `Quat` so the same
+//! curve machinery works for scalars and rotations.
+//!
+//! Implemented types (game-dev relevance in descending order):
+//!
+//! | Type               | Continuity | Passes through points | Game use                      |
+//! |--------------------|------------|----------------------|-------------------------------|
+//! | `CatmullRom`       | C¹         | Yes                  | Camera paths, movement tracks |
+//! | `CubicBezier`      | C⁰ at join | No (approximating)   | UI animation, simple arcs     |
+//! | `HermiteSpline`    | C¹         | Yes (+ tangents)     | Animation curve editors       |
+//! | `KochanekBartels`  | C¹ (TCB)   | Yes                  | Cinematic keyframe animation  |
+//! | `BSpline`          | C²         | No (approximating)   | Smooth paths, local control   |
+//! | `CardinalSpline`   | C¹         | Yes                  | Tension-controlled paths      |
+
+
+pub mod interpolate;
+pub mod bezier;
+pub mod catmull_rom;
+pub mod hermite;
+pub mod kochanek_bartels;
+pub mod bspline;
+pub mod cardinal;
+
+/// Inline capacity shared by every curve type's control-point/keyframe
+/// storage (`MidVec<_, CURVE_N>`). 8 matches what `benches/vs_mid_vec.rs`
+/// and `benches/vs_curves.rs` already measured this crate's curve types
+/// against — control points/keyframes are typically 4-16 elements, so this
+/// covers the common case with zero heap allocations and spills gracefully
+/// for anything larger.
+pub const CURVE_N: usize = 8;
+
+pub use interpolate::Interpolate;
+pub use bezier::{QuadraticBezier, CubicBezier};
+pub use catmull_rom::{CatmullRom, CatmullRomAlpha};
+pub use hermite::{HermiteSpline, HermiteKey};
+pub use kochanek_bartels::{KochanekBartels, TcbKey};
+pub use bspline::BSpline;
+pub use cardinal::CardinalSpline;

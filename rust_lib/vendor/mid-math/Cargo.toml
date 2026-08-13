@@ -1,0 +1,18 @@
+[package]
+name        = "mid-math"
+version     = "0.2.0"
+edition     = "2021"
+description = "SIMD-aligned math primitives for Mid Engine — FFI-ready, cross-platform, f32+f64"
+
+[lib]
+name = "mid_math"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+
+[features]
+default      = []
+simd         = []
+avx2         = []
+coresimd     = []
+force-scalar = []
