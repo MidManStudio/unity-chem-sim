@@ -15,7 +15,19 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 default     = []
 scalar-math = []
 
-# Non-WASM: RwLock-based config store (same pattern as projectile_core)
+# mid-math's wide SIMD lane types (f32x4, Vec3x4, Vec3x8, QuatX4, Mask4) —
+# vendored copy at rust_lib/vendor/mid-math, refreshed via
+# .github/workflows/vendor-mid-math.yml. Dev-dependencies and bench targets
+# are stripped from the vendored manifest, so this pulls in zero third-party
+# crates, direct or transitive.
+[dependencies]
+mid-math = { path = "../vendor/mid-math" }
+
+# Non-WASM: RwLock-based config store (same pattern as projectile_core).
+# NOTE: since this crate already requires Rust 1.80+ (DixScript-Rust's own
+# floor), std::sync::OnceLock/LazyLock cover this same pattern without a
+# dependency at all — worth a follow-up pass if you want the last external
+# crate gone too. Left as-is for now since you didn't ask to touch it yet.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lazy_static = "1.5"
 
