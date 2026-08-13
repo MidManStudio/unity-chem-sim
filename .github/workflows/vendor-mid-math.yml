@@ -1,0 +1,77 @@
+name: Vendor mid-math
+
+# Manual only, on purpose — mid-math is still WIP and unpublished, so we don't
+# want a push to mid-engine silently pulling half-finished code in here. Run
+# this by hand (Actions tab -> Vendor mid-math -> Run workflow) whenever you
+# want to pull a fresh copy.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "mid-engine ref (branch, tag, or commit) to vendor mid-math from"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout unity-chem-sim
+        uses: actions/checkout@v4
+
+      - name: Checkout mid-engine at requested ref
+        uses: actions/checkout@v4
+        with:
+          repository: Mid-D-Man/mid-engine
+          ref: ${{ github.event.inputs.ref }}
+          path: _mid-engine-src
+
+      - name: Record source commit
+        id: source
+        run: echo "sha=$(git -C _mid-engine-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Replace vendored mid-math
+        run: |
+          rm -rf rust_lib/vendor/mid-math
+          mkdir -p rust_lib/vendor/mid-math
+          cp -r _mid-engine-src/crates/mid-math/src rust_lib/vendor/mid-math/src
+          cp _mid-engine-src/crates/mid-math/Cargo.toml rust_lib/vendor/mid-math/Cargo.toml
+          [ -f _mid-engine-src/crates/mid-math/README.md ] && \
+            cp _mid-engine-src/crates/mid-math/README.md rust_lib/vendor/mid-math/README.md
+          true
+
+      - name: Strip dev-dependencies and bench targets from the manifest
+        run: python3 scripts/strip_vendor_manifest.py rust_lib/vendor/mid-math/Cargo.toml
+
+      - name: Write provenance file
+        run: |
+          {
+            echo "# Vendored copy — do not hand-edit"
+            echo
+            echo "Re-run the **Vendor mid-math** workflow to refresh this instead of"
+            echo "editing files under this directory directly."
+            echo
+            echo "- Source: https://github.com/Mid-D-Man/mid-engine"
+            echo "- Path: \`crates/mid-math\`"
+            echo "- Ref requested: \`${{ github.event.inputs.ref }}\`"
+            echo "- Commit: \`${{ steps.source.outputs.sha }}\`"
+            echo "- Synced: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          } > rust_lib/vendor/mid-math/VENDORED_FROM.md
+
+      - name: Clean up temp checkout
+        run: rm -rf _mid-engine-src
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rust_lib/vendor/mid-math
+          if git diff --cached --quiet; then
+            echo "No changes — vendored mid-math already matches ${{ steps.source.outputs.sha }}"
+            exit 0
+          fi
+          git commit -m "chore: vendor mid-math @ ${{ steps.source.outputs.sha }}"
+          git push
