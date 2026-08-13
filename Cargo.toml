@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "rust_lib/chemistry_core",
+    "rust_lib/vendor/mid-math",
 ]
 resolver = "2"
 
