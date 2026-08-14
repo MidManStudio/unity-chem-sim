@@ -1,0 +1,19 @@
+// Brought to u by MidManStudio
+//
+// Alembic — com.midmanstudio.alembic Unity package skeleton (Runtime,
+// Editor, Tests, Documentation~, native plugin layout) plus the
+// chemistry_core Cargo.toml repository fix.
+//
+// Every file in the paired archive sits in a subdirectory (nested), so
+// each resolves directly to its real path under target_root. No
+// overrides:: needed — no basename collides with anything else in here.
+
+@CONFIG(
+  version    -> "1.0.0"
+  features   -> "data"
+  debug_mode -> "off"
+)
+
+@DATA(
+  target_root = "."
+)
