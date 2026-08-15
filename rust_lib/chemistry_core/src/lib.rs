@@ -25,7 +25,6 @@
 mod simulation;
 mod spatial_hash;
 mod element_data;
-mod math;
 
 pub use simulation::*;
 
@@ -73,7 +72,7 @@ pub unsafe extern "C" fn chem_step(
 ) {
     if atoms.is_null() || count <= 0 { return; }
     let s = slice::from_raw_parts_mut(atoms, count as usize);
-    simulation::step(s, dt, if cutoff > 0.0 { cutoff } else { 10.0 });
+    simulation::step(s, dt, cutoff);
 }
 
 /// Returns total kinetic energy of all atoms in eV.
