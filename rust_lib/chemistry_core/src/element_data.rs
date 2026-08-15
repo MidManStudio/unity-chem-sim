@@ -6,14 +6,18 @@
 //!
 //! Source has 5 elements right now (H through B) — this table grows with it.
 //! Not generated from the .mdix automatically yet; re-sync by eye against
-//! the source when it grows. Unmapped atomic numbers fall back to zero mass
-//! and zero LJ params rather than panicking — callers already guard divides
-//! with `.max(1e-6)`.
+//! the source when it grows. Unmapped atomic numbers fall back to zero LJ
+//! params rather than panicking.
+//!
+//! Mass is kept in `TABLE` (for reference/completeness against the source)
+//! but deliberately not carried into `ElementParams` — the simulation reads
+//! mass from `AtomState.mass` directly, nothing consumes a second copy of
+//! it here. An earlier version did carry it and cargo correctly flagged it
+//! as dead code; removed rather than silenced.
 
 /// One element's simulation-relevant physics.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ElementParams {
-    pub mass_amu:   f32,
     pub lj_sigma_a: f32, // Angstrom
     pub lj_eps_ev:  f32, // eV (converted from the source's Kelvin convention below)
 }
@@ -26,6 +30,8 @@ const K_B_EV_PER_K: f32 = 8.617_333e-5;
 /// (atomic_number, mass_amu, lj_sigma_angstrom, lj_epsilon_kelvin).
 /// Kept in Kelvin here (not pre-converted to eV) so this table reads as a
 /// direct, eyeball-diffable transcription of the .mdix source's own units.
+/// `mass_amu` is transcribed for completeness/reference even though nothing
+/// reads it yet — see module docs.
 const TABLE: &[(i32, f32, f32, f32)] = &[
     // Z   mass (amu)  sigma (A)  epsilon (K)     name
     (1,    1.008,      2.928,     37.0),        // Hydrogen
@@ -36,11 +42,10 @@ const TABLE: &[(i32, f32, f32, f32)] = &[
 ];
 
 /// Look up an element's simulation parameters by atomic number.
-/// Unmapped `z` returns all-zero params (zero mass, zero LJ) — not a panic.
+/// Unmapped `z` returns all-zero params (zero LJ) — not a panic.
 pub fn params(z: i32) -> ElementParams {
     match TABLE.iter().find(|&&(tz, ..)| tz == z) {
-        Some(&(_, mass, sigma, eps_k)) => ElementParams {
-            mass_amu:   mass,
+        Some(&(_, _mass, sigma, eps_k)) => ElementParams {
             lj_sigma_a: sigma,
             lj_eps_ev:  eps_k * K_B_EV_PER_K,
         },

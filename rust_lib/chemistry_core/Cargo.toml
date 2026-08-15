@@ -38,8 +38,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name    = "sim_bench"
 harness = false
 
-[profile.release]
-opt-level     = 3
-lto           = true
-codegen-units = 1
-panic         = "abort"
+# NOTE: removed the [profile.release] block that used to be here — Cargo
+# warned "profiles for the non root package will be ignored, specify
+# profiles at the workspace root" on the last bench run. The real one lives
+# in the repo root Cargo.toml; this was a dead duplicate.
