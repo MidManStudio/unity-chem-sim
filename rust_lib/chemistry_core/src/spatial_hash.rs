@@ -32,6 +32,14 @@ impl SpatialHash {
         Self { cell_size: cell_size.max(1e-4), cells: HashMap::default() }
     }
 
+    /// Current cell size (== the cutoff this grid was built for). Callers
+    /// that own a persistent grid (`SimContext`) use this to detect when
+    /// `cutoff` has changed and the grid needs rebuilding from scratch.
+    #[inline]
+    pub fn cell_size(&self) -> f32 {
+        self.cell_size
+    }
+
     #[inline]
     fn cell_of(&self, p: Vec3) -> CellKey {
         (

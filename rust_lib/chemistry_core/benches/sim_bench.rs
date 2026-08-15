@@ -24,9 +24,21 @@ fn bench_step(c: &mut Criterion) {
     for &n in &[64usize, 256usize, 1024usize] {
         group.throughput(Throughput::Elements(n as u64));
         let mut atoms = hydrogen_grid(n);
+
+        // One context per size, created once and reused for every sample —
+        // matches real usage (create in Awake, reuse every frame) and now
+        // measures steady-state chem_step cost instead of also paying
+        // scratch-buffer + spatial-hash allocation on every single
+        // iteration. Numbers from this bench are not directly comparable
+        // to earlier runs for that reason — this is a methodology change,
+        // not (only) an algorithmic one; expect a further drop that isn't
+        // "the sim got faster," it's "we stopped benchmarking malloc."
+        let ctx = chemistry_core::chem_context_create(10.0);
+
         group.bench_function(format!("n={n}_cutoff10"), |b| {
             b.iter(|| unsafe {
                 chemistry_core::chem_step(
+                    black_box(ctx),
                     black_box(atoms.as_mut_ptr()),
                     black_box(n as i32),
                     black_box(0.001_f32),
@@ -34,6 +46,8 @@ fn bench_step(c: &mut Criterion) {
                 )
             })
         });
+
+        unsafe { chemistry_core::chem_context_destroy(ctx); }
     }
     group.finish();
 }

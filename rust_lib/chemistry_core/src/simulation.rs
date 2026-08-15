@@ -53,9 +53,44 @@ fn gaussian(rng: &mut Xorshift64) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (core::f32::consts::TAU * u2).cos()
 }
 
+/// Owns everything `step()` needs to reuse across calls instead of
+/// allocating fresh each time: the spatial hash grid and three scratch
+/// buffers sized to the current atom count. Create once (`chem_context_create`),
+/// pass into every `chem_step`, free once (`chem_context_destroy`) — same
+/// lifecycle as any opaque C handle.
+///
+/// Buffers are grown via `Vec::resize`, which only reallocates when the new
+/// length exceeds current capacity — shrinking atom count keeps the larger
+/// capacity around rather than freeing it, so a count that fluctuates up
+/// and down doesn't thrash the allocator either way.
+pub struct SimContext {
+    grid: SpatialHash,
+    positions: Vec<Vec3>,
+    forces: Vec<Vec3>,
+    old_accel: Vec<Vec3>,
+}
+
+impl SimContext {
+    /// `cutoff_hint` just sizes the initial grid — `step()` transparently
+    /// rebuilds the grid (paying that one allocation) if a later call's
+    /// `cutoff` ever actually differs from what the grid was built with,
+    /// so passing 0.0 here and relying on `step`'s own 10.0 default is
+    /// fine too.
+    pub fn new(cutoff_hint: f32) -> Self {
+        let cutoff = if cutoff_hint > 0.0 { cutoff_hint } else { 10.0 };
+        Self {
+            grid: SpatialHash::new(cutoff),
+            positions: Vec::new(),
+            forces: Vec::new(),
+            old_accel: Vec::new(),
+        }
+    }
+}
+
 /// Initialise velocities from a Maxwell-Boltzmann distribution at
 /// `temperature_k`, zero the force accumulator. Call once after allocating
-/// the NativeArray, before the first `step`.
+/// the NativeArray. Doesn't touch `SimContext` — nothing here needs the
+/// spatial hash or scratch buffers, so this stays context-free.
 pub fn init(atoms: &mut [AtomState], temperature_k: f32, seed: u64) {
     let mut rng = Xorshift64::new_safe(seed);
     let t = temperature_k.max(0.0);
@@ -74,26 +109,25 @@ pub fn init(atoms: &mut [AtomState], temperature_k: f32, seed: u64) {
 /// position update from the old force, force recompute at the new
 /// positions, then a velocity half-step blending old and new acceleration.
 ///
-/// NOTE: allocates two `Vec<Vec3>` scratch buffers (`old_accel` here,
-/// `forces` inside `compute_forces`) every call, plus a fresh `SpatialHash`
-/// every call — `chem_step`'s FFI signature is stateless per-call, so
-/// there's nowhere persistent to cache them. A `SimContext` opaque handle
-/// (returned by an init call, holding reusable scratch buffers + the grid)
-/// would remove all three allocations; that's a real next step, not done
-/// here since it changes the FFI surface and wasn't asked for yet.
-pub fn step(atoms: &mut [AtomState], dt: f32, cutoff: f32) {
+/// `ctx`'s scratch buffers are resized (not reallocated, except on growth)
+/// to match `atoms.len()` every call — this is the only per-call cost left
+/// on that front; the grid itself is only rebuilt from scratch when
+/// `cutoff` actually changes between calls, which should be rare to never
+/// in normal use.
+pub fn step(ctx: &mut SimContext, atoms: &mut [AtomState], dt: f32, cutoff: f32) {
     let n = atoms.len();
     if n == 0 || dt <= 0.0 {
         return;
     }
     let cutoff = if cutoff > 0.0 { cutoff } else { 10.0 };
 
-    let mut old_accel = vec![Vec3::ZERO; n];
+    ctx.old_accel.resize(n, Vec3::ZERO);
+
     for (i, a) in atoms.iter_mut().enumerate() {
         let inv_m = 1.0 / eff_mass(a.mass);
         let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
         let accel = f * inv_m;
-        old_accel[i] = accel;
+        ctx.old_accel[i] = accel;
 
         let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
         let p = Vec3::new(a.position[0], a.position[1], a.position[2]);
@@ -101,32 +135,47 @@ pub fn step(atoms: &mut [AtomState], dt: f32, cutoff: f32) {
         a.position = [new_p.x, new_p.y, new_p.z];
     }
 
-    compute_forces(atoms, cutoff);
+    compute_forces(ctx, atoms, cutoff);
 
     for (i, a) in atoms.iter_mut().enumerate() {
         let inv_m = 1.0 / eff_mass(a.mass);
         let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
         let new_accel = f * inv_m;
         let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
-        let new_v = v + (old_accel[i] + new_accel) * (0.5 * dt);
+        let new_v = v + (ctx.old_accel[i] + new_accel) * (0.5 * dt);
         a.velocity = [new_v.x, new_v.y, new_v.z];
     }
 }
 
 /// Recompute every atom's `.force` from scratch via pairwise Lennard-Jones
-/// within `cutoff`, using the spatial hash to skip out-of-range pairs.
-fn compute_forces(atoms: &mut [AtomState], cutoff: f32) {
+/// within `cutoff`, using `ctx`'s spatial hash to skip out-of-range pairs
+/// and `ctx`'s `positions`/`forces` buffers instead of allocating new ones.
+fn compute_forces(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff: f32) {
     let n = atoms.len();
-    let positions: Vec<Vec3> = atoms
-        .iter()
-        .map(|a| Vec3::new(a.position[0], a.position[1], a.position[2]))
-        .collect();
 
-    let mut grid = SpatialHash::new(cutoff);
-    grid.rebuild(&positions);
+    // Grid's cell size only changes if `cutoff` itself changes call to
+    // call — rebuild (the one real allocation left in the hot path, and
+    // only paid when this condition is true) rather than trying to
+    // resize cells in place, which would need every bucket re-keyed anyway.
+    if (ctx.grid.cell_size() - cutoff).abs() > 1e-6 {
+        ctx.grid = SpatialHash::new(cutoff);
+    }
+
+    ctx.positions.resize(n, Vec3::ZERO);
+    for (i, a) in atoms.iter().enumerate() {
+        ctx.positions[i] = Vec3::new(a.position[0], a.position[1], a.position[2]);
+    }
+    ctx.grid.rebuild(&ctx.positions[..n]);
+
+    ctx.forces.resize(n, Vec3::ZERO);
+    for f in ctx.forces[..n].iter_mut() {
+        *f = Vec3::ZERO;
+    }
 
     let cutoff_sq = cutoff * cutoff;
-    let mut forces = vec![Vec3::ZERO; n];
+    let grid = &ctx.grid;
+    let positions = &ctx.positions;
+    let forces = &mut ctx.forces;
 
     for i in 0..n {
         let pi = positions[i];
