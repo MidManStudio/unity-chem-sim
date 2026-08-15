@@ -2,19 +2,17 @@ name: Rust bench
 
 # Manual only. Benchmarks are slow, and GitHub-hosted runners are shared,
 # variable-clock hardware — fine for spotting a step-change regression
-# between two runs, not trustworthy for absolute numbers. Treat this report
-# as "did anything change a lot", not as ground truth for real perf claims.
+# between two runs, not trustworthy for absolute numbers. Treat this as
+# "did anything change a lot", not ground truth for real perf claims.
+#
+# Results land in this run's Job Summary (Actions tab -> this run ->
+# Summary), not GitHub Pages — Pages was unreliable to view, so this
+# workflow doesn't depend on it at all anymore.
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
   bench:
@@ -37,24 +35,29 @@ jobs:
             ${{ runner.os }}-cargo-bench-
 
       # cargo bench already builds in a release-like profile by default.
-      # html_reports is already enabled on the criterion dev-dependency in
-      # chemistry_core's Cargo.toml, so this produces target/criterion/
-      # with a full report + per-benchmark plots, no extra flags needed.
+      # html_reports stays enabled on the criterion dev-dependency (still
+      # useful if you ever want to download target/criterion as an
+      # artifact and view it locally), but nothing here depends on Pages.
       - name: Run benchmarks
-        run: cargo bench -p chemistry_core
+        run: cargo bench -p chemistry_core 2>&1 | tee bench-output.txt
 
-      - name: Upload criterion report as Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: target/criterion
-
-  deploy:
-    needs: bench
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      # if: always() — still write whatever we have even if the bench step
+      # above failed partway through (e.g. one size timed out).
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## chemistry_core bench — $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            python3 scripts/summarize_bench.py
+            echo
+            echo "<details><summary>Raw cargo bench output</summary>"
+            echo
+            echo '```text'
+            cat bench-output.txt
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
