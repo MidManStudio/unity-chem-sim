@@ -5,27 +5,31 @@
 //! guaranteed to land in the same cell or one of its 26 neighbors — only
 //! 27 cells ever need checking per atom, never the full atom list.
 //!
-//! Correctness-first pass: cells are a `HashMap<CellKey, Vec<u32>>`, cleared
-//! and refilled each `rebuild()` (not reallocated — bucket `Vec` capacity is
-//! kept across frames, only their contents are cleared). This is the thing
-//! to benchmark before reaching for a flat sorted-bucket array: HashMap
-//! lookup/insert overhead is the known cost here, and a flat array removes
-//! it entirely — worth doing once `.github/workflows/rust-bench.yml` gives
-//! numbers to justify the extra code against.
+//! Uses `FxHasher` (see `fx_hash.rs`) instead of std's default SipHash —
+//! cell keys are `(i32,i32,i32)` derived from atom positions this sim
+//! controls, not attacker-supplied data, so SipHash's HashDoS resistance
+//! is overhead with nothing to defend against here.
+//!
+//! Correctness-first pass otherwise: cells are a `HashMap<CellKey, Vec<u32>>`,
+//! cleared and refilled each `rebuild()` (not reallocated — bucket `Vec`
+//! capacity is kept across frames, only their contents are cleared). Flat
+//! sorted-bucket array is the next thing to reach for if the bench numbers
+//! justify it — see `.github/workflows/rust-bench.yml`.
 
 use std::collections::HashMap;
 use mid_math::Vec3;
+use crate::fx_hash::FxBuildHasher;
 
 pub type CellKey = (i32, i32, i32);
 
 pub struct SpatialHash {
     cell_size: f32,
-    cells: HashMap<CellKey, Vec<u32>>,
+    cells: HashMap<CellKey, Vec<u32>, FxBuildHasher>,
 }
 
 impl SpatialHash {
     pub fn new(cell_size: f32) -> Self {
-        Self { cell_size: cell_size.max(1e-4), cells: HashMap::new() }
+        Self { cell_size: cell_size.max(1e-4), cells: HashMap::default() }
     }
 
     #[inline]

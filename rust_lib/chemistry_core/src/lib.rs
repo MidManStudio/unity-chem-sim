@@ -25,6 +25,7 @@
 mod simulation;
 mod spatial_hash;
 mod element_data;
+mod fx_hash;
 
 pub use simulation::*;
 
