@@ -353,14 +353,7 @@ mod tests {
                 let x = (i % side) as f32 * spacing;
                 let y = ((i / side) % side) as f32 * spacing;
                 let z = (i / (side * side)) as f32 * spacing;
-                AtomState {
-                    position: [x, y, z],
-                    velocity: [0.0; 3],
-                    force: [0.0; 3],
-                    mass: 1.008,
-                    radius: 120.0,
-                    atomic_number: 1,
-                }
+                crate::make_atom(1, [x, y, z])
             })
             .collect()
     }

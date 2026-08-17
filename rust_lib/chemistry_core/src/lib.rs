@@ -35,6 +35,7 @@ mod element_data;
 mod fx_hash;
 
 pub use simulation::*;
+pub use element_data::{ElementParams, params, reactivity_index, bond_strength, make_atom};
 
 use std::slice;
 

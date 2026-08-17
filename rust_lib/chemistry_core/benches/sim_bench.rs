@@ -1,21 +1,17 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use chemistry_core::AtomState;
 
-/// Build a grid of hydrogen atoms spaced 3 Angstroms apart.
+/// Build a grid of hydrogen atoms spaced 3 Angstroms apart. Mass and
+/// radius come from chemistry_core::make_atom now, not hardcoded here —
+/// same table the simulation itself uses, so this can't silently drift
+/// out of sync with it.
 fn hydrogen_grid(n: usize) -> Vec<AtomState> {
     let side = (n as f32).cbrt().ceil() as usize;
     (0..n).map(|i| {
         let x = (i % side) as f32 * 3.0;
         let y = ((i / side) % side) as f32 * 3.0;
         let z = (i / (side * side)) as f32 * 3.0;
-        AtomState {
-            position:      [x, y, z],
-            velocity:      [0.0; 3],
-            force:         [0.0; 3],
-            mass:          1.008,
-            radius:        120.0,
-            atomic_number: 1,
-        }
+        chemistry_core::make_atom(1, [x, y, z])
     }).collect()
 }
 

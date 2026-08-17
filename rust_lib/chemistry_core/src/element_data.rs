@@ -1,65 +1,185 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
-//! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust
-//! (the `elements.<name>.interaction.lennard_jones` / `lj_sigma` / `lj_epsilon`
-//! fields specifically). Only the fields the simulation actually needs.
+//! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
+//! Source has 5 elements right now (H through B) — this table grows with
+//! it. Not generated automatically; re-sync by eye against the source
+//! when it grows.
 //!
-//! Source has 5 elements right now (H through B) — this table grows with it.
-//! Not generated from the .mdix automatically yet; re-sync by eye against
-//! the source when it grows. Unmapped atomic numbers fall back to zero LJ
-//! params rather than panicking.
+//! ## What's stored vs what's derived
 //!
-//! Mass is kept in `TABLE` (for reference/completeness against the source)
-//! but deliberately not carried into `ElementParams` — the simulation reads
-//! mass from `AtomState.mass` directly, nothing consumes a second copy of
-//! it here. An earlier version did carry it and cargo correctly flagged it
-//! as dead code; removed rather than silenced.
+//! Only genuinely irreducible per-element facts live in `TABLE`: mass,
+//! vdW radius, LJ sigma/epsilon, electronegativity, first ionization
+//! energy, electron affinity. Nothing here can be computed from anything
+//! else we store or any physics we implement — they're measured/tabulated
+//! quantum-chemistry constants.
+//!
+//! `reactivity_index()` and `bond_strength()` are deliberately **not**
+//! stored anywhere — they're derived on demand from the raw values above,
+//! using the exact same formulas already defined in DixScript-Rust's own
+//! `mdix_files/chemistry_db/core/physics.mdix`
+//! (`calculateReactivityIndex`, `calculateBondStrength`), reproduced here
+//! rather than reinvented. The source database also caches a
+//! `physics_calculated.reactivity_index` value per element — that's
+//! intentionally redundant with computing it here from the raw inputs,
+//! left alone in the source as reference, not treated as a second source
+//! of truth for the simulation.
+
+use crate::AtomState;
 
 /// One element's simulation-relevant physics.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ElementParams {
-    pub lj_sigma_a: f32, // Angstrom
-    pub lj_eps_ev:  f32, // eV (converted from the source's Kelvin convention below)
+    pub mass_amu: f32,
+    pub radius_vdw_pm: f32,
+    pub lj_sigma_a: f32,
+    pub lj_eps_ev: f32,
+    /// Pauling scale. 0.0 for noble gases (not conventionally assigned
+    /// one) — this isn't a missing-data sentinel, it's the real value,
+    /// and it correctly zeroes out `reactivity_index` below without any
+    /// special-casing needed.
+    pub electronegativity: f32,
+    pub ionization_energy_kj_mol: f32,
+    pub electron_affinity_kj_mol: f32,
 }
 
-/// Boltzmann constant, eV/K. Used here to convert the source's `lj_epsilon`
+/// Boltzmann constant, eV/K. Used to convert the source's `lj_epsilon`
 /// (stored as epsilon/k_B in Kelvin — standard LJ force-field convention)
 /// into eV, which is the energy unit the rest of this crate works in.
 const K_B_EV_PER_K: f32 = 8.617_333e-5;
 
-/// (atomic_number, mass_amu, lj_sigma_angstrom, lj_epsilon_kelvin).
-/// Kept in Kelvin here (not pre-converted to eV) so this table reads as a
-/// direct, eyeball-diffable transcription of the .mdix source's own units.
-/// `mass_amu` is transcribed for completeness/reference even though nothing
-/// reads it yet — see module docs.
-const TABLE: &[(i32, f32, f32, f32)] = &[
-    // Z   mass (amu)  sigma (A)  epsilon (K)     name
-    (1,    1.008,      2.928,     37.0),        // Hydrogen
-    (2,    4.0026,     2.551,     10.22),        // Helium
-    (3,    6.94,       2.451,     183.0),        // Lithium
-    (4,    9.0122,     0.0,       0.0),          // Beryllium — unparameterized in source
-    (5,    10.81,      0.0,       0.0),          // Boron — unparameterized in source
+/// (Z, mass_amu, vdW_radius_pm, lj_sigma_angstrom, lj_epsilon_kelvin,
+///  electronegativity_pauling, ionization_energy_kj_per_mol,
+///  electron_affinity_kj_per_mol)
+/// Kept in the source's own units (Kelvin for epsilon, kJ/mol for
+/// ionization/affinity) so this table reads as a direct, eyeball-diffable
+/// transcription — conversions happen in code, not in this table.
+const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
+    // Z   mass    rvdw   sigma  eps_K   en    IE1      EA        name
+    (1,    1.008,  120.0, 2.928, 37.0,   2.20, 1312.0,  72.8),  // Hydrogen
+    (2,    4.0026, 140.0, 2.551, 10.22,  0.0,  2372.3,  0.0),   // Helium
+    (3,    6.94,   182.0, 2.451, 183.0,  0.98, 520.2,   59.6),  // Lithium
+    (4,    9.0122, 153.0, 0.0,   0.0,    1.57, 899.5,   0.0),   // Beryllium — LJ unparameterized in source
+    (5,    10.81,  192.0, 0.0,   0.0,    2.04, 800.6,   26.7),  // Boron — LJ unparameterized in source
 ];
 
 /// Look up an element's simulation parameters by atomic number.
-/// Unmapped `z` returns all-zero params (zero LJ) — not a panic.
+/// Unmapped `z` returns all-zero params — not a panic. All-zero
+/// `ElementParams` behaves safely everywhere it's used: zero LJ params
+/// mean no LJ force (existing guard in `combine()`), zero electronegativity
+/// and zero ionization energy mean `reactivity_index` comes out 0.0 (via
+/// the `hardness <= 0.0` guard below), not a divide-by-zero.
 pub fn params(z: i32) -> ElementParams {
     match TABLE.iter().find(|&&(tz, ..)| tz == z) {
-        Some(&(_, _mass, sigma, eps_k)) => ElementParams {
+        Some(&(_, mass, rvdw, sigma, eps_k, en, ie, ea)) => ElementParams {
+            mass_amu: mass,
+            radius_vdw_pm: rvdw,
             lj_sigma_a: sigma,
-            lj_eps_ev:  eps_k * K_B_EV_PER_K,
+            lj_eps_ev: eps_k * K_B_EV_PER_K,
+            electronegativity: en,
+            ionization_energy_kj_mol: ie,
+            electron_affinity_kj_mol: ea,
         },
         None => ElementParams::default(),
     }
 }
 
-/// Lorentz-Berthelot combining rules for a heteroatomic pair — standard
+/// Lorentz-Berthelot combining rules for a heteroatomic LJ pair — standard
 /// mixing rule for when the source only gives per-element self-interaction
 /// LJ terms (it does; there's no unlike-pair table in the .mdix source).
 /// Returns (sigma, epsilon) for the pair.
 #[inline]
 pub fn combine(a: ElementParams, b: ElementParams) -> (f32, f32) {
     let sigma = 0.5 * (a.lj_sigma_a + b.lj_sigma_a);
-    let eps   = (a.lj_eps_ev * b.lj_eps_ev).max(0.0).sqrt();
+    let eps = (a.lj_eps_ev * b.lj_eps_ev).max(0.0).sqrt();
     (sigma, eps)
+}
+
+/// Chemical hardness / electronegativity ratio — same formula as
+/// DixScript-Rust's `calculateReactivityIndex` in `core/physics.mdix`:
+/// `hardness = (IE - EA) / 2`, `reactivity = electronegativity / hardness`.
+/// Higher = more reactive by this metric. 0.0 if hardness is non-positive
+/// (guards a divide-by-zero/negative that a real element shouldn't hit,
+/// but an unmapped or malformed entry could) — this is a proxy from
+/// conceptual DFT, not a literal measure of how violently something
+/// reacts; don't over-read the ranking between elements from it.
+pub fn reactivity_index(p: ElementParams) -> f32 {
+    let hardness = (p.ionization_energy_kj_mol - p.electron_affinity_kj_mol) / 2.0;
+    if hardness <= 0.0 {
+        return 0.0;
+    }
+    p.electronegativity / hardness
+}
+
+/// Bond strength estimate for a pair at `distance_angstrom` — same formula
+/// as DixScript-Rust's `calculateBondStrength` in `core/physics.mdix`.
+/// The ionic-character term (`1 - exp(-0.25 * Δχ²)`) is Pauling's actual
+/// textbook formula for percent ionic character from electronegativity
+/// difference; the `1/distance²` term and how the two combine is their
+/// own simplified engineering proxy, not a standard formula — treat the
+/// output as a relative comparison between pairs, not an absolute energy.
+pub fn bond_strength(a: ElementParams, b: ElementParams, distance_angstrom: f32) -> f32 {
+    let en_diff = a.electronegativity - b.electronegativity;
+    let ionic_char = 1.0 - (-0.25 * en_diff * en_diff).exp();
+    (1.0 / (distance_angstrom * distance_angstrom)) * (1.0 + ionic_char)
+}
+
+/// Build an `AtomState` at `position` for element `z`, with mass and
+/// (rendering) radius sourced from `TABLE` — the one intended way to
+/// construct an atom from just an atomic number. Closes the gap that
+/// existed before this: `chem_step`'s mass math was always correct, but
+/// nothing outside test/bench code had a *correct* way to build an
+/// `AtomState` in the first place — callers had been hardcoding mass and
+/// radius by hand instead of sourcing them from here.
+pub fn make_atom(z: i32, position: [f32; 3]) -> AtomState {
+    let p = params(z);
+    AtomState {
+        position,
+        velocity: [0.0; 3],
+        force: [0.0; 3],
+        mass: p.mass_amu,
+        radius: p.radius_vdw_pm,
+        atomic_number: z,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reactivity_index_matches_hand_computed_values() {
+        // Cross-checked against a standalone Python computation of the
+        // same formula before this was written, not just asserted here.
+        let cases: &[(i32, f32)] = &[
+            (1, 0.003_551), // H
+            (2, 0.0),       // He — zero electronegativity -> zero reactivity, correctly "inert"
+            (3, 0.004_255), // Li
+            (4, 0.003_491), // Be
+            (5, 0.005_272), // B
+        ];
+        for &(z, expected) in cases {
+            let got = reactivity_index(params(z));
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "Z={z}: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn unmapped_element_is_safe_not_panicking() {
+        let p = params(999);
+        assert_eq!(reactivity_index(p), 0.0);
+        let (sigma, eps) = combine(p, params(1));
+        assert_eq!(eps, 0.0); // one side has zero epsilon -> pair has zero epsilon
+        let _ = sigma; // no assertion on sigma itself, just shouldn't panic/NaN
+    }
+
+    #[test]
+    fn make_atom_sources_real_mass_and_radius() {
+        let a = make_atom(1, [0.0, 0.0, 0.0]);
+        assert_eq!(a.atomic_number, 1);
+        assert!((a.mass - 1.008).abs() < 1e-6);
+        assert!((a.radius - 120.0).abs() < 1e-6);
+    }
 }
