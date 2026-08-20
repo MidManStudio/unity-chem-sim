@@ -27,7 +27,7 @@
 
 @CONFIG(
   version    -> "1.0.0"
-  features   -> "data"
+  features   -> "data,quickfuncs"
   debug_mode -> "off"
 )
 
