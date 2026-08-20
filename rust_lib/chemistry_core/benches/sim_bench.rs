@@ -1,43 +1,33 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use chemistry_core::AtomState;
+use chemistry_core::SimContext;
 
-/// Build a grid of hydrogen atoms spaced 3 Angstroms apart. Mass and
-/// radius come from chemistry_core::make_atom now, not hardcoded here —
-/// same table the simulation itself uses, so this can't silently drift
-/// out of sync with it.
-fn hydrogen_grid(n: usize) -> Vec<AtomState> {
+/// Spawn a grid of hydrogen atoms spaced 3 Angstroms apart into `ctx`.
+fn spawn_hydrogen_grid(ctx: &mut SimContext, n: usize) {
     let side = (n as f32).cbrt().ceil() as usize;
-    (0..n).map(|i| {
+    for i in 0..n {
         let x = (i % side) as f32 * 3.0;
         let y = ((i / side) % side) as f32 * 3.0;
         let z = (i / (side * side)) as f32 * 3.0;
-        chemistry_core::make_atom(1, [x, y, z])
-    }).collect()
+        chemistry_core::spawn_atom(ctx, 1, [x, y, z]);
+    }
 }
 
 fn bench_step(c: &mut Criterion) {
     let mut group = c.benchmark_group("chem_step");
     for &n in &[64usize, 256usize, 1024usize] {
         group.throughput(Throughput::Elements(n as u64));
-        let mut atoms = hydrogen_grid(n);
 
-        // One context per size, created once and reused for every sample —
-        // matches real usage (create in Awake, reuse every frame).
-        let ctx = chemistry_core::chem_context_create(10.0);
+        // One context per size, created once, atoms spawned once, reused
+        // for every sample — matches real usage (spawn in Awake, step
+        // every frame).
+        let mut ctx = SimContext::new(10.0);
+        spawn_hydrogen_grid(&mut ctx, n);
 
         group.bench_function(format!("n={n}_cutoff10"), |b| {
-            b.iter(|| unsafe {
-                chemistry_core::chem_step(
-                    black_box(ctx),
-                    black_box(atoms.as_mut_ptr()),
-                    black_box(n as i32),
-                    black_box(0.001_f32),
-                    black_box(10.0_f32),
-                )
+            b.iter(|| {
+                chemistry_core::step(black_box(&mut ctx), black_box(0.001_f32), black_box(10.0_f32))
             })
         });
-
-        unsafe { chemistry_core::chem_context_destroy(ctx); }
     }
     group.finish();
 }
@@ -45,35 +35,25 @@ fn bench_step(c: &mut Criterion) {
 /// Isolates just the force kernel from the rest of chem_step (position and
 /// velocity Verlet updates are cheap O(n) work, not the bottleneck either
 /// version is trying to fix) — scalar vs SIMD, head to head, same N values
-/// as chem_step above, so this bench's numbers tell us directly whether
-/// SIMD batching is actually winning on the math itself, separate from
-/// whatever chem_step's end-to-end regression is coming from.
+/// as chem_step above.
 fn bench_lj_kernel(c: &mut Criterion) {
     let mut group = c.benchmark_group("lj_kernel");
     for &n in &[64usize, 256usize, 1024usize] {
         group.throughput(Throughput::Elements(n as u64));
 
-        let mut atoms_scalar = hydrogen_grid(n);
-        let mut ctx_scalar = chemistry_core::SimContext::new(10.0);
+        let mut ctx_scalar = SimContext::new(10.0);
+        spawn_hydrogen_grid(&mut ctx_scalar, n);
         group.bench_function(format!("scalar_n={n}"), |b| {
             b.iter(|| {
-                chemistry_core::compute_forces_scalar(
-                    black_box(&mut ctx_scalar),
-                    black_box(&mut atoms_scalar),
-                    black_box(10.0_f32),
-                )
+                chemistry_core::compute_forces_scalar(black_box(&mut ctx_scalar), black_box(10.0_f32))
             })
         });
 
-        let mut atoms_simd = hydrogen_grid(n);
-        let mut ctx_simd = chemistry_core::SimContext::new(10.0);
+        let mut ctx_simd = SimContext::new(10.0);
+        spawn_hydrogen_grid(&mut ctx_simd, n);
         group.bench_function(format!("simd_n={n}"), |b| {
             b.iter(|| {
-                chemistry_core::compute_forces_simd(
-                    black_box(&mut ctx_simd),
-                    black_box(&mut atoms_simd),
-                    black_box(10.0_f32),
-                )
+                chemistry_core::compute_forces_simd(black_box(&mut ctx_simd), black_box(10.0_f32))
             })
         });
     }

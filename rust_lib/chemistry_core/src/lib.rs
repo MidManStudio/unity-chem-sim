@@ -1,5 +1,14 @@
 //! chemistry_core — Unity FFI simulation library.
 //!
+//! ## Rust owns the atom array
+//!
+//! `SimContext` owns the atom storage itself now — atoms are spawned and
+//! despawned through the FFI surface below, not passed in as a pointer
+//! each call. This is deliberate: for Rust to actually be the source of
+//! truth for atom identity (not just bookkeeping, but *enforcing* it),
+//! and for this crate to work unmodified in a non-DOTS engine with zero
+//! concept of a stable entity ID, the array has to live here.
+//!
 //! ## AtomState layout (C-compatible, 48 bytes)
 //!
 //! ```text
@@ -13,21 +22,50 @@
 //!  44      atomic_number   i32        element Z — LJ param lookup key
 //! ```
 //!
+//! ## AtomHandle layout (C-compatible, 8 bytes)
+//!
+//! ```text
+//!  offset  field        type
+//!  ------  -----        ----
+//!   0      index        u32
+//!   4      generation   u32
+//! ```
+//!
+//! Chemistry_core's own type, not `mid_collections::GenerationalIndex`
+//! directly — that type isn't `#[repr(C)]` (no layout guarantee across
+//! FFI) and deliberately has no public constructor from raw parts (it can
+//! only ever be *held*, obtained from `GenerationalIndexAllocator::allocate`,
+//! never synthesized) — by design, so nothing can forge a handle. `AtomHandle`
+//! is what actually crosses the FFI boundary; converted to/from the real
+//! `GenerationalIndex` only inside Rust, by comparing against a handle this
+//! crate already legitimately obtained, never by constructing one from the
+//! raw ints C# sends back. Same reasoning `bevy_ecs::Entity` uses for being
+//! `#[repr(C, align(8))]` in the first place — checked against the real
+//! source, not assumed.
+//!
 //! ## Usage from C#
 //!
 //! ```csharp
 //! FFIBridge.ValidateStructSizes();               // call once in Awake
 //! IntPtr ctx = FFIBridge.chem_context_create(10.0f);
-//! FFIBridge.chem_init(ptr, count, 300.0f, 42UL);
+//! AtomHandle h = FFIBridge.chem_spawn_atom(ctx, 1, 0f, 0f, 0f); // Z=1 (hydrogen)
+//! FFIBridge.chem_init(ctx, 300.0f, 42UL);
 //! // per frame:
-//! FFIBridge.chem_step(ctx, ptr, count, Time.deltaTime, 10.0f);
+//! FFIBridge.chem_step(ctx, Time.deltaTime, 10.0f);
+//! IntPtr atoms = FFIBridge.chem_atoms_ptr(ctx);   // re-fetch every frame, don't cache
+//! int n = FFIBridge.chem_atom_count(ctx);
+//! // ... draw n AtomState structs starting at `atoms` ...
+//! FFIBridge.chem_despawn_atom(ctx, h);
 //! // on teardown (e.g. OnDestroy):
 //! FFIBridge.chem_context_destroy(ctx);
 //! ```
 //!
-//! `ctx` is created once and reused for the lifetime of the simulation —
-//! `chem_step` no longer allocates internally, `SimContext` owns the
-//! spatial hash grid and scratch buffers across calls instead.
+//! `chem_atoms_ptr`'s array order is **not** stable across despawns
+//! (swap-remove keeps the live set dense) — fine for "draw N points
+//! somewhere" (this is a `GraphicsBuffer` + `DrawMesh` billboard renderer,
+//! no per-atom GameObjects, so nothing needs a stable array slot to track
+//! a specific atom across frames), not fine for "this array position is
+//! always atom #47." Use `AtomHandle` + `chem_get_atom` for that.
 
 mod simulation;
 mod spatial_hash;
@@ -37,7 +75,14 @@ mod fx_hash;
 pub use simulation::*;
 pub use element_data::{ElementParams, params, reactivity_index, bond_strength, make_atom};
 
-use std::slice;
+/// FFI-safe atom handle. See module docs for why this exists instead of
+/// passing `mid_collections::GenerationalIndex` directly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AtomHandle {
+    pub index: u32,
+    pub generation: u32,
+}
 
 /// C-compatible atom state. Must match C# `AtomData` exactly.
 /// Verified at compile time (48 bytes) and at runtime via `chem_struct_size()`.
@@ -53,25 +98,26 @@ pub struct AtomState {
 }
 
 const _: () = assert!(core::mem::size_of::<AtomState>() == 48);
+const _: () = assert!(core::mem::size_of::<AtomHandle>() == 8);
 
 // ── FFI surface ───────────────────────────────────────────────────────────────
 
-/// Create a persistent simulation context: owns the spatial hash grid and
-/// the scratch buffers `chem_step` needs, so `chem_step` doesn't allocate
-/// per call. `cutoff_hint` just sizes the initial grid — passing 0.0 is
-/// fine, `step` falls back to 10.0 either way and rebuilds the grid
-/// transparently if a later `cutoff` ever actually differs.
+/// Create a persistent simulation context: owns the atom array, the
+/// spatial hash grid, and the scratch buffers the force kernels need.
+/// `cutoff_hint` just sizes the initial grid — passing 0.0 is fine,
+/// `chem_step` falls back to 10.0 either way.
 ///
-/// Create once (e.g. in Awake), reuse for every `chem_step` call, free
-/// exactly once with `chem_context_destroy` when done (e.g. OnDestroy).
+/// Create once (e.g. in Awake), reuse for the lifetime of the simulation,
+/// free exactly once with `chem_context_destroy` when done (e.g. OnDestroy).
 #[no_mangle]
 pub extern "C" fn chem_context_create(cutoff_hint: f32) -> *mut SimContext {
     Box::into_raw(Box::new(SimContext::new(cutoff_hint)))
 }
 
-/// Frees a context created by `chem_context_create`. Passing null is a
-/// no-op. Never call this twice on the same pointer, and never touch the
-/// pointer again afterward — same rules as any C `free()`.
+/// Frees a context created by `chem_context_create`, and every atom still
+/// alive in it. Passing null is a no-op. Never call this twice on the same
+/// pointer, and never touch the pointer again afterward — same rules as
+/// any C `free()`.
 #[no_mangle]
 pub unsafe extern "C" fn chem_context_destroy(ctx: *mut SimContext) {
     if !ctx.is_null() {
@@ -79,64 +125,102 @@ pub unsafe extern "C" fn chem_context_destroy(ctx: *mut SimContext) {
     }
 }
 
-/// Initialise atom velocities from Maxwell-Boltzmann distribution at
-/// `temperature_k`. Call once after allocating the NativeArray. Doesn't
-/// need a `SimContext` — nothing here touches the spatial hash.
+/// Spawn one atom of element `atomic_number` at `(x, y, z)`. Mass and
+/// (rendering) radius are sourced from `element_data`'s table
+/// automatically — same `make_atom` builder used internally. Returns a
+/// handle valid until the atom is despawned.
 #[no_mangle]
-pub unsafe extern "C" fn chem_init(
-    atoms:         *mut AtomState,
-    count:         i32,
-    temperature_k: f32,
-    seed:          u64,
-) {
-    if atoms.is_null() || count <= 0 { return; }
-    let s = slice::from_raw_parts_mut(atoms, count as usize);
-    simulation::init(s, temperature_k, seed);
+pub unsafe extern "C" fn chem_spawn_atom(
+    ctx:           *mut SimContext,
+    atomic_number: i32,
+    x: f32, y: f32, z: f32,
+) -> AtomHandle {
+    let ctx = &mut *ctx;
+    simulation::spawn_atom(ctx, atomic_number, [x, y, z])
+}
+
+/// Despawn an atom by handle. Returns `false` if the handle is stale
+/// (already despawned, or from a different context) rather than crashing
+/// — always check the return value if it matters to the caller.
+#[no_mangle]
+pub unsafe extern "C" fn chem_despawn_atom(ctx: *mut SimContext, handle: AtomHandle) -> bool {
+    let ctx = &mut *ctx;
+    simulation::despawn_atom(ctx, handle)
+}
+
+/// Current number of live atoms in the context.
+#[no_mangle]
+pub unsafe extern "C" fn chem_atom_count(ctx: *const SimContext) -> i32 {
+    let ctx = &*ctx;
+    simulation::atom_count(ctx) as i32
+}
+
+/// Copy one atom's current state into `out` by handle. Returns `false`
+/// (and leaves `out` untouched) if the handle is stale.
+#[no_mangle]
+pub unsafe extern "C" fn chem_get_atom(
+    ctx:    *const SimContext,
+    handle: AtomHandle,
+    out:    *mut AtomState,
+) -> bool {
+    let ctx = &*ctx;
+    match simulation::get_atom(ctx, handle) {
+        Some(a) => { *out = a; true }
+        None => false,
+    }
+}
+
+/// Read-only pointer into Rust's own dense atom array — for zero-copy
+/// rendering. Valid only until the next `chem_spawn_atom`/
+/// `chem_despawn_atom`/`chem_step` call on this context (a spawn can
+/// reallocate, a despawn reorders via swap-remove) — re-fetch every
+/// frame, never cache across a frame boundary.
+#[no_mangle]
+pub unsafe extern "C" fn chem_atoms_ptr(ctx: *const SimContext) -> *const AtomState {
+    let ctx = &*ctx;
+    simulation::atoms_ptr(ctx)
+}
+
+/// Initialise every currently-live atom's velocity from a Maxwell-
+/// Boltzmann distribution at `temperature_k`, zero their force
+/// accumulators. Call once after spawning your initial atoms.
+#[no_mangle]
+pub unsafe extern "C" fn chem_init(ctx: *mut SimContext, temperature_k: f32, seed: u64) {
+    let ctx = &mut *ctx;
+    simulation::init(ctx, temperature_k, seed);
 }
 
 /// Advance simulation by `dt` seconds. `cutoff` = 0.0 uses 10.0 Angstroms.
-/// `ctx` must be a live pointer from `chem_context_create` — this is where
-/// the spatial hash and scratch buffers actually live now, reused across
-/// calls instead of allocated fresh each time.
 #[no_mangle]
-pub unsafe extern "C" fn chem_step(
-    ctx:    *mut SimContext,
-    atoms:  *mut AtomState,
-    count:  i32,
-    dt:     f32,
-    cutoff: f32,
-) {
-    if ctx.is_null() || atoms.is_null() || count <= 0 { return; }
+pub unsafe extern "C" fn chem_step(ctx: *mut SimContext, dt: f32, cutoff: f32) {
     let ctx = &mut *ctx;
-    let s = slice::from_raw_parts_mut(atoms, count as usize);
-    simulation::step(ctx, s, dt, cutoff);
+    simulation::step(ctx, dt, cutoff);
 }
 
-/// Returns total kinetic energy of all atoms in eV.
+/// Total kinetic energy of all currently-live atoms, in eV.
 #[no_mangle]
-pub unsafe extern "C" fn chem_kinetic_energy(
-    atoms: *const AtomState,
-    count: i32,
-) -> f32 {
-    if atoms.is_null() || count <= 0 { return 0.0; }
-    let s = slice::from_raw_parts(atoms, count as usize);
-    simulation::kinetic_energy(s)
+pub unsafe extern "C" fn chem_kinetic_energy(ctx: *const SimContext) -> f32 {
+    let ctx = &*ctx;
+    simulation::kinetic_energy(ctx)
 }
 
-/// Returns current temperature estimate in Kelvin (from equipartition).
+/// Current temperature estimate in Kelvin (from equipartition).
 #[no_mangle]
-pub unsafe extern "C" fn chem_temperature(
-    atoms: *const AtomState,
-    count: i32,
-) -> f32 {
-    if atoms.is_null() || count <= 0 { return 0.0; }
-    let s = slice::from_raw_parts(atoms, count as usize);
-    simulation::temperature(s)
+pub unsafe extern "C" fn chem_temperature(ctx: *const SimContext) -> f32 {
+    let ctx = &*ctx;
+    simulation::temperature(ctx)
 }
 
-/// Struct size validation. Call from C# `ValidateStructSizes()`.
+/// `AtomState` size validation. Call from C# `ValidateStructSizes()`.
 /// If this returns != 48, the struct layout is mismatched — fix before proceeding.
 #[no_mangle]
 pub extern "C" fn chem_struct_size() -> i32 {
     core::mem::size_of::<AtomState>() as i32
+}
+
+/// `AtomHandle` size validation, same idea as `chem_struct_size`. Should
+/// always return 8.
+#[no_mangle]
+pub extern "C" fn chem_handle_size() -> i32 {
+    core::mem::size_of::<AtomHandle>() as i32
 }

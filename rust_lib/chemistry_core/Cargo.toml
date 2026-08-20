@@ -11,23 +11,32 @@ repository    = "https://github.com/MidManStudio/unity-chem-sim"
 name       = "chemistry_core"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+# scalar-math is default, not opt-in: benched (bench #9, isolated
+# lj_kernel group) at 3.5-37.6% faster than the SIMD kernel across n=64/
+# 256/1024, worst at higher N, not just noise. compute_forces_simd is
+# still in the tree and still tested — worth revisiting if the spatial
+# hash ever produces tighter, less wasteful candidate lists.
 [features]
-default     = []
+default     = ["scalar-math"]
 scalar-math = []
 
-# mid-math's wide SIMD lane types (f32x4, Vec3x4, Vec3x8, QuatX4, Mask4) —
-# vendored copy at rust_lib/vendor/mid-math, refreshed via
-# .github/workflows/vendor-mid-math.yml. Dev-dependencies and bench targets
-# are stripped from the vendored manifest, so this pulls in zero third-party
-# crates, direct or transitive.
+# mid-math's wide SIMD lane types (f32x4, Vec3x4, Vec3x8, QuatX4, Mask4)
+# and mid-collections' GenerationalIndex/SparseSet (atom identity + slot
+# lookup) — both vendored copies under rust_lib/vendor/, refreshed via
+# .github/workflows/vendor-mid-math.yml and vendor-mid-collections.yml.
+# Dev-dependencies and bench targets are stripped from both vendored
+# manifests, so this pulls in zero third-party crates, direct or
+# transitive.
 [dependencies]
-mid-math = { path = "../vendor/mid-math" }
+mid-math        = { path = "../vendor/mid-math" }
+mid-collections = { path = "../vendor/mid-collections" }
 
 # Non-WASM: RwLock-based config store (same pattern as projectile_core).
-# NOTE: this crate already requires Rust 1.80+ (DixScript-Rust's own floor),
-# so std::sync::OnceLock/LazyLock cover this same pattern without a
-# dependency at all — worth a follow-up pass if you want the last external
-# crate gone too. Left as-is for now, not touching it unless you ask.
+# NOTE: this crate already requires Rust 1.80+ (DixScript-Rust's own
+# floor), so std::sync::OnceLock/LazyLock cover this same pattern without
+# a dependency at all — worth a follow-up pass if you want the last
+# external crate gone too. Left as-is for now, not touching it unless
+# you ask.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lazy_static = "1.5"
 
@@ -37,8 +46,3 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name    = "sim_bench"
 harness = false
-
-# NOTE: removed the [profile.release] block that used to be here — Cargo
-# warned "profiles for the non root package will be ignored, specify
-# profiles at the workspace root" on the last bench run. The real one lives
-# in the repo root Cargo.toml; this was a dead duplicate.

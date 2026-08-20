@@ -2,32 +2,37 @@
 //! Core physics: Lennard-Jones pairwise forces (neighbor-limited via
 //! `spatial_hash`) + velocity Verlet integration.
 //!
+//! `SimContext` owns the atom array itself now (see `lib.rs` module docs
+//! for why). Atom identity is a `mid_collections::GenerationalIndex`
+//! internally, `crate::AtomHandle` at the FFI boundary — `slot_of` is
+//! keyed by the *raw* index (`u32`, which `mid_collections::SparseSet`
+//! already supports directly) rather than the full `GenerationalIndex`,
+//! specifically so nothing here ever needs to construct a
+//! `GenerationalIndex` from FFI-crossed data — see `resolve()` below.
+//!
 //! Two force-kernel implementations, both `pub` so they're directly
-//! bench-able and test-able against each other, not just used internally:
+//! bench-able and test-able against each other:
 //!
 //! - `compute_forces_scalar` — one pair at a time, early-`continue`s past
 //!   out-of-cutoff / unparameterized candidates before paying for any
 //!   sqrt/recip/power math on them.
 //! - `compute_forces_simd` — batches 4 candidates at a time via mid_math's
-//!   `Vec3x4`/`f32x4`. No per-lane branching exists in SIMD, so *all 4*
-//!   lanes always run the full sqrt/recip/power chain regardless of
-//!   validity, with invalid lanes masked to zero contribution only at the
-//!   very end. First real bench of this (see `lj_kernel` group in
-//!   `sim_bench.rs`) showed it as a net *regression* on `chem_step` as a
-//!   whole (+15-40% slower depending on N) rather than the expected win —
+//!   `Vec3x4`/`f32x4`. Benched (see `lj_kernel` group in `sim_bench.rs`)
+//!   as a net *regression* vs scalar (3.5-38% slower depending on N) —
 //!   plausibly because the coarse 3x3x3 cell search over-fetches
-//!   candidates that turn out to be past the true cutoff once checked
-//!   exactly, and SIMD pays full transcendental-math cost on those before
-//!   masking them out, where scalar just skips them. Not confirmed yet —
-//!   that's what the isolated `lj_kernel` bench is for.
+//!   candidates past the true cutoff, and SIMD pays full transcendental-
+//!   math cost on those (no per-lane branching exists) where scalar just
+//!   skips them, plus `combine()` runs on all 4 lanes unconditionally
+//!   since the mask needs sigma/eps before it can check them.
 //!
 //! `step()` calls whichever is selected by the `scalar-math` feature
-//! (default: SIMD) — flip it in `Cargo.toml` to compare without code
-//! changes, or call either function directly from a bench/test.
+//! (default: on, i.e. scalar) — flip it in `Cargo.toml` to compare
+//! without code changes.
 
-use crate::{AtomState, element_data};
+use crate::{AtomState, AtomHandle, element_data};
 use crate::spatial_hash::SpatialHash;
 use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64};
+use mid_collections::{GenerationalIndex, GenerationalIndexAllocator, SparseSet};
 
 /// Boltzmann constant, eV/K.
 const K_B_EV_PER_K: f32 = 8.617_333e-5;
@@ -48,11 +53,32 @@ fn gaussian(rng: &mut Xorshift64) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (core::f32::consts::TAU * u2).cos()
 }
 
-/// Owns everything the force kernels need to reuse across calls instead of
-/// allocating fresh each time: the spatial hash grid and scratch buffers
-/// sized to the current atom count. Create once (`chem_context_create`),
-/// pass into every `chem_step`, free once (`chem_context_destroy`).
+/// Owns the atom array and everything the force kernels need to reuse
+/// across calls: the spatial hash grid and scratch buffers sized to the
+/// current atom count. Create once (`chem_context_create`), spawn/despawn
+/// atoms and step through every call on the same context, free once
+/// (`chem_context_destroy`) when done.
 pub struct SimContext {
+    /// Dense, swap-remove-compacted atom storage — this is the hot-loop
+    /// data every force kernel and integrator walks. Order is not stable
+    /// across despawns; identity lives in `handles`/`slot_of`, not array
+    /// position.
+    atoms: Vec<AtomState>,
+    /// handles[i] = the real GenerationalIndex identity of atoms[i].
+    /// Parallel array, always the same length as `atoms`.
+    handles: Vec<GenerationalIndex>,
+    /// Issues and tracks liveness of GenerationalIndex handles. Real,
+    /// tested free-list allocator from mid_collections — not reimplemented
+    /// here.
+    allocator: GenerationalIndexAllocator,
+    /// raw_index -> current position in `atoms`/`handles`. Keyed by the
+    /// raw `u32` index portion only (not the full GenerationalIndex) —
+    /// generation is checked separately in `resolve()` via the stored
+    /// real handle's `.generation()`, since constructing a
+    /// GenerationalIndex from raw FFI-crossed parts isn't possible (see
+    /// lib.rs module docs) and isn't needed for this lookup anyway.
+    slot_of: SparseSet<u32, u32>,
+
     grid: SpatialHash,
     positions: Vec<Vec3>,
     forces: Vec<Vec3>,
@@ -64,12 +90,16 @@ pub struct SimContext {
 
 impl SimContext {
     /// `cutoff_hint` just sizes the initial grid — force kernels
-    /// transparently rebuild it (paying that one allocation) if a later
-    /// call's `cutoff` ever actually differs from what the grid was built
-    /// with, so passing 0.0 here and relying on the 10.0 default is fine.
+    /// transparently rebuild it if a later call's `cutoff` ever actually
+    /// differs from what the grid was built with, so passing 0.0 here and
+    /// relying on the 10.0 default is fine too.
     pub fn new(cutoff_hint: f32) -> Self {
         let cutoff = if cutoff_hint > 0.0 { cutoff_hint } else { 10.0 };
         Self {
+            atoms: Vec::new(),
+            handles: Vec::new(),
+            allocator: GenerationalIndexAllocator::new(),
+            slot_of: SparseSet::new(),
             grid: SpatialHash::new(cutoff),
             positions: Vec::new(),
             forces: Vec::new(),
@@ -79,14 +109,82 @@ impl SimContext {
     }
 }
 
-/// Initialise velocities from a Maxwell-Boltzmann distribution at
-/// `temperature_k`, zero the force accumulator. Call once after allocating
-/// the NativeArray. Doesn't touch `SimContext` — nothing here needs the
-/// spatial hash or scratch buffers, so this stays context-free.
-pub fn init(atoms: &mut [AtomState], temperature_k: f32, seed: u64) {
+/// Resolves an FFI `AtomHandle` to its current array position, verifying
+/// it's still alive along the way. `None` for a stale handle (already
+/// despawned, or a raw index that was never valid in this context) —
+/// never panics on bad input, since this is the first thing every
+/// externally-driven call does with caller-supplied data.
+fn resolve(ctx: &SimContext, h: AtomHandle) -> Option<usize> {
+    let &pos = ctx.slot_of.get(h.index)?;
+    let real = ctx.handles[pos as usize];
+    if real.generation() == h.generation {
+        Some(pos as usize)
+    } else {
+        None // slot was reused by a different atom since this handle was issued
+    }
+}
+
+/// Spawn one atom of element `atomic_number` at `position`. Mass and
+/// radius sourced from `element_data::make_atom`. Returns a handle valid
+/// until despawned.
+pub fn spawn_atom(ctx: &mut SimContext, atomic_number: i32, position: [f32; 3]) -> AtomHandle {
+    let real = ctx.allocator.allocate();
+    let atom = element_data::make_atom(atomic_number, position);
+    let pos = ctx.atoms.len() as u32;
+
+    ctx.atoms.push(atom);
+    ctx.handles.push(real);
+    ctx.slot_of.insert(real.index(), pos);
+
+    AtomHandle { index: real.index(), generation: real.generation() }
+}
+
+/// Despawn an atom by handle. `false` for a stale handle — same
+/// not-panicking-on-bad-external-input discipline as `resolve`.
+/// Swap-remove keeps `atoms`/`handles` dense: the last element moves into
+/// the vacated slot, and that moved atom's `slot_of` entry is updated to
+/// its new position.
+pub fn despawn_atom(ctx: &mut SimContext, h: AtomHandle) -> bool {
+    let Some(pos) = resolve(ctx, h) else { return false; };
+    let real = ctx.handles[pos];
+    let last = ctx.atoms.len() - 1;
+
+    if pos != last {
+        ctx.atoms.swap(pos, last);
+        ctx.handles.swap(pos, last);
+        let moved = ctx.handles[pos];
+        ctx.slot_of.insert(moved.index(), pos as u32);
+    }
+    ctx.atoms.pop();
+    ctx.handles.pop();
+    ctx.slot_of.remove(h.index);
+    ctx.allocator.deallocate(real);
+    true
+}
+
+/// Current number of live atoms.
+pub fn atom_count(ctx: &SimContext) -> usize {
+    ctx.atoms.len()
+}
+
+/// Copy one atom's current state out by handle. `None` for a stale handle.
+pub fn get_atom(ctx: &SimContext, h: AtomHandle) -> Option<AtomState> {
+    resolve(ctx, h).map(|pos| ctx.atoms[pos])
+}
+
+/// Read-only pointer into the dense atom array, for zero-copy rendering.
+/// See `lib.rs` module docs for the "re-fetch every frame" caveat.
+pub fn atoms_ptr(ctx: &SimContext) -> *const AtomState {
+    ctx.atoms.as_ptr()
+}
+
+/// Initialise every currently-live atom's velocity from a Maxwell-
+/// Boltzmann distribution at `temperature_k`, zero their force
+/// accumulators.
+pub fn init(ctx: &mut SimContext, temperature_k: f32, seed: u64) {
     let mut rng = Xorshift64::new_safe(seed);
     let t = temperature_k.max(0.0);
-    for a in atoms.iter_mut() {
+    for a in ctx.atoms.iter_mut() {
         let sigma_v = (K_B_EV_PER_K * t / eff_mass(a.mass)).sqrt();
         a.velocity = [
             gaussian(&mut rng) * sigma_v,
@@ -100,8 +198,15 @@ pub fn init(atoms: &mut [AtomState], temperature_k: f32, seed: u64) {
 /// Advance the simulation by `dt` femtoseconds using velocity Verlet:
 /// position update from the old force, force recompute at the new
 /// positions, then a velocity half-step blending old and new acceleration.
-pub fn step(ctx: &mut SimContext, atoms: &mut [AtomState], dt: f32, cutoff: f32) {
-    let n = atoms.len();
+///
+/// ## Units
+/// Position: Angstrom. Time: femtosecond. Mass: amu. Energy: eV.
+/// Force: eV/A — see the historical derivation of `AMU_TO_EFF_MASS` in
+/// this crate's git history if that constant ever looks suspicious;
+/// derived from SI, not recalled from memory, and sanity-checked against
+/// expected 300K thermal velocities.
+pub fn step(ctx: &mut SimContext, dt: f32, cutoff: f32) {
+    let n = ctx.atoms.len();
     if n == 0 || dt <= 0.0 {
         return;
     }
@@ -109,55 +214,62 @@ pub fn step(ctx: &mut SimContext, atoms: &mut [AtomState], dt: f32, cutoff: f32)
 
     ctx.old_accel.resize(n, Vec3::ZERO);
 
-    for (i, a) in atoms.iter_mut().enumerate() {
-        let inv_m = 1.0 / eff_mass(a.mass);
-        let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
-        let accel = f * inv_m;
-        ctx.old_accel[i] = accel;
+    {
+        let atoms = &mut ctx.atoms;
+        let old_accel = &mut ctx.old_accel;
+        for (i, a) in atoms.iter_mut().enumerate() {
+            let inv_m = 1.0 / eff_mass(a.mass);
+            let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
+            let accel = f * inv_m;
+            old_accel[i] = accel;
 
-        let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
-        let p = Vec3::new(a.position[0], a.position[1], a.position[2]);
-        let new_p = p + v * dt + accel * (0.5 * dt * dt);
-        a.position = [new_p.x, new_p.y, new_p.z];
+            let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
+            let p = Vec3::new(a.position[0], a.position[1], a.position[2]);
+            let new_p = p + v * dt + accel * (0.5 * dt * dt);
+            a.position = [new_p.x, new_p.y, new_p.z];
+        }
     }
 
     #[cfg(feature = "scalar-math")]
-    compute_forces_scalar(ctx, atoms, cutoff);
+    compute_forces_scalar(ctx, cutoff);
     #[cfg(not(feature = "scalar-math"))]
-    compute_forces_simd(ctx, atoms, cutoff);
+    compute_forces_simd(ctx, cutoff);
 
-    for (i, a) in atoms.iter_mut().enumerate() {
-        let inv_m = 1.0 / eff_mass(a.mass);
-        let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
-        let new_accel = f * inv_m;
-        let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
-        let new_v = v + (ctx.old_accel[i] + new_accel) * (0.5 * dt);
-        a.velocity = [new_v.x, new_v.y, new_v.z];
+    {
+        let atoms = &mut ctx.atoms;
+        let old_accel = &ctx.old_accel;
+        for (i, a) in atoms.iter_mut().enumerate() {
+            let inv_m = 1.0 / eff_mass(a.mass);
+            let f = Vec3::new(a.force[0], a.force[1], a.force[2]);
+            let new_accel = f * inv_m;
+            let v = Vec3::new(a.velocity[0], a.velocity[1], a.velocity[2]);
+            let new_v = v + (old_accel[i] + new_accel) * (0.5 * dt);
+            a.velocity = [new_v.x, new_v.y, new_v.z];
+        }
     }
 }
 
-/// Rebuild `ctx.positions` from `atoms` and rebuild the spatial hash grid
-/// against them. Shared by both force kernels below so gather/rebuild
-/// logic isn't duplicated between them.
-fn refresh_grid(ctx: &mut SimContext, atoms: &[AtomState], cutoff: f32) {
-    let n = atoms.len();
+/// Rebuild `ctx.positions` from the current atom array and rebuild the
+/// spatial hash grid against them. Shared by both force kernels.
+fn refresh_grid(ctx: &mut SimContext, cutoff: f32) {
+    let n = ctx.atoms.len();
     if (ctx.grid.cell_size() - cutoff).abs() > 1e-6 {
         ctx.grid = SpatialHash::new(cutoff);
     }
     ctx.positions.resize(n, Vec3::ZERO);
-    for (i, a) in atoms.iter().enumerate() {
-        ctx.positions[i] = Vec3::new(a.position[0], a.position[1], a.position[2]);
+    for i in 0..n {
+        let p = ctx.atoms[i].position;
+        ctx.positions[i] = Vec3::new(p[0], p[1], p[2]);
     }
     ctx.grid.rebuild(&ctx.positions[..n]);
 }
 
 /// One pair at a time. Early-`continue`s past out-of-cutoff and
 /// unparameterized-element candidates before paying for any sqrt/recip/
-/// power math on them — the thing `compute_forces_simd` structurally
-/// can't do, since SIMD lanes have no per-lane branching.
-pub fn compute_forces_scalar(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff: f32) {
-    let n = atoms.len();
-    refresh_grid(ctx, atoms, cutoff);
+/// power math on them.
+pub fn compute_forces_scalar(ctx: &mut SimContext, cutoff: f32) {
+    let n = ctx.atoms.len();
+    refresh_grid(ctx, cutoff);
 
     ctx.forces.resize(n, Vec3::ZERO);
     for f in ctx.forces[..n].iter_mut() {
@@ -168,10 +280,11 @@ pub fn compute_forces_scalar(ctx: &mut SimContext, atoms: &mut [AtomState], cuto
 
     for i in 0..n {
         let pi = ctx.positions[i];
-        let pi_params = element_data::params(atoms[i].atomic_number);
+        let pi_params = element_data::params(ctx.atoms[i].atomic_number);
 
         let grid = &ctx.grid;
         let positions = &ctx.positions;
+        let atoms = &ctx.atoms;
         let forces = &mut ctx.forces;
 
         grid.for_each_candidate(pi, |j| {
@@ -200,18 +313,17 @@ pub fn compute_forces_scalar(ctx: &mut SimContext, atoms: &mut [AtomState], cuto
         });
     }
 
-    for (i, a) in atoms.iter_mut().enumerate() {
-        a.force = [ctx.forces[i].x, ctx.forces[i].y, ctx.forces[i].z];
+    for i in 0..n {
+        ctx.atoms[i].force = [ctx.forces[i].x, ctx.forces[i].y, ctx.forces[i].z];
     }
 }
 
-/// 4 candidates at a time via `Vec3x4`/`f32x4`, gather-then-batch (see
-/// module docs — candidates gathered into `ctx.candidates` first, scalar,
-/// *then* the force math processes that flat buffer 4 at a time), with a
-/// scalar remainder for whatever doesn't fill a full chunk.
-pub fn compute_forces_simd(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff: f32) {
-    let n = atoms.len();
-    refresh_grid(ctx, atoms, cutoff);
+/// 4 candidates at a time via `Vec3x4`/`f32x4`, gather-then-batch, with a
+/// scalar remainder for whatever doesn't fill a full chunk. See module
+/// docs for why this currently benches slower than scalar.
+pub fn compute_forces_simd(ctx: &mut SimContext, cutoff: f32) {
+    let n = ctx.atoms.len();
+    refresh_grid(ctx, cutoff);
 
     ctx.forces.resize(n, Vec3::ZERO);
     for f in ctx.forces[..n].iter_mut() {
@@ -225,7 +337,7 @@ pub fn compute_forces_simd(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff
 
     for i in 0..n {
         let pi = ctx.positions[i];
-        let pi_params = element_data::params(atoms[i].atomic_number);
+        let pi_params = element_data::params(ctx.atoms[i].atomic_number);
 
         ctx.candidates.clear();
         {
@@ -253,10 +365,10 @@ pub fn compute_forces_simd(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff
                 ctx.positions[j0], ctx.positions[j1], ctx.positions[j2], ctx.positions[j3],
             );
 
-            let (sigma0, eps0) = element_data::combine(pi_params, element_data::params(atoms[j0].atomic_number));
-            let (sigma1, eps1) = element_data::combine(pi_params, element_data::params(atoms[j1].atomic_number));
-            let (sigma2, eps2) = element_data::combine(pi_params, element_data::params(atoms[j2].atomic_number));
-            let (sigma3, eps3) = element_data::combine(pi_params, element_data::params(atoms[j3].atomic_number));
+            let (sigma0, eps0) = element_data::combine(pi_params, element_data::params(ctx.atoms[j0].atomic_number));
+            let (sigma1, eps1) = element_data::combine(pi_params, element_data::params(ctx.atoms[j1].atomic_number));
+            let (sigma2, eps2) = element_data::combine(pi_params, element_data::params(ctx.atoms[j2].atomic_number));
+            let (sigma3, eps3) = element_data::combine(pi_params, element_data::params(ctx.atoms[j3].atomic_number));
             let sigma4 = f32x4::new(sigma0, sigma1, sigma2, sigma3);
             let eps4 = f32x4::new(eps0, eps1, eps2, eps3);
 
@@ -298,7 +410,7 @@ pub fn compute_forces_simd(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff
             if r2 < 1e-8 || r2 > cutoff_sq {
                 continue;
             }
-            let pj_params = element_data::params(atoms[j].atomic_number);
+            let pj_params = element_data::params(ctx.atoms[j].atomic_number);
             let (sigma, eps) = element_data::combine(pi_params, pj_params);
             if eps <= 0.0 || sigma <= 0.0 {
                 continue;
@@ -313,14 +425,14 @@ pub fn compute_forces_simd(ctx: &mut SimContext, atoms: &mut [AtomState], cutoff
         }
     }
 
-    for (i, a) in atoms.iter_mut().enumerate() {
-        a.force = [ctx.forces[i].x, ctx.forces[i].y, ctx.forces[i].z];
+    for i in 0..n {
+        ctx.atoms[i].force = [ctx.forces[i].x, ctx.forces[i].y, ctx.forces[i].z];
     }
 }
 
-/// Total kinetic energy of all atoms, in eV.
-pub fn kinetic_energy(atoms: &[AtomState]) -> f32 {
-    atoms
+/// Total kinetic energy of all currently-live atoms, in eV.
+pub fn kinetic_energy(ctx: &SimContext) -> f32 {
+    ctx.atoms
         .iter()
         .map(|a| {
             let m = eff_mass(a.mass);
@@ -334,52 +446,48 @@ pub fn kinetic_energy(atoms: &[AtomState]) -> f32 {
 
 /// Current temperature estimate in Kelvin, from equipartition
 /// (3 translational degrees of freedom per atom): `KE = 1.5 * N * k_B * T`.
-pub fn temperature(atoms: &[AtomState]) -> f32 {
-    let n = atoms.len();
+pub fn temperature(ctx: &SimContext) -> f32 {
+    let n = ctx.atoms.len();
     if n == 0 {
         return 0.0;
     }
-    2.0 * kinetic_energy(atoms) / (3.0 * n as f32 * K_B_EV_PER_K)
+    2.0 * kinetic_energy(ctx) / (3.0 * n as f32 * K_B_EV_PER_K)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn hydrogen_grid(n: usize, spacing: f32) -> Vec<AtomState> {
+    fn spawn_hydrogen_grid(ctx: &mut SimContext, n: usize, spacing: f32) {
         let side = (n as f32).cbrt().ceil() as usize;
-        (0..n)
-            .map(|i| {
-                let x = (i % side) as f32 * spacing;
-                let y = ((i / side) % side) as f32 * spacing;
-                let z = (i / (side * side)) as f32 * spacing;
-                crate::make_atom(1, [x, y, z])
-            })
-            .collect()
+        for i in 0..n {
+            let x = (i % side) as f32 * spacing;
+            let y = ((i / side) % side) as f32 * spacing;
+            let z = (i / (side * side)) as f32 * spacing;
+            spawn_atom(ctx, 1, [x, y, z]);
+        }
     }
 
     /// Calls the real `compute_forces_scalar`/`compute_forces_simd`
-    /// directly (not a separate duplicated copy) — this validates the
-    /// actual functions everything else uses, including the new
-    /// `lj_kernel` bench group.
+    /// directly — validates the exact functions everything else uses,
+    /// including the `lj_kernel` bench group.
     #[test]
     fn simd_batched_forces_match_scalar_reference() {
         // Sizes deliberately not multiples of 4, so both the SIMD chunk
         // path and the scalar remainder path get exercised at each scale.
         for &n in &[5usize, 13, 37, 101] {
-            let mut atoms_scalar = hydrogen_grid(n, 3.0);
-            let mut atoms_simd = atoms_scalar.clone();
-
             let mut ctx_scalar = SimContext::new(10.0);
-            compute_forces_scalar(&mut ctx_scalar, &mut atoms_scalar, 10.0);
+            spawn_hydrogen_grid(&mut ctx_scalar, n, 3.0);
+            compute_forces_scalar(&mut ctx_scalar, 10.0);
 
             let mut ctx_simd = SimContext::new(10.0);
-            compute_forces_simd(&mut ctx_simd, &mut atoms_simd, 10.0);
+            spawn_hydrogen_grid(&mut ctx_simd, n, 3.0);
+            compute_forces_simd(&mut ctx_simd, 10.0);
 
             for i in 0..n {
                 for k in 0..3 {
-                    let got = atoms_simd[i].force[k];
-                    let want = atoms_scalar[i].force[k];
+                    let got = ctx_simd.atoms[i].force[k];
+                    let want = ctx_scalar.atoms[i].force[k];
                     assert!(
                         (got - want).abs() < 1e-4,
                         "atom {i} component {k}: simd={got} scalar={want} (n={n})"
@@ -387,5 +495,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn despawn_is_safe_and_keeps_remaining_atoms_correct() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 2, [1.0, 0.0, 0.0]);
+        let c = spawn_atom(&mut ctx, 3, [2.0, 0.0, 0.0]);
+        assert_eq!(atom_count(&ctx), 3);
+
+        // Despawn the middle one — exercises the swap-remove reslotting.
+        assert!(despawn_atom(&mut ctx, b));
+        assert_eq!(atom_count(&ctx), 2);
+
+        // Stale handle: same slot, wrong generation now.
+        assert!(!despawn_atom(&mut ctx, b));
+        assert!(get_atom(&ctx, b).is_none());
+
+        // Both surviving atoms still resolve correctly by handle,
+        // regardless of where swap-remove actually moved them.
+        let got_a = get_atom(&ctx, a).expect("a should still be alive");
+        assert_eq!(got_a.atomic_number, 1);
+        let got_c = get_atom(&ctx, c).expect("c should still be alive");
+        assert_eq!(got_c.atomic_number, 3);
     }
 }
