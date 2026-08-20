@@ -1,12 +1,29 @@
 // Brought to u by MidManStudio
 //
-// Alembic — com.midmanstudio.alembic Unity package skeleton (Runtime,
-// Editor, Tests, Documentation~, native plugin layout) plus the
-// chemistry_core Cargo.toml repository fix.
+// Rust owns the atom array now, not Unity. New: AtomHandle (repr(C),
+// chemistry_core's own -- mid_collections::GenerationalIndex isn't
+// repr(C) and has no public raw constructor, checked against bevy_ecs's
+// real Entity for the same design reasoning), chem_spawn_atom/
+// chem_despawn_atom/chem_atom_count/chem_get_atom/chem_atoms_ptr as real
+// FFI calls, chem_step/chem_init/chem_kinetic_energy/chem_temperature all
+// drop their atoms/count params and operate on the context's own storage.
+// SimContext gains atoms/handles/allocator/slot_of, using
+// mid_collections::GenerationalIndexAllocator + SparseSet<u32,u32> --
+// vendored in via the paired vendor-mid-collections.yml workflow
+// (delivered separately, .github/ convention).
 //
-// Every file in the paired archive sits in a subdirectory (nested), so
-// each resolves directly to its real path under target_root. No
-// overrides:: needed — no basename collides with anything else in here.
+// IMPORTANT: run "Vendor mid-collections" (new workflow, delivered
+// alongside this) before or in the same push as this replacements batch
+// -- the code references mid_collections::{GenerationalIndex,
+// GenerationalIndexAllocator, SparseSet}, which won't exist in the repo
+// until that workflow runs once.
+//
+// ROOT_Cargo.toml -> Cargo.toml via overrides:: below, since a flat
+// "Cargo.toml" at this archive's top level would otherwise basename-
+// search the whole repo and hit an ambiguous-match error now that there
+// are multiple Cargo.tomls (root, chemistry_core, and two vendor/
+// crates) -- exactly the collision the scaffold skill doc calls out by
+// name. Everything else nested, resolves directly.
 
 @CONFIG(
   version    -> "1.0.0"
@@ -14,6 +31,13 @@
   debug_mode -> "off"
 )
 
+@QUICKFUNCS(
+  ~target<object>(name, path) { return { name = name, path = path } }
+)
+
 @DATA(
   target_root = "."
+
+  overrides::
+    target("ROOT_Cargo.toml", "Cargo.toml")
 )
