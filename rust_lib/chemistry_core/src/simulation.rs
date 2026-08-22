@@ -1,14 +1,14 @@
 // crates/chemistry_core/src/simulation.rs
 //! Core physics: Lennard-Jones pairwise forces (neighbor-limited via
-//! `spatial_hash`) + velocity Verlet integration.
+//! `spatial_hash`) + velocity Verlet integration + pairwise bonding.
 //!
-//! `SimContext` owns the atom array itself now (see `lib.rs` module docs
-//! for why). Atom identity is a `mid_collections::GenerationalIndex`
+//! `SimContext` owns the atom array itself (see `lib.rs` module docs for
+//! why). Atom identity is a `mid_collections::GenerationalIndex`
 //! internally, `crate::AtomHandle` at the FFI boundary — `slot_of` is
-//! keyed by the *raw* index (`u32`, which `mid_collections::SparseSet`
-//! already supports directly) rather than the full `GenerationalIndex`,
-//! specifically so nothing here ever needs to construct a
-//! `GenerationalIndex` from FFI-crossed data — see `resolve()` below.
+//! keyed by the *raw* index (`u32`) rather than the full
+//! `GenerationalIndex`, specifically so nothing here ever needs to
+//! construct a `GenerationalIndex` from FFI-crossed data — see
+//! `resolve()` below.
 //!
 //! Two force-kernel implementations, both `pub` so they're directly
 //! bench-able and test-able against each other:
@@ -17,17 +17,13 @@
 //!   out-of-cutoff / unparameterized candidates before paying for any
 //!   sqrt/recip/power math on them.
 //! - `compute_forces_simd` — batches 4 candidates at a time via mid_math's
-//!   `Vec3x4`/`f32x4`. Benched (see `lj_kernel` group in `sim_bench.rs`)
-//!   as a net *regression* vs scalar (3.5-38% slower depending on N) —
-//!   plausibly because the coarse 3x3x3 cell search over-fetches
-//!   candidates past the true cutoff, and SIMD pays full transcendental-
-//!   math cost on those (no per-lane branching exists) where scalar just
-//!   skips them, plus `combine()` runs on all 4 lanes unconditionally
-//!   since the mask needs sigma/eps before it can check them.
+//!   `Vec3x4`/`f32x4`. Benched as a regression vs scalar at every tested
+//!   size except n=64, where it narrowly wins (bench #10, after the
+//!   atom-ownership restructure) — see `Cargo.toml`'s `[features]`
+//!   comment for the numbers and the standing recommendation.
 //!
 //! `step()` calls whichever is selected by the `scalar-math` feature
-//! (default: on, i.e. scalar) — flip it in `Cargo.toml` to compare
-//! without code changes.
+//! (default: on, i.e. scalar), then runs `compute_bonds` on top.
 
 use crate::{AtomState, AtomHandle, element_data};
 use crate::spatial_hash::SpatialHash;
@@ -53,6 +49,55 @@ fn gaussian(rng: &mut Xorshift64) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (core::f32::consts::TAU * u2).cos()
 }
 
+/// Tunable bond-formation/breaking parameters. `Default` gives reasonable
+/// starting values — these are genuinely game-tuning knobs, not derived
+/// physical constants, and worth exposing via FFI once the Unity side
+/// actually wants to tune them (not done yet — nothing external consumes
+/// this today).
+#[derive(Clone, Copy, Debug)]
+pub struct BondParams {
+    /// Bond forms when candidates are within `range_factor * r_min` of
+    /// each other, where `r_min = sigma * 2^(1/6)` is the LJ potential's
+    /// own equilibrium separation for that pair — reuses already-
+    /// computed sigma rather than introducing a new arbitrary distance.
+    pub range_factor: f32,
+    /// Minimum `sqrt(reactivity_i * reactivity_j)` required to bond.
+    /// Geometric mean, same combining shape as LJ epsilon — if either
+    /// side has zero reactivity (noble gases), the pair never bonds,
+    /// with no special-casing needed.
+    pub min_reactivity: f32,
+    /// Bond breaks once stretched beyond `break_factor * equilibrium_length`.
+    pub break_factor: f32,
+    /// Harmonic spring constant, eV/A^2. A genuine engineering choice,
+    /// not derived from `bond_strength()` — kept separate on purpose so
+    /// tuning one doesn't silently retune the other.
+    pub spring_k: f32,
+}
+
+impl Default for BondParams {
+    fn default() -> Self {
+        Self {
+            range_factor: 1.15,
+            // Comfortably below every nonzero reactivity_index in the
+            // current 5-element table (0.0035-0.0053 for H/Li/Be/B,
+            // checked in element_data.rs's own test) and above He's
+            // exact 0.0.
+            min_reactivity: 0.001,
+            break_factor: 1.8,
+            spring_k: 50.0,
+        }
+    }
+}
+
+/// One atom's bond to another. Stored symmetrically — if A is bonded to
+/// B, both `bonds[A]` and `bonds[B]` exist, each pointing at the other —
+/// so "is this atom bonded" and "who to" are both O(1) from either side.
+#[derive(Clone, Copy, Debug)]
+pub struct BondInfo {
+    pub partner: GenerationalIndex,
+    pub equilibrium_length: f32,
+}
+
 /// Owns the atom array and everything the force kernels need to reuse
 /// across calls: the spatial hash grid and scratch buffers sized to the
 /// current atom count. Create once (`chem_context_create`), spawn/despawn
@@ -65,19 +110,17 @@ pub struct SimContext {
     /// position.
     atoms: Vec<AtomState>,
     /// handles[i] = the real GenerationalIndex identity of atoms[i].
-    /// Parallel array, always the same length as `atoms`.
     handles: Vec<GenerationalIndex>,
-    /// Issues and tracks liveness of GenerationalIndex handles. Real,
-    /// tested free-list allocator from mid_collections — not reimplemented
-    /// here.
+    /// Issues and tracks liveness of GenerationalIndex handles.
     allocator: GenerationalIndexAllocator,
     /// raw_index -> current position in `atoms`/`handles`. Keyed by the
-    /// raw `u32` index portion only (not the full GenerationalIndex) —
-    /// generation is checked separately in `resolve()` via the stored
-    /// real handle's `.generation()`, since constructing a
-    /// GenerationalIndex from raw FFI-crossed parts isn't possible (see
-    /// lib.rs module docs) and isn't needed for this lookup anyway.
+    /// raw `u32` index portion only — see module docs.
     slot_of: SparseSet<u32, u32>,
+    /// Active bonds, keyed by the real GenerationalIndex (formed and
+    /// checked entirely internally — no FFI round-trip involved in the
+    /// decision to bond, so no need for the raw-index-only trick `slot_of`
+    /// uses).
+    bonds: SparseSet<GenerationalIndex, BondInfo>,
 
     grid: SpatialHash,
     positions: Vec<Vec3>,
@@ -100,6 +143,7 @@ impl SimContext {
             handles: Vec::new(),
             allocator: GenerationalIndexAllocator::new(),
             slot_of: SparseSet::new(),
+            bonds: SparseSet::new(),
             grid: SpatialHash::new(cutoff),
             positions: Vec::new(),
             forces: Vec::new(),
@@ -110,10 +154,9 @@ impl SimContext {
 }
 
 /// Resolves an FFI `AtomHandle` to its current array position, verifying
-/// it's still alive along the way. `None` for a stale handle (already
-/// despawned, or a raw index that was never valid in this context) —
-/// never panics on bad input, since this is the first thing every
-/// externally-driven call does with caller-supplied data.
+/// it's still alive along the way. `None` for a stale handle — never
+/// panics on bad input, since this is the first thing every externally-
+/// driven call does with caller-supplied data.
 fn resolve(ctx: &SimContext, h: AtomHandle) -> Option<usize> {
     let &pos = ctx.slot_of.get(h.index)?;
     let real = ctx.handles[pos as usize];
@@ -121,6 +164,12 @@ fn resolve(ctx: &SimContext, h: AtomHandle) -> Option<usize> {
         Some(pos as usize)
     } else {
         None // slot was reused by a different atom since this handle was issued
+    }
+}
+
+fn break_bond(ctx: &mut SimContext, owner: GenerationalIndex) {
+    if let Some(info) = ctx.bonds.remove(owner) {
+        ctx.bonds.remove(info.partner);
     }
 }
 
@@ -139,16 +188,22 @@ pub fn spawn_atom(ctx: &mut SimContext, atomic_number: i32, position: [f32; 3]) 
     AtomHandle { index: real.index(), generation: real.generation() }
 }
 
-/// Despawn an atom by handle. `false` for a stale handle — same
-/// not-panicking-on-bad-external-input discipline as `resolve`.
-/// Swap-remove keeps `atoms`/`handles` dense: the last element moves into
-/// the vacated slot, and that moved atom's `slot_of` entry is updated to
-/// its new position.
+/// Despawn an atom by handle. `false` for a stale handle. Cleans up any
+/// bond involving this atom *before* freeing the handle — the allocator
+/// doesn't do that automatically, has to be deliberate at the call site
+/// (same discipline `mid_collections`' own generational-index tests call
+/// out explicitly). Swap-remove keeps `atoms`/`handles` dense: the last
+/// element moves into the vacated slot, and that moved atom's `slot_of`
+/// entry is updated to its new position.
 pub fn despawn_atom(ctx: &mut SimContext, h: AtomHandle) -> bool {
     let Some(pos) = resolve(ctx, h) else { return false; };
     let real = ctx.handles[pos];
-    let last = ctx.atoms.len() - 1;
 
+    if let Some(info) = ctx.bonds.remove(real) {
+        ctx.bonds.remove(info.partner);
+    }
+
+    let last = ctx.atoms.len() - 1;
     if pos != last {
         ctx.atoms.swap(pos, last);
         ctx.handles.swap(pos, last);
@@ -178,6 +233,21 @@ pub fn atoms_ptr(ctx: &SimContext) -> *const AtomState {
     ctx.atoms.as_ptr()
 }
 
+/// Is this atom currently bonded to anything? `false` for a stale handle.
+pub fn is_bonded(ctx: &SimContext, h: AtomHandle) -> bool {
+    let Some(pos) = resolve(ctx, h) else { return false; };
+    ctx.bonds.contains(ctx.handles[pos])
+}
+
+/// This atom's bond partner, if any. `None` if unbonded or the handle is
+/// stale.
+pub fn bond_partner(ctx: &SimContext, h: AtomHandle) -> Option<AtomHandle> {
+    let pos = resolve(ctx, h)?;
+    let real = ctx.handles[pos];
+    let info = ctx.bonds.get(real)?;
+    Some(AtomHandle { index: info.partner.index(), generation: info.partner.generation() })
+}
+
 /// Initialise every currently-live atom's velocity from a Maxwell-
 /// Boltzmann distribution at `temperature_k`, zero their force
 /// accumulators.
@@ -197,14 +267,8 @@ pub fn init(ctx: &mut SimContext, temperature_k: f32, seed: u64) {
 
 /// Advance the simulation by `dt` femtoseconds using velocity Verlet:
 /// position update from the old force, force recompute at the new
-/// positions, then a velocity half-step blending old and new acceleration.
-///
-/// ## Units
-/// Position: Angstrom. Time: femtosecond. Mass: amu. Energy: eV.
-/// Force: eV/A — see the historical derivation of `AMU_TO_EFF_MASS` in
-/// this crate's git history if that constant ever looks suspicious;
-/// derived from SI, not recalled from memory, and sanity-checked against
-/// expected 300K thermal velocities.
+/// positions (LJ, then bonds on top), then a velocity half-step blending
+/// old and new acceleration.
 pub fn step(ctx: &mut SimContext, dt: f32, cutoff: f32) {
     let n = ctx.atoms.len();
     if n == 0 || dt <= 0.0 {
@@ -234,6 +298,8 @@ pub fn step(ctx: &mut SimContext, dt: f32, cutoff: f32) {
     compute_forces_scalar(ctx, cutoff);
     #[cfg(not(feature = "scalar-math"))]
     compute_forces_simd(ctx, cutoff);
+
+    compute_bonds(ctx, &BondParams::default());
 
     {
         let atoms = &mut ctx.atoms;
@@ -319,8 +385,7 @@ pub fn compute_forces_scalar(ctx: &mut SimContext, cutoff: f32) {
 }
 
 /// 4 candidates at a time via `Vec3x4`/`f32x4`, gather-then-batch, with a
-/// scalar remainder for whatever doesn't fill a full chunk. See module
-/// docs for why this currently benches slower than scalar.
+/// scalar remainder for whatever doesn't fill a full chunk.
 pub fn compute_forces_simd(ctx: &mut SimContext, cutoff: f32) {
     let n = ctx.atoms.len();
     refresh_grid(ctx, cutoff);
@@ -430,6 +495,150 @@ pub fn compute_forces_simd(ctx: &mut SimContext, cutoff: f32) {
     }
 }
 
+/// Bond formation and breaking, plus harmonic spring forces for bonds
+/// already formed. Additive on top of whatever `compute_forces_scalar`/
+/// `compute_forces_simd` already wrote into each atom's `.force` — call
+/// this *after* one of those, not instead of. Deliberately doesn't touch
+/// or exclude anything in the LJ kernels: near the equilibrium distance
+/// LJ's own force is already ~zero (that's what "equilibrium" means), so
+/// the spring mainly matters for holding a compound together *beyond*
+/// where LJ would still be acting at all.
+///
+/// MVP restriction: each atom can hold at most one bond at a time — see
+/// module docs.
+pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams) {
+    // --- Pass 1: existing bonds — spring force, break check ---
+    let mut broken: Vec<GenerationalIndex> = Vec::new();
+    {
+        let bonds = &ctx.bonds;
+        let slot_of = &ctx.slot_of;
+        let handles = &ctx.handles;
+        let positions = &ctx.positions;
+        let atoms = &mut ctx.atoms;
+
+        for (owner, info) in bonds.iter() {
+            let Some(&owner_pos) = slot_of.get(owner.index()) else { continue; };
+            if handles[owner_pos as usize] != owner {
+                continue;
+            }
+            let Some(&partner_pos) = slot_of.get(info.partner.index()) else { continue; };
+            if handles[partner_pos as usize] != info.partner {
+                continue;
+            }
+            // Stored symmetrically (see BondInfo docs) — process each
+            // pair once via an arbitrary but consistent tie-break.
+            if owner_pos >= partner_pos {
+                continue;
+            }
+
+            let pi = positions[owner_pos as usize];
+            let pj = positions[partner_pos as usize];
+            let d = pj - pi;
+            let r = d.length_sq().sqrt().max(1e-6);
+
+            if r > info.equilibrium_length * params.break_factor {
+                broken.push(owner);
+                continue;
+            }
+
+            let stretch = r - info.equilibrium_length;
+            let f_mag = -params.spring_k * stretch;
+            let dir = d * (1.0 / r);
+            let contrib = dir * f_mag;
+
+            let fi = Vec3::new(
+                atoms[owner_pos as usize].force[0],
+                atoms[owner_pos as usize].force[1],
+                atoms[owner_pos as usize].force[2],
+            ) - contrib;
+            atoms[owner_pos as usize].force = [fi.x, fi.y, fi.z];
+
+            let fj = Vec3::new(
+                atoms[partner_pos as usize].force[0],
+                atoms[partner_pos as usize].force[1],
+                atoms[partner_pos as usize].force[2],
+            ) + contrib;
+            atoms[partner_pos as usize].force = [fj.x, fj.y, fj.z];
+        }
+    }
+    for owner in broken {
+        break_bond(ctx, owner);
+    }
+
+    // --- Pass 2: form new bonds among unbonded, in-range, reactive pairs ---
+    let n = ctx.atoms.len();
+    let mut new_bonds: Vec<(GenerationalIndex, GenerationalIndex, f32)> = Vec::new();
+
+    for i in 0..n {
+        let handle_i = ctx.handles[i];
+        if ctx.bonds.contains(handle_i) {
+            continue;
+        }
+        let pi = ctx.positions[i];
+        let pi_params = element_data::params(ctx.atoms[i].atomic_number);
+        let react_i = element_data::reactivity_index(pi_params);
+        if react_i <= 0.0 {
+            continue;
+        }
+
+        let mut best: Option<(usize, f32, f32)> = None; // (j, r, r_min)
+        {
+            let grid = &ctx.grid;
+            let positions = &ctx.positions;
+            let atoms = &ctx.atoms;
+            let handles = &ctx.handles;
+            let bonds = &ctx.bonds;
+
+            grid.for_each_candidate(pi, |j| {
+                let j = j as usize;
+                if j == i {
+                    return;
+                }
+                if bonds.contains(handles[j]) {
+                    return;
+                }
+                let pj = positions[j];
+                let d = pj - pi;
+                let r2 = d.length_sq();
+                if r2 < 1e-8 {
+                    return;
+                }
+                let pj_params = element_data::params(atoms[j].atomic_number);
+                let (sigma, eps) = element_data::combine(pi_params, pj_params);
+                if sigma <= 0.0 || eps <= 0.0 {
+                    return;
+                }
+                let r_min = sigma * 2f32.powf(1.0 / 6.0);
+                let bond_range = r_min * params.range_factor;
+                let r = r2.sqrt();
+                if r > bond_range {
+                    return;
+                }
+                let react_j = element_data::reactivity_index(pj_params);
+                let combined = (react_i * react_j).max(0.0).sqrt();
+                if combined < params.min_reactivity {
+                    return;
+                }
+                if best.map_or(true, |(_, best_r, _)| r < best_r) {
+                    best = Some((j, r, r_min));
+                }
+            });
+        }
+
+        if let Some((j, _r, r_min)) = best {
+            new_bonds.push((handle_i, ctx.handles[j], r_min));
+        }
+    }
+
+    for (a, b, eq_len) in new_bonds {
+        if ctx.bonds.contains(a) || ctx.bonds.contains(b) {
+            continue; // one side already claimed by an earlier pair this pass
+        }
+        ctx.bonds.insert(a, BondInfo { partner: b, equilibrium_length: eq_len });
+        ctx.bonds.insert(b, BondInfo { partner: a, equilibrium_length: eq_len });
+    }
+}
+
 /// Total kinetic energy of all currently-live atoms, in eV.
 pub fn kinetic_energy(ctx: &SimContext) -> f32 {
     ctx.atoms
@@ -469,12 +678,9 @@ mod tests {
     }
 
     /// Calls the real `compute_forces_scalar`/`compute_forces_simd`
-    /// directly — validates the exact functions everything else uses,
-    /// including the `lj_kernel` bench group.
+    /// directly — validates the exact functions everything else uses.
     #[test]
     fn simd_batched_forces_match_scalar_reference() {
-        // Sizes deliberately not multiples of 4, so both the SIMD chunk
-        // path and the scalar remainder path get exercised at each scale.
         for &n in &[5usize, 13, 37, 101] {
             let mut ctx_scalar = SimContext::new(10.0);
             spawn_hydrogen_grid(&mut ctx_scalar, n, 3.0);
@@ -505,19 +711,86 @@ mod tests {
         let c = spawn_atom(&mut ctx, 3, [2.0, 0.0, 0.0]);
         assert_eq!(atom_count(&ctx), 3);
 
-        // Despawn the middle one — exercises the swap-remove reslotting.
         assert!(despawn_atom(&mut ctx, b));
         assert_eq!(atom_count(&ctx), 2);
 
-        // Stale handle: same slot, wrong generation now.
         assert!(!despawn_atom(&mut ctx, b));
         assert!(get_atom(&ctx, b).is_none());
 
-        // Both surviving atoms still resolve correctly by handle,
-        // regardless of where swap-remove actually moved them.
         let got_a = get_atom(&ctx, a).expect("a should still be alive");
         assert_eq!(got_a.atomic_number, 1);
         let got_c = get_atom(&ctx, c).expect("c should still be alive");
         assert_eq!(got_c.atomic_number, 3);
+    }
+
+    #[test]
+    fn bonds_form_between_reactive_atoms_at_equilibrium_distance() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+
+        assert!(is_bonded(&ctx, a));
+        assert!(is_bonded(&ctx, b));
+        assert_eq!(bond_partner(&ctx, a), Some(b));
+        assert_eq!(bond_partner(&ctx, b), Some(a));
+    }
+
+    #[test]
+    fn bonds_do_not_form_for_inert_helium() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_he = 2.551_f32;
+        let r_min = sigma_he * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 2, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 2, [r_min, 0.0, 0.0]);
+
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+
+        assert!(!is_bonded(&ctx, a));
+        assert!(!is_bonded(&ctx, b));
+    }
+
+    #[test]
+    fn bonds_break_when_stretched_too_far() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+        assert!(is_bonded(&ctx, a));
+
+        // Nothing's been despawned, so spawn order still matches array
+        // order here — direct position writes (not a real Verlet step,
+        // this test only cares about the break condition itself).
+        ctx.atoms[0].position = [0.0, 0.0, 0.0];
+        ctx.atoms[1].position = [100.0, 0.0, 0.0];
+
+        compute_forces_scalar(&mut ctx, 10.0); // refreshes ctx.positions
+        compute_bonds(&mut ctx, &BondParams::default());
+
+        assert!(!is_bonded(&ctx, a));
+        assert!(!is_bonded(&ctx, b));
+    }
+
+    #[test]
+    fn despawn_cleans_up_bond() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+        assert!(is_bonded(&ctx, a));
+
+        despawn_atom(&mut ctx, a);
+        assert!(!is_bonded(&ctx, b));
     }
 }

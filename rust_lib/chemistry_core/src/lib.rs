@@ -211,6 +211,29 @@ pub unsafe extern "C" fn chem_temperature(ctx: *const SimContext) -> f32 {
     simulation::temperature(ctx)
 }
 
+/// Is this atom currently bonded to anything? `false` for a stale handle,
+/// not a crash.
+#[no_mangle]
+pub unsafe extern "C" fn chem_is_bonded(ctx: *const SimContext, handle: AtomHandle) -> bool {
+    let ctx = &*ctx;
+    simulation::is_bonded(ctx, handle)
+}
+
+/// This atom's bond partner, if any. Returns `false` (and leaves `out`
+/// untouched) if unbonded or the handle is stale.
+#[no_mangle]
+pub unsafe extern "C" fn chem_bond_partner(
+    ctx:    *const SimContext,
+    handle: AtomHandle,
+    out:    *mut AtomHandle,
+) -> bool {
+    let ctx = &*ctx;
+    match simulation::bond_partner(ctx, handle) {
+        Some(partner) => { *out = partner; true }
+        None => false,
+    }
+}
+
 /// `AtomState` size validation. Call from C# `ValidateStructSizes()`.
 /// If this returns != 48, the struct layout is mismatched — fix before proceeding.
 #[no_mangle]
