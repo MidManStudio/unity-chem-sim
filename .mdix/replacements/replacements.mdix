@@ -1,29 +1,62 @@
 // Brought to u by MidManStudio
 //
-// Rust owns the atom array now, not Unity. New: AtomHandle (repr(C),
-// chemistry_core's own -- mid_collections::GenerationalIndex isn't
-// repr(C) and has no public raw constructor, checked against bevy_ecs's
-// real Entity for the same design reasoning), chem_spawn_atom/
-// chem_despawn_atom/chem_atom_count/chem_get_atom/chem_atoms_ptr as real
-// FFI calls, chem_step/chem_init/chem_kinetic_energy/chem_temperature all
-// drop their atoms/count params and operate on the context's own storage.
-// SimContext gains atoms/handles/allocator/slot_of, using
-// mid_collections::GenerationalIndexAllocator + SparseSet<u32,u32> --
-// vendored in via the paired vendor-mid-collections.yml workflow
-// (delivered separately, .github/ convention).
+// Docs-accuracy pass, post bench #11 (bonding system + mixed-element
+// benches). Two kinds of fix bundled together:
 //
-// IMPORTANT: run "Vendor mid-collections" (new workflow, delivered
-// alongside this) before or in the same push as this replacements batch
-// -- the code references mid_collections::{GenerationalIndex,
-// GenerationalIndexAllocator, SparseSet}, which won't exist in the repo
-// until that workflow runs once.
+// 1. docs/architecture.md and docs/getting-started.md described the
+//    PRE-refactor design (C#-owned NativeArray<AtomData> passed into Rust
+//    by pointer, boot-time ChemDataLoader) -- superseded by the current
+//    Rust-owns-the-atom-array design (chem_context_create/chem_spawn_atom/
+//    chem_despawn_atom, AtomHandle) since before bench #11, but never
+//    updated to match. Rewritten to reflect the real FFI surface, real
+//    units (eV / fs / Angstrom, not kcal/mol / ps), the new bonding
+//    system, and current element coverage (5 elements: H, He, Li, Be, B --
+//    cross-checked clean against DixScript-Rust's elements_database.mdix
+//    and core/physics.mdix's formulas, no discrepancies found).
+// 2. Two small bugs caught during that pass, fixed inline rather than
+//    filed separately since they're one-line each:
+//      - chemistry_core/Cargo.toml's dependency comment claimed a Rust
+//        1.80+ floor. Real floor is 1.83+ -- mid-math's sse2 module uses
+//        `f32::from_bits` in a const context (const-stable since 1.83),
+//        compiled unconditionally on x86/x86_64 regardless of the
+//        force-scalar feature (verified: force-scalar does NOT route
+//        around it). CI has never caught this because
+//        dtolnay/rust-toolchain@stable always installs newest, not the
+//        documented floor.
+//      - lib.rs's chem_step doc comment said "seconds"; dt is actually
+//        femtoseconds (matches simulation::step's own comment and what
+//        AMU_TO_EFF_MASS requires dimensionally). Fixed at both the
+//        function doc and the module-level C# usage example, since that's
+//        the exact snippet Runtime/Core would get written against next.
 //
-// ROOT_Cargo.toml -> Cargo.toml via overrides:: below, since a flat
-// "Cargo.toml" at this archive's top level would otherwise basename-
-// search the whole repo and hit an ambiguous-match error now that there
-// are multiple Cargo.tomls (root, chemistry_core, and two vendor/
-// crates) -- exactly the collision the scaffold skill doc calls out by
-// name. Everything else nested, resolves directly.
+// Root README.md's [[project_name]]/[[description]] template placeholders
+// also filled in while touching that file, plus a Status section so it
+// stops underselling how far chemistry_core already is relative to the
+// still-scaffold-only Unity package side.
+//
+// packages/com.midmanstudio.alembic/Documentation~/index.md gets one small
+// touch -- its pipeline diagram now says "bonding" instead of "SIMD" in
+// the chemistry_core column (SIMD is still in the tree behind a feature
+// flag, but bonding is the more load-bearing fact to put in a one-line
+// summary now). Left that file's chemistry-data-ownership claim alone --
+// whether Unity loads raw physics constants via com.midmanstudio.mdix at
+// runtime, vs. Rust keeping its own hand-synced copy the way it does
+// today, reads like an open architecture question rather than a verified
+// bug, so not overriding it here.
+//
+// Not bundled here, flagged instead: .github/workflows/rust-rust-ci.yml's
+// own `paths:` trigger says `.github/workflows/rust-ci.yml` -- filename on
+// disk doesn't match, so edits to that workflow file won't retrigger it.
+// Content-identical rename, no line changes needed -- easiest done by hand
+// via GitHub's edit-then-rename-at-top UI rather than shipping a
+// duplicate .yml through this pipeline for a pure rename.
+//
+// ROOT_README.md -> README.md via overrides:: below, same reasoning as
+// this repo's last replacements batch: a flat "README.md" at this
+// archive's top level would basename-search the whole repo and hit an
+// ambiguous-match error now that there are two (this one, and
+// packages/com.midmanstudio.alembic/README.md). Everything else nested,
+// resolves directly.
 
 @CONFIG(
   version    -> "1.0.0"
@@ -39,5 +72,5 @@
   target_root = "."
 
   overrides::
-    target("ROOT_Cargo.toml", "Cargo.toml")
+    target("ROOT_README.md", "README.md")
 )
