@@ -27,15 +27,28 @@ scalar-math = []
 # Dev-dependencies and bench targets are stripped from both vendored
 # manifests, so this pulls in zero third-party crates, direct or
 # transitive.
+#
+# Real Rust floor is 1.83, not 1.80 as a previous version of this comment
+# claimed — mid-math's sse2 module uses `f32::from_bits` in a const
+# context, which only became a stable const fn in Rust 1.83. That module
+# compiles unconditionally on any x86/x86_64 target regardless of the
+# `force-scalar` feature (verified directly: `cargo build -p mid-math
+# --features force-scalar` still hits the same errors on 1.75 — the
+# feature only changes which impl gets re-exported as the canonical
+# Vec3/Vec4/etc, not whether sse2's own source gets compiled and
+# type-checked). CI has never caught this gap because
+# dtolnay/rust-toolchain@stable always installs whatever's newest, never
+# the documented floor specifically — worth a floor-pinned CI job if you
+# want a real regression check here instead of just this comment.
 [dependencies]
 mid-math        = { path = "../vendor/mid-math" }
 mid-collections = { path = "../vendor/mid-collections" }
 
 # Non-WASM: RwLock-based config store (same pattern as projectile_core).
-# NOTE: this crate already requires Rust 1.80+ (DixScript-Rust's own
-# floor), so std::sync::OnceLock/LazyLock cover this same pattern without
-# a dependency at all — worth a follow-up pass if you want the last
-# external crate gone too. Left as-is for now, not touching it unless
+# NOTE: this crate already requires Rust 1.83+ (see the dependencies
+# comment above), so std::sync::OnceLock/LazyLock cover this same pattern
+# without a dependency at all — worth a follow-up pass if you want the
+# last external crate gone too. Left as-is for now, not touching it unless
 # you ask.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 lazy_static = "1.5"

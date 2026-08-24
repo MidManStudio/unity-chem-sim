@@ -51,7 +51,10 @@
 //! AtomHandle h = FFIBridge.chem_spawn_atom(ctx, 1, 0f, 0f, 0f); // Z=1 (hydrogen)
 //! FFIBridge.chem_init(ctx, 300.0f, 42UL);
 //! // per frame:
-//! FFIBridge.chem_step(ctx, Time.deltaTime, 10.0f);
+//! FFIBridge.chem_step(ctx, Time.deltaTime, 10.0f); // dt is femtoseconds, not
+//!                                                   // seconds — see chem_step's
+//!                                                   // own doc before wiring this
+//!                                                   // straight to Time.deltaTime
 //! IntPtr atoms = FFIBridge.chem_atoms_ptr(ctx);   // re-fetch every frame, don't cache
 //! int n = FFIBridge.chem_atom_count(ctx);
 //! // ... draw n AtomState structs starting at `atoms` ...
@@ -190,7 +193,11 @@ pub unsafe extern "C" fn chem_init(ctx: *mut SimContext, temperature_k: f32, see
     simulation::init(ctx, temperature_k, seed);
 }
 
-/// Advance simulation by `dt` seconds. `cutoff` = 0.0 uses 10.0 Angstroms.
+/// Advance simulation by `dt` **femtoseconds**, not seconds — matches
+/// `simulation::step`'s own doc comment and what `AMU_TO_EFF_MASS`
+/// (amu -> eV*fs^2/A^2) requires dimensionally for `F = ma` to balance.
+/// An earlier version of this comment said "seconds"; that was wrong.
+/// `cutoff` = 0.0 uses 10.0 Angstroms.
 #[no_mangle]
 pub unsafe extern "C" fn chem_step(ctx: *mut SimContext, dt: f32, cutoff: f32) {
     let ctx = &mut *ctx;

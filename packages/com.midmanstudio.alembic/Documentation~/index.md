@@ -3,7 +3,7 @@
 ```
 .mdix chemistry_db  ->  chemistry_core (Rust)  ->  FFI bridge  ->  Presentation
   moddable data         spatial hash, LJ,          Burst-batched,   no GameObjects
-  (com.midmanstudio.       Verlet, SIMD             zero-copy       (base tier);
+  (com.midmanstudio.       Verlet, bonding          zero-copy       (base tier);
    mdix, Dix.LoadStr)      (mid-math wide types)     NativeArray     VFX Graph /
                                                                      GPU instancing
                                                                      (high tier)
