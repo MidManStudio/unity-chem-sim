@@ -226,16 +226,39 @@ pub unsafe extern "C" fn chem_is_bonded(ctx: *const SimContext, handle: AtomHand
     simulation::is_bonded(ctx, handle)
 }
 
-/// This atom's bond partner, if any. Returns `false` (and leaves `out`
-/// untouched) if unbonded or the handle is stale.
+/// How many bonds this atom currently holds. 0 for a stale handle or an
+/// unbonded atom — same "nothing there" value either way, deliberately
+/// not distinguished (matches `chem_is_bonded`'s existing "false either
+/// way" contract for stale handles). Bonds are unbounded per atom now
+/// (see `simulation` module docs) — this replaces the old single-partner
+/// `chem_bond_partner`, which could only ever express "bonded to one
+/// thing or not." Safe to change out from under nothing: `Runtime/Core`
+/// hasn't been written against the old shape yet.
 #[no_mangle]
-pub unsafe extern "C" fn chem_bond_partner(
+pub unsafe extern "C" fn chem_bond_count(ctx: *const SimContext, handle: AtomHandle) -> i32 {
+    let ctx = &*ctx;
+    simulation::bond_count(ctx, handle) as i32
+}
+
+/// This atom's `index`-th bond partner (`0..chem_bond_count(...)`).
+/// Returns `false` (and leaves `out` untouched) for a stale handle, an
+/// unbonded atom, or `index >= chem_bond_count(...)` — all the same
+/// "nothing there" case from the caller's side, deliberately not
+/// distinguished. Iterate `0..chem_bond_count(ctx, handle)` to walk every
+/// partner; order isn't semantically meaningful (formation order, not
+/// distance or anything else), just stable within a single frame.
+#[no_mangle]
+pub unsafe extern "C" fn chem_bond_partner_at(
     ctx:    *const SimContext,
     handle: AtomHandle,
+    index:  i32,
     out:    *mut AtomHandle,
 ) -> bool {
     let ctx = &*ctx;
-    match simulation::bond_partner(ctx, handle) {
+    if index < 0 {
+        return false;
+    }
+    match simulation::bond_partner_at(ctx, handle, index as usize) {
         Some(partner) => { *out = partner; true }
         None => false,
     }

@@ -1,9 +1,9 @@
 # Architecture
 
-*Last synced against `chemistry_core` bench #11 (bonding system + mixed-element
-benches). The previous version of this doc described a pre-refactor design —
-C# owning a `NativeArray` and passing it into Rust by pointer each call. That
-is no longer how this works; see "Why this changed" at the bottom.*
+*Last synced against the unbounded-bonding + 20-element pass (post bench
+#11). The previous version of this doc described a pre-refactor design —
+C# owning a `NativeArray` and passing it into Rust by pointer each call.
+That is no longer how this works; see "Why this changed" at the bottom.*
 
 ## Layers, as they exist today
 
@@ -99,23 +99,31 @@ probably meant to do. Flagging this now so it gets caught before, not after,
 - Velocity Verlet integration: position update from the old force, force
   recompute at the new positions, then a velocity half-step blending old
   and new acceleration.
-- **Pairwise bonding, new as of bench #11** (`compute_bonds`, additive on
-  top of LJ, not a replacement for it): two atoms bond when they're within
-  `1.15 × r_min` of each other (`r_min = σ · 2^(1/6)`, LJ's own equilibrium
-  separation — reused, not reinvented) and their combined reactivity
-  clears a threshold between He's exact `0.0` and the lowest nonzero
+- **Pairwise bonding** (`compute_bonds`, additive on top of LJ, not a
+  replacement for it): two atoms bond when they're within `1.15 × r_min`
+  of each other (`r_min = σ · 2^(1/6)`, LJ's own equilibrium separation —
+  reused, not reinvented) and their combined reactivity clears a
+  threshold between He's exact `0.0` and the lowest nonzero
   `reactivity_index` in the current element table. A formed bond adds a
   harmonic spring (`spring_k`, eV/Å²) pulling toward that equilibrium
   distance, on top of whatever LJ already computed. Breaks once stretched
   past `1.8×` equilibrium.
-  **MVP restriction, worth knowing before relying on it for game recipes:
-  each atom can hold at most one bond at a time.** This is fine for
-  diatomic pairs (H₂, HCl) but means nothing resembling a real multi-atom
-  molecule — water, saltpeter, sulfuric acid, anything in the gameplay
-  doc's predefined-compound list — can form yet. Generalizing this is a
-  bigger lift than adding element data: it changes `BondInfo` from "one
-  slot per atom" to something that can actually represent a small
-  molecule's bond graph.
+  **Bonds are unbounded per atom** — the earlier one-bond-per-atom MVP
+  restriction is gone, so multi-atom molecules (water, saltpeter,
+  sulfuric acid — anything in the gameplay doc's predefined-compound
+  list) can actually form now, not just diatomic pairs. What *is* still
+  capped: an atom can pick up at most **one new edge per `compute_bonds`
+  call**, not an unlimited number in a single frame — a deliberate choice
+  so a compound assembles visibly over a few steps instead of an atom
+  suddenly surrounded by reactive neighbors bonding to all of them at
+  once. Total bonds held stays unbounded; only the growth rate is capped.
+  `ctx.bonds` is `SparseSet<GenerationalIndex, Vec<BondInfo>>` now (a
+  list per atom), not one `BondInfo` per atom — `chem_bond_partner`
+  (single-partner) is gone from the FFI, replaced by `chem_bond_count` +
+  `chem_bond_partner_at(index)` to actually express "bonded to more than
+  one thing." Safe to break outright rather than deprecate: nothing
+  outside this crate consumed the old shape yet (`Runtime/Core` is still
+  scaffold — see below), so there's no real caller to migrate.
 
 ## Element data — where the numbers come from
 
@@ -128,22 +136,31 @@ doc), and `reactivity_index()`/`bond_strength()` reproduce
 `core/physics.mdix`'s `calculateReactivityIndex`/`calculateBondStrength`
 formulas exactly rather than reinventing them.
 
-**Current coverage: 5 elements (H, He, Li, Be, B — Z=1 through 5),
-transcribed correctly** — cross-checked field-by-field against the actual
-`.mdix` source and the physics formulas; no discrepancies found. This
-matches the `.mdix` source's own `total_elements = 5` — the table isn't
-behind the source, the source itself only has 5 elements yet.
+**Coverage: 20 elements** — the original H, He, Li, Be, B, plus the full
+gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
+Fe, Sn, Pb, Hg, Ag, Au). The original 5's sigma/epsilon are real
+transport-property-literature LJ values; the 15 new elements' come from a
+different, broader-coverage source instead — Rappé et al.'s Universal
+Force Field (UFF), which is the only real, citable, peer-reviewed source
+that actually covers metals (most metals don't occur as simple monatomic
+gases, so the transport-property route that worked for H/He simply
+doesn't exist for them). Worth knowing before tuning game feel against
+these numbers: UFF is a generic molecular-mechanics force field, not a
+high-precision fit the way the original two entries are — see
+`element_data.rs`'s own module doc for the full sourcing writeup and a
+concrete spot-check (UFF's own He parameters vs. the real ones already in
+this table) showing the gap.
 
-**Gap worth being explicit about:** the gameplay nomenclature system
-(`grand-theft-grimoire-gameplay-reference.md` §1) names ~15 elements
-directly (Au, Ag, Cu, Fe, Sn, Pb, Hg, S, C, N, As, Sb, Zn, P) plus H/O via
-procedural roots, and lists 18 predefined historic compounds (Aqua Fortis,
-Saltpeter, Black Powder, …). None of those 18 compounds can be represented
-yet — none of their constituent elements beyond H are in the table. This
-isn't a Rust-side backlog; it's upstream `.mdix` data that doesn't exist
-yet. Worth sequencing element additions by what unlocks the most
-predefined compounds first (O and N alone would unlock several of the
-nitrogen/oxygen-based ones).
+**What this unlocks:** combined with bonds now being unbounded per atom
+(above), several of the gameplay doc's 18 predefined compounds
+(`grand-theft-grimoire-gameplay-reference.md` §1.3) can actually be
+represented for the first time — anything built from this element set,
+e.g. Cinnabar (HgS), Litharge (PbO), Crocus of Iron (Fe₂O₃), Fixed Air
+(CO₂), Wood Spirit (CH₃OH). Still missing: Na, K, Ca, Cl, Ba, Al, Ag's
+counterpart anion chemistry for a few of the salts (Saltpeter, Natron,
+Alum, Baryte, Sal Ammoniac, Lunar Caustic all need at least one of
+those) — none of those elements are in the `.mdix` source yet either, so
+same as before, this is upstream data, not a Rust-side backlog.
 
 ## Rendering
 

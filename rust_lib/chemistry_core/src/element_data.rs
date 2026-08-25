@@ -1,9 +1,11 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 5 elements right now (H through B) — this table grows with
-//! it. Not generated automatically; re-sync by eye against the source
-//! when it grows.
+//! Source has 20 elements now — the original H, He, Li, Be, B, plus the
+//! full gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb,
+//! Zn, Cu, Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization
+//! pass. This table grows with the source; not generated automatically,
+//! re-sync by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -23,6 +25,42 @@
 //! intentionally redundant with computing it here from the raw inputs,
 //! left alone in the source as reference, not treated as a second source
 //! of truth for the simulation.
+//!
+//! ## Where the 15 new elements' LJ parameters come from
+//!
+//! The original 5 elements' LJ sigma/epsilon are real gas-phase values
+//! from transport-property/viscosity literature — the kind of thing
+//! tabulated for noble gases and simple molecular gases specifically.
+//! That kind of source doesn't cover most of the periodic table, and
+//! doesn't exist at all for most metals (they don't occur as simple
+//! monatomic gases to measure in the first place). Rather than leave
+//! every metal at `(0.0, 0.0)` the way Be/B were left "unparameterized in
+//! source" for lack of a real value, all 15 new elements' sigma/epsilon
+//! here come from one consistent, real, citable, peer-reviewed source
+//! instead: Rappé et al.'s Universal Force Field (UFF) — *"UFF, a full
+//! periodic table force field for molecular mechanics and molecular
+//! dynamics simulations,"* J. Am. Chem. Soc. 114 (1992) 10024–10035 —
+//! which explicitly covers the entire periodic table, metals included,
+//! using one uniform parameterization method (element, hybridization,
+//! connectivity). Values transcribed from `PorousMaterials.jl`'s
+//! `UFF.csv` (SimonEnsemble/PorousMaterials.jl,
+//! `test/data/forcefields/UFF.csv`), which already carries UFF's own
+//! x1/D1 parameters converted into this exact `4ε[(σ/r)¹²−(σ/r)⁶]` form —
+//! not re-derived here, just transcribed.
+//!
+//! Worth being honest about the tradeoff: UFF is a *generic*
+//! molecular-mechanics force field tuned to predict reasonable molecular
+//! geometries across the whole periodic table, not a high-precision fit
+//! to any one element's real transport/spectroscopic data the way the
+//! original H/He values are. Spot check: UFF's own He parameters
+//! (σ=2.104 Å, ε/k=28.18 K) are noticeably different from the real
+//! spectroscopy-grade values already in this table for He (σ=2.551 Å,
+//! ε/k=10.22 K) — UFF gets a real, defensible number for elements that
+//! would otherwise have none at all (every metal here), not a guarantee
+//! of matching the noble-gas-table precision the original two entries
+//! have. Treat the 15 new sigma/epsilon pairs as "real published
+//! force-field values," not "spectroscopically exact," when tuning game
+//! feel against them.
 
 use crate::AtomState;
 
@@ -60,6 +98,24 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (3,    6.94,   182.0, 2.451, 183.0,  0.98, 520.2,   59.6),  // Lithium
     (4,    9.0122, 153.0, 0.0,   0.0,    1.57, 899.5,   0.0),   // Beryllium — LJ unparameterized in source
     (5,    10.81,  192.0, 0.0,   0.0,    2.04, 800.6,   26.7),  // Boron — LJ unparameterized in source
+    // --- added alongside the bonding generalization (unbounded bonds/atom) ---
+    // sigma/eps_K below are UFF (Rappé et al. 1992), not the H/He-style
+    // viscosity-derived values — see module docs.
+    (6,    12.011, 170.0, 3.4309, 52.838,  2.55, 1086.5, 121.78), // Carbon
+    (7,    14.007, 155.0, 3.2607, 34.722,  3.04, 1402.3, 0.0),    // Nitrogen — EA effectively 0/unbound (half-filled 2p3 is extra-stable), same treatment as He
+    (8,    15.999, 152.0, 3.1181, 30.193,  3.44, 1313.9, 141.0),  // Oxygen
+    (15,   30.974, 180.0, 3.6946, 153.482, 2.19, 1011.8, 72.03),  // Phosphorus
+    (16,   32.06,  180.0, 3.5948, 137.882, 2.58, 999.6,  200.41), // Sulfur
+    (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
+    (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
+    (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
+    (33,   74.922, 185.0, 3.7685, 155.495, 2.18, 947.0,  78.5),   // Arsenic
+    (47,   107.868,172.0, 2.8045, 18.116,  1.93, 731.0,  125.6),  // Silver
+    (50,   118.710,217.0, 3.9128, 285.326, 1.96, 708.6,  107.3),  // Tin
+    (51,   121.760,206.0, 3.9378, 225.946, 2.05, 834.0,  103.2),  // Antimony
+    (79,   196.967,166.0, 2.9337, 19.626,  2.54, 890.1,  222.8),  // Gold — highest EA of any metal (relativistic effect on 6s), not a typo
+    (80,   200.592,155.0, 2.4099, 193.740, 2.00, 1007.1, 0.0),    // Mercury — EA effectively 0/unbound (filled 5d10 6s2), same treatment as He/N/Zn
+    (82,   207.2,  202.0, 3.8282, 333.635, 2.33, 715.6,  35.1),   // Lead
 ];
 
 /// Look up an element's simulation parameters by atomic number.
@@ -156,6 +212,12 @@ mod tests {
             (3, 0.004_255), // Li
             (4, 0.003_491), // Be
             (5, 0.005_272), // B
+            (6, 0.005_287), // C
+            (7, 0.004_336), // N — EA=0 (unbound), same shape as He's zero-EN case but via zero EA instead
+            (8, 0.005_866), // O
+            (26, 0.004_901), // Fe
+            (30, 0.003_641), // Zn — EA=0 (unbound), like N
+            (79, 0.007_613), // Au — highest EA of any metal, still a normal (not inert) reactivity value
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));

@@ -24,6 +24,28 @@
 //!
 //! `step()` calls whichever is selected by the `scalar-math` feature
 //! (default: on, i.e. scalar), then runs `compute_bonds` on top.
+//!
+//! ## Bonds: unbounded per atom, one *new* edge per atom per pass
+//!
+//! Bonds were a one-per-atom MVP restriction through bench #11; that's
+//! gone now — an atom can hold as many simultaneous bonds as geometry and
+//! reactivity allow (needed for anything beyond a diatomic pair: water,
+//! saltpeter, sulfuric acid, all of it need atoms with 2-4 bonds at once).
+//! `ctx.bonds` went from `SparseSet<GenerationalIndex, BondInfo>` (one
+//! slot per atom) to `SparseSet<GenerationalIndex, Vec<BondInfo>>` (a
+//! list per atom) to make that possible — see `BondInfo` docs for why
+//! each edge still gets stored on both sides.
+//!
+//! `compute_bonds`'s bond-formation pass (Pass 2) still caps an atom to
+//! **one new edge per call**, deliberately — not a leftover of the old
+//! restriction, a genuine engineering choice: without it, an atom that
+//! suddenly finds itself surrounded by several in-range reactive
+//! neighbors in one frame would bond to all of them simultaneously,
+//! which reads as instant supersaturation rather than a molecule actually
+//! assembling. One new edge per call, called once per `step()`, means a
+//! multi-atom compound visibly forms over a few frames instead of
+//! popping into existence — total bonds held is still unbounded, only
+//! the *growth rate* is capped.
 
 use crate::{AtomState, AtomHandle, element_data};
 use crate::spatial_hash::SpatialHash;
@@ -89,9 +111,11 @@ impl Default for BondParams {
     }
 }
 
-/// One atom's bond to another. Stored symmetrically — if A is bonded to
-/// B, both `bonds[A]` and `bonds[B]` exist, each pointing at the other —
-/// so "is this atom bonded" and "who to" are both O(1) from either side.
+/// One edge of a bond, from one side's perspective. Stored symmetrically
+/// — if A is bonded to B, both `bonds[A]` contains an entry with
+/// `partner: B` *and* `bonds[B]` contains one with `partner: A` — so
+/// "what is this atom bonded to" is O(1) lookup + O(bonds held) scan from
+/// either side, never a search over every other atom.
 #[derive(Clone, Copy, Debug)]
 pub struct BondInfo {
     pub partner: GenerationalIndex,
@@ -119,8 +143,9 @@ pub struct SimContext {
     /// Active bonds, keyed by the real GenerationalIndex (formed and
     /// checked entirely internally — no FFI round-trip involved in the
     /// decision to bond, so no need for the raw-index-only trick `slot_of`
-    /// uses).
-    bonds: SparseSet<GenerationalIndex, BondInfo>,
+    /// uses). One atom can hold several bonds at once now — see module
+    /// docs — so each entry is a list of edges, not a single one.
+    bonds: SparseSet<GenerationalIndex, Vec<BondInfo>>,
 
     grid: SpatialHash,
     positions: Vec<Vec3>,
@@ -129,6 +154,12 @@ pub struct SimContext {
     /// Scratch buffer for one atom's j>i candidate indices, gathered from
     /// the spatial hash before either force kernel processes them.
     candidates: Vec<u32>,
+    /// Scratch buffer for `compute_bonds`' Pass 2: which atom positions
+    /// already picked up a *new* edge this call, so a second proposal
+    /// touching an already-claimed atom waits for the next call instead
+    /// of forming immediately — see module docs on the one-new-edge-per-
+    /// call rule.
+    bonded_this_pass: Vec<bool>,
 }
 
 impl SimContext {
@@ -149,6 +180,7 @@ impl SimContext {
             forces: Vec::new(),
             old_accel: Vec::new(),
             candidates: Vec::new(),
+            bonded_this_pass: Vec::new(),
         }
     }
 }
@@ -167,9 +199,57 @@ fn resolve(ctx: &SimContext, h: AtomHandle) -> Option<usize> {
     }
 }
 
-fn break_bond(ctx: &mut SimContext, owner: GenerationalIndex) {
-    if let Some(info) = ctx.bonds.remove(owner) {
-        ctx.bonds.remove(info.partner);
+/// Remove one specific bond edge between `owner` and `partner` from both
+/// sides' lists — used when a single stretched edge breaks (Pass 1) and
+/// an atom mid-multi-bond needs only that one edge gone, not its whole
+/// bond list. Empties and removes an atom's list entry entirely once its
+/// last edge is gone, so `ctx.bonds.contains(x)` keeps meaning "has at
+/// least one bond" rather than "has a list sitting in the set, possibly
+/// empty."
+fn break_one_bond(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex) {
+    if let Some(list) = ctx.bonds.get_mut(owner) {
+        list.retain(|b| b.partner != partner);
+        if list.is_empty() {
+            ctx.bonds.remove(owner);
+        }
+    }
+    if let Some(list) = ctx.bonds.get_mut(partner) {
+        list.retain(|b| b.partner != owner);
+        if list.is_empty() {
+            ctx.bonds.remove(partner);
+        }
+    }
+}
+
+/// Remove every bond `owner` currently holds — used on despawn, where the
+/// whole atom (and everything it was bonded to) needs cleaning up, not
+/// just one edge. Removes only the matching single edge from each
+/// partner's own list, not the partner's entire list: a partner bonded to
+/// several other atoms keeps its other bonds. (Getting this wrong — e.g.
+/// wiping the partner's whole entry the way a naive one-bond-per-atom
+/// port of the old code would — is exactly the kind of bug that would
+/// only show up once something actually had more than one bond to lose;
+/// see `despawn_does_not_wipe_a_survivors_other_bonds` in the tests.)
+fn break_all_bonds(ctx: &mut SimContext, owner: GenerationalIndex) {
+    let Some(partners) = ctx.bonds.remove(owner) else { return; };
+    for info in partners {
+        if let Some(list) = ctx.bonds.get_mut(info.partner) {
+            list.retain(|b| b.partner != owner);
+            if list.is_empty() {
+                ctx.bonds.remove(info.partner);
+            }
+        }
+    }
+}
+
+/// Add one bond edge from `owner`'s side (owner -> partner) — caller
+/// calls this twice, once per direction, to keep the symmetric-storage
+/// invariant (see `BondInfo` docs). Appends to an existing list or starts
+/// a new one; either way `owner` keeps every bond it already held.
+fn push_bond_edge(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex, equilibrium_length: f32) {
+    match ctx.bonds.get_mut(owner) {
+        Some(list) => list.push(BondInfo { partner, equilibrium_length }),
+        None => { ctx.bonds.insert(owner, vec![BondInfo { partner, equilibrium_length }]); }
     }
 }
 
@@ -199,9 +279,7 @@ pub fn despawn_atom(ctx: &mut SimContext, h: AtomHandle) -> bool {
     let Some(pos) = resolve(ctx, h) else { return false; };
     let real = ctx.handles[pos];
 
-    if let Some(info) = ctx.bonds.remove(real) {
-        ctx.bonds.remove(info.partner);
-    }
+    break_all_bonds(ctx, real);
 
     let last = ctx.atoms.len() - 1;
     if pos != last {
@@ -239,12 +317,22 @@ pub fn is_bonded(ctx: &SimContext, h: AtomHandle) -> bool {
     ctx.bonds.contains(ctx.handles[pos])
 }
 
-/// This atom's bond partner, if any. `None` if unbonded or the handle is
-/// stale.
-pub fn bond_partner(ctx: &SimContext, h: AtomHandle) -> Option<AtomHandle> {
+/// How many bonds this atom currently holds. 0 for a stale handle or an
+/// unbonded atom — not distinguished, matching `is_bonded`'s existing
+/// "false either way" contract for stale handles.
+pub fn bond_count(ctx: &SimContext, h: AtomHandle) -> usize {
+    let Some(pos) = resolve(ctx, h) else { return 0; };
+    ctx.bonds.get(ctx.handles[pos]).map_or(0, |list| list.len())
+}
+
+/// This atom's `index`-th bond partner, if it exists. `None` for a stale
+/// handle, an unbonded atom, or an out-of-range index — all the same
+/// "nothing there" case from the caller's side, deliberately not
+/// distinguished. Iterate `0..bond_count(ctx, h)` to walk every partner.
+pub fn bond_partner_at(ctx: &SimContext, h: AtomHandle, index: usize) -> Option<AtomHandle> {
     let pos = resolve(ctx, h)?;
-    let real = ctx.handles[pos];
-    let info = ctx.bonds.get(real)?;
+    let list = ctx.bonds.get(ctx.handles[pos])?;
+    let info = list.get(index)?;
     Some(AtomHandle { index: info.partner.index(), generation: info.partner.generation() })
 }
 
@@ -504,11 +592,15 @@ pub fn compute_forces_simd(ctx: &mut SimContext, cutoff: f32) {
 /// the spring mainly matters for holding a compound together *beyond*
 /// where LJ would still be acting at all.
 ///
-/// MVP restriction: each atom can hold at most one bond at a time — see
-/// module docs.
+/// Bonds are unbounded per atom — see module docs — with new-edge growth
+/// capped to one per atom per call (also module docs) rather than total
+/// bonds held.
 pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams) {
     // --- Pass 1: existing bonds — spring force, break check ---
-    let mut broken: Vec<GenerationalIndex> = Vec::new();
+    // One entry in `broken` per *edge* (owner, partner) now, not per
+    // atom — an atom mid-multi-bond only loses the specific edge that
+    // stretched too far, not every bond it holds.
+    let mut broken: Vec<(GenerationalIndex, GenerationalIndex)> = Vec::new();
     {
         let bonds = &ctx.bonds;
         let slot_of = &ctx.slot_of;
@@ -516,64 +608,74 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams) {
         let positions = &ctx.positions;
         let atoms = &mut ctx.atoms;
 
-        for (owner, info) in bonds.iter() {
+        for (owner, list) in bonds.iter() {
             let Some(&owner_pos) = slot_of.get(owner.index()) else { continue; };
             if handles[owner_pos as usize] != owner {
                 continue;
             }
-            let Some(&partner_pos) = slot_of.get(info.partner.index()) else { continue; };
-            if handles[partner_pos as usize] != info.partner {
-                continue;
+            for info in list {
+                let Some(&partner_pos) = slot_of.get(info.partner.index()) else { continue; };
+                if handles[partner_pos as usize] != info.partner {
+                    continue;
+                }
+                // Stored symmetrically (see BondInfo docs) — process each
+                // edge once via an arbitrary but consistent tie-break.
+                if owner_pos >= partner_pos {
+                    continue;
+                }
+
+                let pi = positions[owner_pos as usize];
+                let pj = positions[partner_pos as usize];
+                let d = pj - pi;
+                let r = d.length_sq().sqrt().max(1e-6);
+
+                if r > info.equilibrium_length * params.break_factor {
+                    broken.push((owner, info.partner));
+                    continue;
+                }
+
+                let stretch = r - info.equilibrium_length;
+                let f_mag = -params.spring_k * stretch;
+                let dir = d * (1.0 / r);
+                let contrib = dir * f_mag;
+
+                let fi = Vec3::new(
+                    atoms[owner_pos as usize].force[0],
+                    atoms[owner_pos as usize].force[1],
+                    atoms[owner_pos as usize].force[2],
+                ) - contrib;
+                atoms[owner_pos as usize].force = [fi.x, fi.y, fi.z];
+
+                let fj = Vec3::new(
+                    atoms[partner_pos as usize].force[0],
+                    atoms[partner_pos as usize].force[1],
+                    atoms[partner_pos as usize].force[2],
+                ) + contrib;
+                atoms[partner_pos as usize].force = [fj.x, fj.y, fj.z];
             }
-            // Stored symmetrically (see BondInfo docs) — process each
-            // pair once via an arbitrary but consistent tie-break.
-            if owner_pos >= partner_pos {
-                continue;
-            }
-
-            let pi = positions[owner_pos as usize];
-            let pj = positions[partner_pos as usize];
-            let d = pj - pi;
-            let r = d.length_sq().sqrt().max(1e-6);
-
-            if r > info.equilibrium_length * params.break_factor {
-                broken.push(owner);
-                continue;
-            }
-
-            let stretch = r - info.equilibrium_length;
-            let f_mag = -params.spring_k * stretch;
-            let dir = d * (1.0 / r);
-            let contrib = dir * f_mag;
-
-            let fi = Vec3::new(
-                atoms[owner_pos as usize].force[0],
-                atoms[owner_pos as usize].force[1],
-                atoms[owner_pos as usize].force[2],
-            ) - contrib;
-            atoms[owner_pos as usize].force = [fi.x, fi.y, fi.z];
-
-            let fj = Vec3::new(
-                atoms[partner_pos as usize].force[0],
-                atoms[partner_pos as usize].force[1],
-                atoms[partner_pos as usize].force[2],
-            ) + contrib;
-            atoms[partner_pos as usize].force = [fj.x, fj.y, fj.z];
         }
     }
-    for owner in broken {
-        break_bond(ctx, owner);
+    for (owner, partner) in broken {
+        break_one_bond(ctx, owner, partner);
     }
 
-    // --- Pass 2: form new bonds among unbonded, in-range, reactive pairs ---
+    // --- Pass 2: form new bonds among in-range, reactive pairs ---
+    // No longer skips atoms that already have a bond (that was the
+    // one-bond-per-atom restriction) — every atom gets to seek its best
+    // candidate every call, whether or not it's already bonded to
+    // something else. Two things still guard against nonsense:
+    //  - a candidate this atom is *already* bonded to specifically is
+    //    excluded, so this can't propose a duplicate edge;
+    //  - `bonded_this_pass` (keyed by array position, not handle — cheap
+    //    to index, no hashing) caps each atom to at most one *new* edge
+    //    per call, so two simultaneous proposals both touching the same
+    //    atom don't both land in one pass. See module docs for why that
+    //    cap exists.
     let n = ctx.atoms.len();
-    let mut new_bonds: Vec<(GenerationalIndex, GenerationalIndex, f32)> = Vec::new();
+    let mut new_bonds: Vec<(usize, usize, GenerationalIndex, GenerationalIndex, f32)> = Vec::new();
 
     for i in 0..n {
         let handle_i = ctx.handles[i];
-        if ctx.bonds.contains(handle_i) {
-            continue;
-        }
         let pi = ctx.positions[i];
         let pi_params = element_data::params(ctx.atoms[i].atomic_number);
         let react_i = element_data::reactivity_index(pi_params);
@@ -594,8 +696,13 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams) {
                 if j == i {
                     return;
                 }
-                if bonds.contains(handles[j]) {
-                    return;
+                // Already bonded to this specific candidate? Skip it —
+                // being bonded to *other* atoms is fine now, only an
+                // exact duplicate edge is excluded.
+                if let Some(list) = bonds.get(handles[j]) {
+                    if list.iter().any(|b| b.partner == handle_i) {
+                        return;
+                    }
                 }
                 let pj = positions[j];
                 let d = pj - pi;
@@ -626,16 +733,20 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams) {
         }
 
         if let Some((j, _r, r_min)) = best {
-            new_bonds.push((handle_i, ctx.handles[j], r_min));
+            new_bonds.push((i, j, handle_i, ctx.handles[j], r_min));
         }
     }
 
-    for (a, b, eq_len) in new_bonds {
-        if ctx.bonds.contains(a) || ctx.bonds.contains(b) {
+    ctx.bonded_this_pass.clear();
+    ctx.bonded_this_pass.resize(n, false);
+    for (i_pos, j_pos, a, b, eq_len) in new_bonds {
+        if ctx.bonded_this_pass[i_pos] || ctx.bonded_this_pass[j_pos] {
             continue; // one side already claimed by an earlier pair this pass
         }
-        ctx.bonds.insert(a, BondInfo { partner: b, equilibrium_length: eq_len });
-        ctx.bonds.insert(b, BondInfo { partner: a, equilibrium_length: eq_len });
+        ctx.bonded_this_pass[i_pos] = true;
+        ctx.bonded_this_pass[j_pos] = true;
+        push_bond_edge(ctx, a, b, eq_len);
+        push_bond_edge(ctx, b, a, eq_len);
     }
 }
 
@@ -736,8 +847,10 @@ mod tests {
 
         assert!(is_bonded(&ctx, a));
         assert!(is_bonded(&ctx, b));
-        assert_eq!(bond_partner(&ctx, a), Some(b));
-        assert_eq!(bond_partner(&ctx, b), Some(a));
+        assert_eq!(bond_count(&ctx, a), 1);
+        assert_eq!(bond_count(&ctx, b), 1);
+        assert_eq!(bond_partner_at(&ctx, a, 0), Some(b));
+        assert_eq!(bond_partner_at(&ctx, b, 0), Some(a));
     }
 
     #[test]
@@ -792,5 +905,85 @@ mod tests {
 
         despawn_atom(&mut ctx, a);
         assert!(!is_bonded(&ctx, b));
+    }
+
+    /// A at the origin, B and C both within bond range of A but 2*r_min
+    /// apart from *each other* (outside bond range), so only A-B and A-C
+    /// are ever candidates. Pass 2 caps new edges to one per atom per
+    /// call (see `compute_bonds` docs) — call it a few times so A picks
+    /// up both, the way it actually would across a few real `step()`s.
+    #[test]
+    fn atom_can_hold_multiple_simultaneous_bonds() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        let c = spawn_atom(&mut ctx, 1, [-r_min, 0.0, 0.0]);
+
+        for _ in 0..4 {
+            compute_forces_scalar(&mut ctx, 10.0);
+            compute_bonds(&mut ctx, &BondParams::default());
+        }
+
+        assert_eq!(bond_count(&ctx, a), 2, "A should end up bonded to both B and C");
+        assert!(is_bonded(&ctx, b));
+        assert!(is_bonded(&ctx, c));
+    }
+
+    #[test]
+    fn breaking_one_edge_leaves_others_intact() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        let c = spawn_atom(&mut ctx, 1, [-r_min, 0.0, 0.0]);
+
+        for _ in 0..4 {
+            compute_forces_scalar(&mut ctx, 10.0);
+            compute_bonds(&mut ctx, &BondParams::default());
+        }
+        assert_eq!(bond_count(&ctx, a), 2);
+
+        // Nothing's been despawned, so spawn order still matches array
+        // order (same convention `bonds_break_when_stretched_too_far`
+        // relies on) — stretch only the A-B edge, leave C untouched.
+        ctx.atoms[0].position = [0.0, 0.0, 0.0];   // A
+        ctx.atoms[1].position = [500.0, 0.0, 0.0]; // B — far out of range
+        // C (index 2) stays where it was.
+
+        compute_forces_scalar(&mut ctx, 10.0); // refreshes ctx.positions
+        compute_bonds(&mut ctx, &BondParams::default());
+
+        assert!(!is_bonded(&ctx, b));
+        assert_eq!(bond_count(&ctx, a), 1, "A should still hold its bond to C");
+        assert_eq!(bond_partner_at(&ctx, a, 0), Some(c));
+    }
+
+    /// The specific bug a naive one-bond-per-atom port of the old
+    /// despawn cleanup would reintroduce: D bonded to both A and E,
+    /// despawning A must remove only the D<->A edge, not D's whole bond
+    /// list (which is what blindly reusing the old `ctx.bonds.remove(x)`-
+    /// wipes-the-whole-entry approach would do to D's *surviving* bond).
+    #[test]
+    fn despawn_does_not_wipe_a_survivors_other_bonds() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let d = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let a = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        let e = spawn_atom(&mut ctx, 1, [-r_min, 0.0, 0.0]);
+
+        for _ in 0..4 {
+            compute_forces_scalar(&mut ctx, 10.0);
+            compute_bonds(&mut ctx, &BondParams::default());
+        }
+        assert_eq!(bond_count(&ctx, d), 2);
+
+        despawn_atom(&mut ctx, a);
+
+        assert_eq!(bond_count(&ctx, d), 1, "D's bond to E must survive A despawning");
+        assert_eq!(bond_partner_at(&ctx, d, 0), Some(e));
     }
 }

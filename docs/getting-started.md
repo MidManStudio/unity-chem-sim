@@ -60,7 +60,7 @@ cargo test --workspace
 ## The FFI surface, as it exists today
 
 This is `chemistry_core/src/lib.rs`'s own usage example, current as of
-bench #11:
+the unbounded-bonding + 20-element pass:
 
 ```csharp
 FFIBridge.ValidateStructSizes();               // call once in Awake — checks
@@ -108,14 +108,18 @@ Full FFI surface, for reference:
 | `chem_kinetic_energy(ctx)` → `f32` | Total KE in eV |
 | `chem_temperature(ctx)` → `f32` | Temperature estimate in Kelvin, from equipartition |
 | `chem_is_bonded(ctx, handle)` → `bool` | `false` for unbonded or stale, never crashes |
-| `chem_bond_partner(ctx, handle, out)` → `bool` | This atom's bond partner, if any |
+| `chem_bond_count(ctx, handle)` → `i32` | How many bonds this atom currently holds — 0 for stale/unbonded |
+| `chem_bond_partner_at(ctx, handle, index, out)` → `bool` | The `index`-th partner (`0..chem_bond_count(...)`) — iterate to walk all of them |
 | `chem_struct_size()` / `chem_handle_size()` | Layout validation — should return 48 / 8 |
 
 ## Current simulation limits, worth knowing before building recipes on top
 
-- **5 elements** (H, He, Li, Be, B) — see `docs/architecture.md`'s "Element
-  data" section for what that does and doesn't unlock yet.
-- **One bond per atom, max** — only diatomic pairs can form right now, not
-  multi-atom molecules.
+- **20 elements** — see `docs/architecture.md`'s "Element data" section
+  for exactly which, where the 15 newest ones' LJ parameters come from,
+  and what that combination does and doesn't unlock yet.
+- **Bonds are unbounded per atom**, but capped to one *new* edge per atom
+  per `compute_bonds()` call — see `docs/architecture.md`'s bonding
+  section for why. A multi-atom compound assembles over a few steps, not
+  instantly.
 
-Neither is a Rust-side bug; both are the honest current scope.
+Neither is a Rust-side bug; both are documented, deliberate scope.

@@ -23,16 +23,31 @@ fn spawn_hydrogen_grid(ctx: &mut SimContext, n: usize) {
     }
 }
 
-/// Round-robin through all 5 currently-known elements (H, He, Li, Be, B)
-/// instead of pure hydrogen -- a much closer approximation of "mixed
-/// reagents in a beaker" than a single-element grid, and exercises
-/// element_data lookups across different atomic numbers (different rows
-/// of the real table) instead of always hitting the same one. Different
-/// element pairs combine to different sigma/epsilon, so bonding range and
-/// LJ behavior genuinely varies pair to pair here, same as it would in
-/// an actual mixed reaction.
+/// Round-robin through all 20 currently-known elements (the original H,
+/// He, Li, Be, B plus C, N, O, P, S, As, Sb, Zn, Cu, Fe, Sn, Pb, Hg, Ag,
+/// Au added alongside the bonding generalization) instead of the
+/// original 5 -- a much closer approximation of "mixed reagents in a
+/// beaker" than a single-element grid, and exercises element_data
+/// lookups across a genuinely wide mass/radius/reactivity spread instead
+/// of five light elements clustered at the top of the table. Different
+/// element pairs combine to very different sigma/epsilon now (H-H vs.
+/// Pb-Au, say), so bonding range and LJ behavior vary a lot more pair to
+/// pair than the original 5-element version did.
+///
+/// Numbers from this bench are **not comparable to bench #11's**
+/// chem_step_mixed results -- different element mix, different mass
+/// distribution, different bonding topology (unbounded per atom now, not
+/// one-per-atom) all change the workload's actual shape, not just its
+/// cost. Same "treat every bench run as its own baseline" rule bench #11
+/// itself called out.
 fn spawn_mixed_element_grid(ctx: &mut SimContext, n: usize) {
-    const ELEMENTS: [i32; 5] = [1, 2, 3, 4, 5]; // H, He, Li, Be, B
+    const ELEMENTS: [i32; 20] = [
+        1, 2, 3, 4, 5,                          // H, He, Li, Be, B
+        6, 7, 8, 15, 16,                        // C, N, O, P, S
+        26, 29, 30, 33,                         // Fe, Cu, Zn, As
+        47, 50, 51,                             // Ag, Sn, Sb
+        79, 80, 82,                             // Au, Hg, Pb
+    ];
     let side = (n as f32).cbrt().ceil() as usize;
     for i in 0..n {
         let x = (i % side) as f32 * 3.0;

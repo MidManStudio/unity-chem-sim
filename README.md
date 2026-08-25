@@ -12,8 +12,9 @@ game-specific.
 ## Status
 
 `chemistry_core` (the Rust simulation core) is the mature half: spatial
-hash, LJ forces, velocity Verlet, and pairwise bonding are all in and
-tested, currently covering 5 elements (H, He, Li, Be, B). The Unity side
+hash, LJ forces, velocity Verlet, and pairwise bonding (unbounded per
+atom now — real multi-atom molecules, not just diatomic pairs) are all in
+and tested, currently covering 20 elements. The Unity side
 (`packages/com.midmanstudio.alembic`) is still scaffold — `Runtime/Core`
 and `Runtime/Adapters` are placeholders pending C# FFI bindings against the
 surface documented in `docs/getting-started.md`.
