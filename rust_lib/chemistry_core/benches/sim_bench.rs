@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use chemistry_core::SimContext;
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use chemistry_core::{BondParams, SimContext};
 
 /// Spawn a grid of hydrogen atoms spaced 3 Angstroms apart into `ctx`.
 ///
@@ -126,5 +126,93 @@ fn bench_mixed_elements(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_step, bench_lj_kernel, bench_mixed_elements);
+/// Isolates `compute_bonds` from LJ/integration -- the piece that
+/// actually changed shape with the unbounded-bonds generalization. Bench
+/// #12 (chem_step regressed ~3.5-4x on the hydrogen grid below vs. bench
+/// #11, while lj_kernel -- which never touches bonding -- didn't regress
+/// at all) is exactly why this group exists: without it, "chem_step got
+/// slower" and "compute_bonds got slower" were the same unverified claim,
+/// the same gap lj_kernel already closed for the force math back when
+/// SIMD was benched against scalar. This closes it for bonding.
+///
+/// Two states, because compute_bonds' own cost isn't one number anymore:
+///
+/// - **`cold`**: fresh grid, zero existing bonds. Almost pure Pass 2 --
+///   every atom runs a full neighbor search; Pass 1 has nothing to do yet
+///   since nothing's bonded.
+/// - **`warm`**: same grid, pre-stepped until bonding saturates first (up
+///   to 6 neighbors/atom on this grid's geometry, since a bond is
+///   unbounded per atom now -- see `compute_bonds` docs). Pass 1's cost
+///   scales with total bonds *held*, not bonds *formed this call*, so
+///   this is the steady-state number that actually dominates a
+///   long-running sim -- and it's *also* still paying full Pass 2 search
+///   cost on every already-saturated atom, every single call, for zero
+///   new bonds every time. That residual search is a known, not-yet-
+///   addressed cost, not an oversight in this bench -- worth an
+///   early-exit heuristic (e.g. skip the search once an atom's already
+///   at some per-element bond cap) if `warm` ever needs to come down, but
+///   that's a real design decision (what should that cap even be,
+///   generically, without hardcoding real valence chemistry per element)
+///   rather than something to sneak in as a bench-driven "optimization."
+///
+/// Deliberately uses `iter_batched`, not plain `iter` like every other
+/// group here: `iter` reuses one `ctx` across every sample, so bonds
+/// would keep accumulating sample to sample and `cold` would only be
+/// honestly cold on the very first sample criterion runs. `iter_batched`'s
+/// setup closure runs fresh before every timed sample instead, and its
+/// input is moved into (and back out of) the timed routine specifically
+/// so `ctx`'s own `Drop` -- deallocating every atom's `Vec<BondInfo>`,
+/// not free once bonds are dense -- happens *outside* the timed region,
+/// not counted as part of `compute_bonds`' own cost.
+fn bench_bond_kernel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bond_kernel");
+    let params = BondParams::default();
+
+    for &n in &[64usize, 256usize, 1024usize] {
+        group.throughput(Throughput::Elements(n as u64));
+
+        group.bench_function(format!("cold_n={n}"), |b| {
+            b.iter_batched(
+                || {
+                    let mut ctx = SimContext::new(10.0);
+                    spawn_hydrogen_grid(&mut ctx, n);
+                    ctx
+                },
+                |mut ctx| {
+                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params));
+                    ctx
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        // Setup does real work here (spawn + up to 8 rounds of forces +
+        // bonds to reach saturation), unlike `cold`'s setup above --
+        // LargeInput tells criterion not to over-batch it.
+        group.bench_function(format!("warm_n={n}"), |b| {
+            b.iter_batched(
+                || {
+                    let mut ctx = SimContext::new(10.0);
+                    spawn_hydrogen_grid(&mut ctx, n);
+                    // One new edge per atom per compute_bonds call (see
+                    // its own docs) -- 8 rounds comfortably saturates
+                    // this grid's 6-neighbor-per-atom geometric max.
+                    for _ in 0..8 {
+                        chemistry_core::compute_forces_scalar(&mut ctx, 10.0);
+                        chemistry_core::compute_bonds(&mut ctx, &params);
+                    }
+                    ctx
+                },
+                |mut ctx| {
+                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params));
+                    ctx
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_step, bench_lj_kernel, bench_mixed_elements, bench_bond_kernel);
 criterion_main!(benches);
