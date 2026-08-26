@@ -171,11 +171,16 @@ fn bench_bond_kernel(c: &mut Criterion) {
     for &n in &[64usize, 256usize, 1024usize] {
         group.throughput(Throughput::Elements(n as u64));
 
-        group.bench_function(format!("cold_n={n}"), |b| {
+                group.bench_function(format!("cold_n={n}"), |b| {
             b.iter_batched(
                 || {
                     let mut ctx = SimContext::new(10.0);
                     spawn_hydrogen_grid(&mut ctx, n);
+                    
+                    // ADD THIS LINE: Run one force pass to populate ctx.positions 
+                    // and build the spatial hash grid before the timer starts.
+                    chemistry_core::compute_forces_scalar(&mut ctx, 10.0);
+                    
                     ctx
                 },
                 |mut ctx| {
@@ -185,6 +190,7 @@ fn bench_bond_kernel(c: &mut Criterion) {
                 BatchSize::SmallInput,
             )
         });
+
 
         // Setup does real work here (spawn + up to 8 rounds of forces +
         // bonds to reach saturation), unlike `cold`'s setup above --
