@@ -6,5 +6,5 @@ editing files under this directory directly.
 - Source: https://github.com/Mid-D-Man/mid-engine
 - Path: `crates/mid-collections`
 - Ref requested: `main`
-- Commit: `eccf7d26f55edcc3da5ce9404854bd655e5bebd4`
-- Synced: 2026-08-20T20:05:31Z
+- Commit: `adbe4a5e15b13f590228027cd2416fd47d5de98e`
+- Synced: 2026-08-27T02:18:34Z

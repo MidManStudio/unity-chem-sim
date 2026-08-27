@@ -9,6 +9,21 @@ name       = "mid_collections"
 crate-type = ["lib"]
 
 [dependencies]
+# `derive` is not optional weight here -- it's the actual, only reason
+# this dependency exists at all (docs/mid-collections.md's FFI wrapper
+# section: "build on zerocopy" means its FromBytes/IntoBytes family,
+# which needs the derive macros to be usable on real component types).
+# No other zerocopy feature (`alloc`, `std`, `simd`) is used anywhere in
+# ffi_span.rs -- checked directly against its actual imports, not left
+# assumed. `default-features = false`: confirmed via `cargo metadata`
+# that zerocopy 0.8.56 declares no default features at all today, so
+# this is a no-op right now -- kept anyway as cheap insurance against a
+# future release adding one we didn't ask for and haven't reviewed.
+# Version pinned to match mid-ecs's own direct `zerocopy` dependency
+# exactly (both 0.8.56) rather than relying on semver-range resolution
+# picking the same version by coincidence.
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"], optional = true }
 
 [features]
 default = []
+ffi  = ["dep:zerocopy"]
