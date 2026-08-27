@@ -47,7 +47,7 @@
 //! popping into existence — total bonds held is still unbounded, only
 //! the *growth rate* is capped.
 
-use crate::{AtomState, AtomHandle, element_data};
+use crate::{AtomState, AtomHandle, BondGeometry, element_data};
 use crate::spatial_hash::SpatialHash;
 use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64};
 use mid_collections::{GenerationalIndex, GenerationalIndexAllocator, SparseSet};
@@ -334,6 +334,42 @@ pub fn bond_partner_at(ctx: &SimContext, h: AtomHandle, index: usize) -> Option<
     let list = ctx.bonds.get(ctx.handles[pos])?;
     let info = list.get(index)?;
     Some(AtomHandle { index: info.partner.index(), generation: info.partner.generation() })
+}
+
+/// Rest length and current live separation of this atom's `index`-th bond
+/// edge. `None` for a stale handle, an unbonded atom, an out-of-range
+/// index, or — defensively, shouldn't happen in practice, since
+/// `break_one_bond`/`break_all_bonds` keep both sides of an edge in sync
+/// with liveness — an unresolvable partner.
+///
+/// Reads position straight from `ctx.atoms`, not the `ctx.positions`
+/// scratch buffer: that buffer is only populated once a force kernel has
+/// run at least once (see `refresh_grid`), so using it here would make
+/// this accessor's correctness depend on step-ordering a caller shouldn't
+/// have to know about. `ctx.atoms[..].position` is always current the
+/// moment this is called — the same field `get_atom`/`atoms_ptr` expose.
+pub fn bond_geometry_at(ctx: &SimContext, h: AtomHandle, index: usize) -> Option<BondGeometry> {
+    let pos = resolve(ctx, h)?;
+    let list = ctx.bonds.get(ctx.handles[pos])?;
+    let info = list.get(index)?;
+
+    let &partner_pos = ctx.slot_of.get(info.partner.index())?;
+    let partner_pos = partner_pos as usize;
+    if ctx.handles[partner_pos] != info.partner {
+        return None;
+    }
+
+    let pi = ctx.atoms[pos].position;
+    let pj = ctx.atoms[partner_pos].position;
+    let dx = pj[0] - pi[0];
+    let dy = pj[1] - pi[1];
+    let dz = pj[2] - pi[2];
+    let current_length = (dx * dx + dy * dy + dz * dz).sqrt();
+
+    Some(BondGeometry {
+        equilibrium_length: info.equilibrium_length,
+        current_length,
+    })
 }
 
 /// Initialise every currently-live atom's velocity from a Maxwell-
@@ -985,5 +1021,68 @@ mod tests {
 
         assert_eq!(bond_count(&ctx, d), 1, "D's bond to E must survive A despawning");
         assert_eq!(bond_partner_at(&ctx, d, 0), Some(e));
+    }
+
+    #[test]
+    fn bond_geometry_reports_equilibrium_and_tracks_live_length() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+        assert!(is_bonded(&ctx, a));
+
+        let geo = bond_geometry_at(&ctx, a, 0).expect("a should have a bond at index 0");
+        assert!((geo.equilibrium_length - r_min).abs() < 1e-3);
+        assert!(
+            (geo.current_length - r_min).abs() < 1e-3,
+            "current_length should match the spawn separation before anything moves"
+        );
+
+        // Move B directly (no re-step needed — this reads ctx.atoms, not
+        // the ctx.positions scratch buffer, so it doesn't depend on a
+        // force kernel having run since the move) and confirm
+        // current_length tracks the live separation while
+        // equilibrium_length — a property of the bond, not the atoms'
+        // current positions — stays exactly what it was at formation.
+        ctx.atoms[1].position = [r_min * 1.3, 0.0, 0.0];
+        let geo2 = bond_geometry_at(&ctx, a, 0).expect("still bonded, just stretched");
+        assert!(
+            (geo2.equilibrium_length - r_min).abs() < 1e-3,
+            "equilibrium_length shouldn't change just because the atom moved"
+        );
+        assert!((geo2.current_length - r_min * 1.3).abs() < 1e-3);
+
+        // Symmetric from B's side too — same edge, same numbers.
+        let geo_from_b = bond_geometry_at(&ctx, b, 0).expect("b's side of the same edge");
+        assert!((geo_from_b.equilibrium_length - geo2.equilibrium_length).abs() < 1e-6);
+        assert!((geo_from_b.current_length - geo2.current_length).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bond_geometry_is_none_for_stale_unbonded_or_out_of_range() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [r_min, 0.0, 0.0]);
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default());
+        assert!(is_bonded(&ctx, a));
+
+        // Out-of-range index on a real, bonded atom.
+        assert!(bond_geometry_at(&ctx, a, 1).is_none());
+
+        // Unbonded atom, spawned far enough away to never be a bond
+        // candidate for anything above.
+        let c = spawn_atom(&mut ctx, 1, [1000.0, 0.0, 0.0]);
+        assert!(bond_geometry_at(&ctx, c, 0).is_none());
+
+        // Stale handle: despawn b, then query the handle we held for it.
+        despawn_atom(&mut ctx, b);
+        assert!(bond_geometry_at(&ctx, b, 0).is_none());
     }
 }

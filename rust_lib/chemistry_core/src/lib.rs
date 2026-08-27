@@ -103,6 +103,18 @@ pub struct AtomState {
 const _: () = assert!(core::mem::size_of::<AtomState>() == 48);
 const _: () = assert!(core::mem::size_of::<AtomHandle>() == 8);
 
+/// Rest length and current live separation of one bond edge — what C#
+/// needs to draw a stick between two bonded atoms, or show one straining
+/// before it snaps. See `chem_bond_geometry_at`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BondGeometry {
+    pub equilibrium_length: f32,   //  0
+    pub current_length:     f32,   //  4
+}
+
+const _: () = assert!(core::mem::size_of::<BondGeometry>() == 8);
+
 // ── FFI surface ───────────────────────────────────────────────────────────────
 
 /// Create a persistent simulation context: owns the atom array, the
@@ -264,6 +276,39 @@ pub unsafe extern "C" fn chem_bond_partner_at(
     }
 }
 
+/// Rest length and current live separation of this atom's `index`-th bond
+/// edge (`0..chem_bond_count(...)`) — same indexing `chem_bond_partner_at`
+/// already uses. Returns `false` (and leaves `out` untouched) for a stale
+/// handle, an unbonded atom, or an out-of-range index — same "nothing
+/// there" contract every other bond accessor here uses.
+///
+/// `current_length` is read straight from each atom's live
+/// `AtomState.position` — the same field `chem_get_atom`/`chem_atoms_ptr`
+/// already expose — so it's accurate as of whatever the caller's last
+/// `chem_step` left it at, with no extra call needed just to refresh it.
+///
+/// Strain isn't computed here on purpose: `(current_length -
+/// equilibrium_length) / equilibrium_length` is one line on the C# side,
+/// and leaving it there keeps this accessor from baking in a "how should
+/// a straining bond be visualized/thresholded" opinion the game side
+/// hasn't settled yet.
+#[no_mangle]
+pub unsafe extern "C" fn chem_bond_geometry_at(
+    ctx:    *const SimContext,
+    handle: AtomHandle,
+    index:  i32,
+    out:    *mut BondGeometry,
+) -> bool {
+    let ctx = &*ctx;
+    if index < 0 {
+        return false;
+    }
+    match simulation::bond_geometry_at(ctx, handle, index as usize) {
+        Some(geo) => { *out = geo; true }
+        None => false,
+    }
+}
+
 /// `AtomState` size validation. Call from C# `ValidateStructSizes()`.
 /// If this returns != 48, the struct layout is mismatched — fix before proceeding.
 #[no_mangle]
@@ -276,4 +321,11 @@ pub extern "C" fn chem_struct_size() -> i32 {
 #[no_mangle]
 pub extern "C" fn chem_handle_size() -> i32 {
     core::mem::size_of::<AtomHandle>() as i32
+}
+
+/// `BondGeometry` size validation, same idea as `chem_struct_size`. Should
+/// always return 8.
+#[no_mangle]
+pub extern "C" fn chem_bond_geometry_size() -> i32 {
+    core::mem::size_of::<BondGeometry>() as i32
 }

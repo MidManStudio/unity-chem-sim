@@ -110,7 +110,8 @@ Full FFI surface, for reference:
 | `chem_is_bonded(ctx, handle)` → `bool` | `false` for unbonded or stale, never crashes |
 | `chem_bond_count(ctx, handle)` → `i32` | How many bonds this atom currently holds — 0 for stale/unbonded |
 | `chem_bond_partner_at(ctx, handle, index, out)` → `bool` | The `index`-th partner (`0..chem_bond_count(...)`) — iterate to walk all of them |
-| `chem_struct_size()` / `chem_handle_size()` | Layout validation — should return 48 / 8 |
+| `chem_bond_geometry_at(ctx, handle, index, out)` → `bool` | Rest length + current live separation of the `index`-th bond edge (`out`: `BondGeometry { equilibrium_length, current_length }`) — draw a stick between two bonded atoms, or color it by stretch, without recomputing distance yourself |
+| `chem_struct_size()` / `chem_handle_size()` / `chem_bond_geometry_size()` | Layout validation — should return 48 / 8 / 8 |
 
 ## Current simulation limits, worth knowing before building recipes on top
 

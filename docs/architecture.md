@@ -124,6 +124,16 @@ probably meant to do. Flagging this now so it gets caught before, not after,
   one thing." Safe to break outright rather than deprecate: nothing
   outside this crate consumed the old shape yet (`Runtime/Core` is still
   scaffold — see below), so there's no real caller to migrate.
+  `chem_bond_geometry_at(index)` sits alongside `chem_bond_partner_at`,
+  same indexing — returns a `BondGeometry { equilibrium_length,
+  current_length }` per edge. `current_length` reads straight off each
+  atom's live `AtomState.position`, not the `positions` scratch buffer
+  used internally by the force kernels, so it's correct even before any
+  `chem_step` has run. Strain (`(current_length - equilibrium_length) /
+  equilibrium_length`) is deliberately left for the caller to compute —
+  one line either side of the FFI boundary, and it keeps this accessor
+  from baking in an opinion about how a straining bond should be
+  visualized.
 
 ## Element data — where the numbers come from
 
