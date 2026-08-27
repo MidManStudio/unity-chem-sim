@@ -117,13 +117,23 @@ probably meant to do. Flagging this now so it gets caught before, not after,
   so a compound assembles visibly over a few steps instead of an atom
   suddenly surrounded by reactive neighbors bonding to all of them at
   once. Total bonds held stays unbounded; only the growth rate is capped.
-  `ctx.bonds` is `SparseSet<GenerationalIndex, Vec<BondInfo>>` now (a
-  list per atom), not one `BondInfo` per atom — `chem_bond_partner`
+  `ctx.bonds` is `SparseSet<GenerationalIndex, MidVec<BondInfo, 6>>` now
+  (a small-vec per atom — 6 edges inline before a real heap allocation,
+  not a hard cap), not one `BondInfo` per atom — `chem_bond_partner`
   (single-partner) is gone from the FFI, replaced by `chem_bond_count` +
   `chem_bond_partner_at(index)` to actually express "bonded to more than
-  one thing." Safe to break outright rather than deprecate: nothing
-  outside this crate consumed the old shape yet (`Runtime/Core` is still
-  scaffold — see below), so there's no real caller to migrate.
+  one thing." `6` comfortably clears every predefined compound in the
+  gameplay doc (nothing there exceeds 4) with headroom to spare, and
+  matches octahedral coordination — the single most common real packing
+  for the ore/salt compounds in that same list (Litharge, Cinnabar,
+  Crocus of Iron, Natron), which is a more realistic worst case for this
+  sim's actual proximity-based bonding than a small molecule's central
+  atom is. `MidVec` has no `retain` (unlike `Vec`) — `retain_bond`, a
+  small local helper, covers the gap `break_one_bond`/`break_all_bonds`
+  need. Safe to break the FFI's old single-partner shape outright rather
+  than deprecate it: nothing outside this crate consumed it yet
+  (`Runtime/Core` is still scaffold — see below), so there's no real
+  caller to migrate.
   `chem_bond_geometry_at(index)` sits alongside `chem_bond_partner_at`,
   same indexing — returns a `BondGeometry { equilibrium_length,
   current_length }` per edge. `current_length` reads straight off each

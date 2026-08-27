@@ -32,9 +32,13 @@
 //! reactivity allow (needed for anything beyond a diatomic pair: water,
 //! saltpeter, sulfuric acid, all of it need atoms with 2-4 bonds at once).
 //! `ctx.bonds` went from `SparseSet<GenerationalIndex, BondInfo>` (one
-//! slot per atom) to `SparseSet<GenerationalIndex, Vec<BondInfo>>` (a
-//! list per atom) to make that possible — see `BondInfo` docs for why
-//! each edge still gets stored on both sides.
+//! slot per atom) to `SparseSet<GenerationalIndex, MidVec<BondInfo, N>>`
+//! (a small-vec per atom, `N` = `MAX_INLINE_BONDS` living inline before
+//! spilling to the heap) to make that possible — see `BondInfo` docs for
+//! why each edge still gets stored on both sides, and `MAX_INLINE_BONDS`'s
+//! own doc for why `N` is what it is. `MidVec` has no `retain` (unlike
+//! `Vec`) — see `retain_bond` below for the one bit of glue that needed
+//! writing by hand.
 //!
 //! `compute_bonds`'s bond-formation pass (Pass 2) still caps an atom to
 //! **one new edge per call**, deliberately — not a leftover of the old
@@ -49,7 +53,7 @@
 
 use crate::{AtomState, AtomHandle, BondGeometry, element_data};
 use crate::spatial_hash::SpatialHash;
-use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64};
+use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64, MidVec};
 use mid_collections::{GenerationalIndex, GenerationalIndexAllocator, SparseSet};
 
 /// Boltzmann constant, eV/K.
@@ -116,10 +120,64 @@ impl Default for BondParams {
 /// `partner: B` *and* `bonds[B]` contains one with `partner: A` — so
 /// "what is this atom bonded to" is O(1) lookup + O(bonds held) scan from
 /// either side, never a search over every other atom.
+///
+/// 12 bytes (`GenerationalIndex` is 8, `f32` is 4, no padding — both
+/// fields are already 4-byte aligned) — the number `MAX_INLINE_BONDS`
+/// below is sized against.
 #[derive(Clone, Copy, Debug)]
 pub struct BondInfo {
     pub partner: GenerationalIndex,
     pub equilibrium_length: f32,
+}
+
+/// Inline capacity for `MidVec<BondInfo, N>` before an atom's bond list
+/// spills to the heap. Not a hard cap — `MidVec` grows past this exactly
+/// like `Vec` does, just with a real allocation once it does — this only
+/// picks how many bonds an atom can hold for free.
+///
+/// `6`, not `4`: every predefined compound in
+/// `grand-theft-grimoire-gameplay-reference.md` §1.3 tops out at 4 bonds
+/// on any one atom (H2SO4/Oil of Vitriol's sulfur, KAl(SO4)2's aluminum
+/// as modeled here — tetrahedral, not the 6-coordinate hydrated form real
+/// inorganic chemistry sometimes uses). `6` gives that documented ceiling
+/// real headroom rather than sitting exactly on it, and isn't picked
+/// arbitrarily above it either: it's the coordination number of the
+/// single most common real ionic-solid packing (octahedral, NaCl-type) —
+/// directly relevant here since several §1.3 entries (Litharge/PbO,
+/// Cinnabar/HgS, Crocus of Iron/Fe2O3, Natron) are solid-state ores/salts
+/// where an atom deep in a nucleating lattice, not just a small
+/// molecule's central atom, is the realistic worst case for this sim's
+/// actual proximity-based bonding. (Bench #15's cubic hydrogen-grid test
+/// separately happened to produce exactly 6 neighbors per interior atom —
+/// noted only because it's a striking coincidence with the number landed
+/// on here for entirely different reasons; that bench artifact was
+/// explicitly flagged as the wrong justification on its own, and isn't
+/// being used as one now.)
+///
+/// A tuning knob, not a physical constant — revisit once real C#-side
+/// atom density data exists (see the open Pass-2-saturation question in
+/// `compute_bonds`' own docs, which this doesn't attempt to resolve).
+const MAX_INLINE_BONDS: usize = 6;
+
+/// `Vec::retain`-equivalent for `MidVec`, which doesn't have one (see
+/// `mid_vec/mod.rs`'s own doc comment for its full API — this genuinely
+/// isn't in it, not an oversight on my part). Keeps only entries for
+/// which `keep` returns `true`, preserving the relative order of
+/// survivors, matching what `Vec::retain` already guaranteed and what
+/// `break_one_bond`/`break_all_bonds` were already relying on being true
+/// (see e.g. `breaking_one_edge_leaves_others_intact`'s index-0 check).
+/// O(removed × remaining) via repeated `MidVec::remove` — the same shift-
+/// left-by-one-per-removal cost `Vec::remove` has; fine at `MAX_INLINE_BONDS`
+/// scale, not something to reach for on a large collection.
+fn retain_bond<const N: usize>(list: &mut MidVec<BondInfo, N>, mut keep: impl FnMut(&BondInfo) -> bool) {
+    let mut i = 0;
+    while i < list.len() {
+        if keep(&list[i]) {
+            i += 1;
+        } else {
+            list.remove(i);
+        }
+    }
 }
 
 /// Owns the atom array and everything the force kernels need to reuse
@@ -144,8 +202,9 @@ pub struct SimContext {
     /// checked entirely internally — no FFI round-trip involved in the
     /// decision to bond, so no need for the raw-index-only trick `slot_of`
     /// uses). One atom can hold several bonds at once now — see module
-    /// docs — so each entry is a list of edges, not a single one.
-    bonds: SparseSet<GenerationalIndex, Vec<BondInfo>>,
+    /// docs — so each entry is a small-vec of edges (`MAX_INLINE_BONDS`
+    /// inline, spills to the heap past that), not a single one.
+    bonds: SparseSet<GenerationalIndex, MidVec<BondInfo, MAX_INLINE_BONDS>>,
 
     grid: SpatialHash,
     positions: Vec<Vec3>,
@@ -208,13 +267,13 @@ fn resolve(ctx: &SimContext, h: AtomHandle) -> Option<usize> {
 /// empty."
 fn break_one_bond(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex) {
     if let Some(list) = ctx.bonds.get_mut(owner) {
-        list.retain(|b| b.partner != partner);
+        retain_bond(list, |b| b.partner != partner);
         if list.is_empty() {
             ctx.bonds.remove(owner);
         }
     }
     if let Some(list) = ctx.bonds.get_mut(partner) {
-        list.retain(|b| b.partner != owner);
+        retain_bond(list, |b| b.partner != owner);
         if list.is_empty() {
             ctx.bonds.remove(partner);
         }
@@ -234,7 +293,7 @@ fn break_all_bonds(ctx: &mut SimContext, owner: GenerationalIndex) {
     let Some(partners) = ctx.bonds.remove(owner) else { return; };
     for info in partners {
         if let Some(list) = ctx.bonds.get_mut(info.partner) {
-            list.retain(|b| b.partner != owner);
+            retain_bond(list, |b| b.partner != owner);
             if list.is_empty() {
                 ctx.bonds.remove(info.partner);
             }
@@ -249,7 +308,7 @@ fn break_all_bonds(ctx: &mut SimContext, owner: GenerationalIndex) {
 fn push_bond_edge(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex, equilibrium_length: f32) {
     match ctx.bonds.get_mut(owner) {
         Some(list) => list.push(BondInfo { partner, equilibrium_length }),
-        None => { ctx.bonds.insert(owner, vec![BondInfo { partner, equilibrium_length }]); }
+        None => { ctx.bonds.insert(owner, MidVec::from([BondInfo { partner, equilibrium_length }])); }
     }
 }
 
@@ -1085,4 +1144,76 @@ mod tests {
         despawn_atom(&mut ctx, b);
         assert!(bond_geometry_at(&ctx, b, 0).is_none());
     }
+
+    /// Exercises `MidVec`'s heap-spill path directly, not just its inline
+    /// one: a hub atom picks up `MAX_INLINE_BONDS + 1` simultaneous edges,
+    /// one more than fits inline, so `push_bond_edge`'s
+    /// `MidVec::get_mut(owner).push(...)` on the 7th edge must trigger a
+    /// real reallocation. Satellites sit on a pentagonal-bipyramid
+    /// arrangement at `1.1 * r_min` from the hub (inside `bond_range =
+    /// 1.15 * r_min`) with every satellite-satellite pair at least ~1.29
+    /// (adjacent equatorial) to 2.2 (poles) times `r_min` apart — safely
+    /// outside `bond_range`, so the only edges that can ever form are
+    /// hub-satellite ones, never satellite-satellite. Pass 2 caps the hub
+    /// to one *new* edge per `compute_bonds` call (see module docs), so
+    /// forming all 7 needs at least 7 calls; run well past that for
+    /// margin, matching `atom_can_hold_multiple_simultaneous_bonds`'s own
+    /// over-iterate-for-safety approach.
+    #[test]
+    fn bond_list_spills_to_heap_past_max_inline_bonds() {
+        let mut ctx = SimContext::new(10.0);
+        let sigma_h = 2.928_f32;
+        let r_min = sigma_h * 2f32.powf(1.0 / 6.0);
+        let radius = r_min * 1.1;
+
+        let hub = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let mut satellites = Vec::new();
+        satellites.push(spawn_atom(&mut ctx, 1, [0.0, 0.0, radius]));
+        satellites.push(spawn_atom(&mut ctx, 1, [0.0, 0.0, -radius]));
+        for k in 0..5 {
+            let theta = (k as f32) * core::f32::consts::TAU / 5.0;
+            satellites.push(spawn_atom(&mut ctx, 1, [
+                radius * theta.cos(),
+                radius * theta.sin(),
+                0.0,
+            ]));
+        }
+        assert_eq!(satellites.len(), MAX_INLINE_BONDS + 1, "test setup: exactly one more satellite than fits inline");
+
+        for _ in 0..(MAX_INLINE_BONDS + 1) * 2 {
+            compute_forces_scalar(&mut ctx, 10.0);
+            compute_bonds(&mut ctx, &BondParams::default());
+        }
+
+        assert_eq!(
+            bond_count(&ctx, hub),
+            MAX_INLINE_BONDS + 1,
+            "hub should have bonded to every satellite, one past inline capacity"
+        );
+
+        // Reach past the public API to confirm this genuinely exercised
+        // the heap path, not just that the count happens to be right —
+        // `tests` is a submodule of `simulation`, so it can see `bonds`
+        // (private to this module) same as the rest of this file already
+        // does via `resolve`/etc.
+        let hub_pos = resolve(&ctx, hub).expect("hub is live");
+        let hub_list = ctx.bonds.get(ctx.handles[hub_pos]).expect("hub has bonds");
+        assert!(hub_list.spilled(), "7 bonds on a 6-inline MidVec must have spilled to the heap");
+
+        // Every satellite still resolves correctly post-spill — the
+        // reallocation must not have corrupted or dropped any edge.
+        for i in 0..bond_count(&ctx, hub) {
+            let partner = bond_partner_at(&ctx, hub, i).expect("index within bond_count must resolve");
+            assert!(satellites.contains(&partner), "every partner must be one of the satellites we actually spawned");
+            let geo = bond_geometry_at(&ctx, hub, i).expect("geometry must resolve for every valid index");
+            assert!((geo.current_length - radius).abs() < 1e-2, "nothing moved, so current_length should still match spawn radius");
+        }
+
+        // Satellite-satellite edges never formed — confirms the geometry
+        // this test relies on actually held.
+        for &s in &satellites {
+            assert_eq!(bond_count(&ctx, s), 1, "each satellite should be bonded only to the hub, never to another satellite");
+        }
+    }
 }
+
