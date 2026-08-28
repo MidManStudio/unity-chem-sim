@@ -13,3 +13,16 @@ codegen-units = 1
 panic         = "abort"
 strip         = true
 debug         = false
+
+# WebGL release profile — code size, not raw throughput. Unity WebGL
+# budgets are tight; "s" shaves real size off the .wasm vs opt-level=3
+# with negligible throughput loss at the entity counts a game actually
+# needs — same reasoning MidManStudio_Unity's rust_lib/projectile_core
+# already uses for its own release-wasm profile. Lives here rather than
+# in rust_lib/chemistry_core/Cargo.toml because workspace member crates
+# can't declare their own [profile.*] sections — only the root manifest
+# can — unlike projectile_core, which isn't part of a workspace at all.
+# cargo build --profile release-wasm --target wasm32-unknown-emscripten
+[profile.release-wasm]
+inherits  = "release"
+opt-level = "s"
