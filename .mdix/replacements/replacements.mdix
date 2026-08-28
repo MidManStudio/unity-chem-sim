@@ -72,5 +72,5 @@
   target_root = "."
 
   overrides::
-    target("ROOT_README.md", "README.md")
+    target("ROOT_Cargo.toml", "Cargo.toml")
 )
