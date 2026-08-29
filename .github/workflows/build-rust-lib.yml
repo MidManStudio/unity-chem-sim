@@ -183,9 +183,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Emscripten SDK
-        uses: mymindstorm/setup-emsdk@v14
+        # Was mymindstorm/setup-emsdk@v14 with version: 3.1.59 -- two real
+        # bugs, both fixed here:
+        #
+        # 1. mymindstorm/setup-emsdk was renamed to emscripten-core/setup-emsdk
+        #    in April 2026. The old name still resolves today (this job got
+        #    past this step just fine before failing later at the link stage),
+        #    but per a confirmed report on the new repo (emscripten-core/
+        #    setup-emsdk#61), the old name silently stopped resolving at all
+        #    for other users shortly after the rename -- a live ticking time
+        #    bomb, not a someday-maybe concern.
+        #
+        # 2. version 3.1.59 was too old for whatever wasm32-unknown-emscripten's
+        #    std sysroot on current Rust actually needs at link time -- this
+        #    is exactly what failed: "Unknown option '--enable-bulk-memory-opt'"
+        #    from wasm-opt, because emsdk 3.1.59's bundled Binaryen predates
+        #    that flag. Confirmed via a matching, upstream-acknowledged report
+        #    (PyO3/maturin#2549, closed as "not planned" / upstream) that this
+        #    exact error appears when a newer Rust toolchain's emscripten
+        #    target ABI outpaces an older pinned emsdk. Rust's own
+        #    platform-support docs currently install 3.1.68 as their reference
+        #    version -- already past what was pinned here.
+        #
+        # Fix: `version: latest` instead of a hand-picked pin. `dtolnay/
+        # rust-toolchain@stable` two lines down already always installs
+        # whatever's newest -- pinning emsdk to one fixed version while Rust
+        # itself floats is exactly what caused this drift in the first place.
+        # Floating both keeps them moving together instead of silently
+        # drifting apart again next time Rust's emscripten target ABI moves.
+        uses: emscripten-core/setup-emsdk@v15
         with:
-          version: 3.1.59
+          version: latest
           no-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
