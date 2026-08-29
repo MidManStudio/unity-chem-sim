@@ -124,6 +124,14 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
 /// mean no LJ force (existing guard in `combine()`), zero electronegativity
 /// and zero ionization energy mean `reactivity_index` comes out 0.0 (via
 /// the `hardness <= 0.0` guard below), not a divide-by-zero.
+///
+/// Checks the real, compile-time `TABLE` first (fast, no lock — the
+/// common case, every real spawn hits this), and only falls back to the
+/// runtime-registered custom-element table (see `register_element` below)
+/// for a `z` that isn't real chemistry. The two can never collide —
+/// `register_element` refuses anything inside `TABLE`'s real range — so
+/// this ordering is purely a hot-path performance choice, not a
+/// precedence rule that changes behavior either way.
 pub fn params(z: i32) -> ElementParams {
     match TABLE.iter().find(|&&(tz, ..)| tz == z) {
         Some(&(_, mass, rvdw, sigma, eps_k, en, ie, ea)) => ElementParams {
@@ -135,7 +143,166 @@ pub fn params(z: i32) -> ElementParams {
             ionization_energy_kj_mol: ie,
             electron_affinity_kj_mol: ea,
         },
-        None => ElementParams::default(),
+        None => custom_registry()
+            .read()
+            .ok()
+            .and_then(|map| map.get(&z).copied())
+            .unwrap_or_default(),
+    }
+}
+
+// ── Custom element registration ─────────────────────────────────────────
+//
+// Runtime registration, not code generation: an end user consuming the
+// already-*compiled* package (a game dev with no Rust toolchain, no
+// interest in one) needs a way to define a fictional reagent — GTG's
+// Void-Carbon, Fae-Radon, Adrenium, or anything like them in any other
+// game built on this package — without recompiling chemistry_core.
+// `.mdix`-driven codegen stays the right tool for *this crate's own*
+// authoring of the real 20-element `TABLE` above; it was never going to
+// be something an arbitrary downstream consumer could reach for.
+
+/// Real chemistry's actual current ceiling (Oganesson) — atomic numbers
+/// at or below this are permanently protected from registration. Not
+/// picked arbitrarily: if the real periodic table ever grows, this is
+/// the one constant to widen, and until then this guarantees
+/// `register_element` can never silently shadow real chemistry.
+const MAX_REAL_ELEMENT_Z: i32 = 118;
+
+/// Floor for custom atomic numbers — deliberately a long way past
+/// `MAX_REAL_ELEMENT_Z`, not the very next integer. Anyone reading a bug
+/// report full of atomic numbers should be able to tell "custom" from
+/// "real" or "off-by-one typo" at a glance, not have to cross-reference a
+/// periodic table to be sure.
+const MIN_CUSTOM_ELEMENT_Z: i32 = 1000;
+
+// register_element's actual guard only checks MIN_CUSTOM_ELEMENT_Z (it
+// alone already rejects everything from i32::MIN through 999, real
+// elements and the reserved gap both) — this assertion is what keeps
+// MAX_REAL_ELEMENT_Z meaningful rather than purely decorative: if a
+// future edit ever widened the real periodic table past what
+// MIN_CUSTOM_ELEMENT_Z leaves room for, this fails the build instead of
+// silently letting the reserved gap disappear.
+const _: () = assert!(MIN_CUSTOM_ELEMENT_Z > MAX_REAL_ELEMENT_Z);
+
+fn custom_registry() -> &'static std::sync::RwLock<std::collections::HashMap<i32, ElementParams>> {
+    static REGISTRY: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<i32, ElementParams>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// Register (or overwrite) a custom element's simulation parameters at
+/// runtime. This is the actual mechanism behind "end users can add
+/// elements without recompiling Rust" — see the module-level note above.
+///
+/// Returns `false`, registers nothing, for:
+/// - `atomic_number` inside or below the real periodic table's range
+///   (`<= MAX_REAL_ELEMENT_Z`, currently 118) — real chemistry is never
+///   overridable, on purpose.
+/// - `atomic_number` between that and `MIN_CUSTOM_ELEMENT_Z` (1000) —
+///   the reserved gap, not a valid target either.
+/// - `mass_amu`, `radius_vdw_pm`, or `lj_sigma_a` negative — physically
+///   nonsensical, and would corrupt sqrt/force math elsewhere that
+///   assumes these are always `>= 0`.
+///
+/// `electronegativity`, `ionization_energy_kj_mol`, and
+/// `electron_affinity_kj_mol` have no such guard: `0.0` is already the
+/// correct, safe "don't care" value for all three (see
+/// `reactivity_index`'s own `hardness <= 0.0` guard) — nothing special
+/// to opt out of for a caller who just wants a physical LJ presence and
+/// doesn't care about reactivity at all.
+///
+/// Global, not per-`SimContext` — element parameters are physics
+/// constants, the same thing `params()` already treats real elements as.
+/// A per-context table would mean "Void-Carbon" could mean two different
+/// things in two simulations running side by side — not a real use case
+/// anyone asked for, and a footgun if it existed by accident.
+///
+/// Persists for the process's lifetime once registered — worth being
+/// explicit that this includes across multiple Unity Editor Play Mode
+/// sessions in a row, since a native plugin isn't domain-reloaded the
+/// way managed C# state is. Call this from one clear, deliberate
+/// initialization point, not scattered across arbitrary code paths; see
+/// `clear_custom_elements` for a clean slate between runs (an Editor
+/// test suite, for instance).
+pub fn register_element(
+    atomic_number: i32,
+    mass_amu: f32,
+    radius_vdw_pm: f32,
+    lj_sigma_a: f32,
+    lj_eps_ev: f32,
+    electronegativity: f32,
+    ionization_energy_kj_mol: f32,
+    electron_affinity_kj_mol: f32,
+) -> bool {
+    // Belt-and-suspenders with the const _ assertion above: that one
+    // catches a broken invariant at compile time (before this function
+    // ever runs), this one is what actually satisfies rustc's dead-code
+    // analysis for MAX_REAL_ELEMENT_Z — a const referenced only from
+    // inside another const's compile-time evaluation apparently doesn't
+    // count as "used" for that lint's purposes. Compiles to nothing in
+    // release (debug_assert), so no runtime cost either way.
+    debug_assert!(MIN_CUSTOM_ELEMENT_Z > MAX_REAL_ELEMENT_Z);
+
+    if atomic_number < MIN_CUSTOM_ELEMENT_Z {
+        return false;
+    }
+    if mass_amu < 0.0 || radius_vdw_pm < 0.0 || lj_sigma_a < 0.0 {
+        return false;
+    }
+    let params = ElementParams {
+        mass_amu,
+        radius_vdw_pm,
+        lj_sigma_a,
+        lj_eps_ev,
+        electronegativity,
+        ionization_energy_kj_mol,
+        electron_affinity_kj_mol,
+    };
+    // A poisoned lock (a previous holder panicked mid-write) means
+    // something already went wrong elsewhere in the same process —
+    // surfacing that here as "registration failed" is more honest than
+    // silently recovering and pretending it succeeded.
+    match custom_registry().write() {
+        Ok(mut map) => { map.insert(atomic_number, params); true }
+        Err(_) => false,
+    }
+}
+
+/// True if `atomic_number` resolves to something real — either the
+/// static real-element `TABLE` or a previously-registered custom entry.
+/// False for anything `params()` would only ever return
+/// `ElementParams::default()` (all-zero, meaning "nothing here") for.
+pub fn is_element_registered(atomic_number: i32) -> bool {
+    if TABLE.iter().any(|&(z, ..)| z == atomic_number) {
+        return true;
+    }
+    custom_registry()
+        .read()
+        .map(|map| map.contains_key(&atomic_number))
+        .unwrap_or(false)
+}
+
+/// Remove one previously-registered custom element. A no-op (returns
+/// `false`) for a real element's atomic number — those were never in
+/// this table to begin with, nothing to remove; `register_element`
+/// already guarantees that.
+pub fn unregister_element(atomic_number: i32) -> bool {
+    if atomic_number < MIN_CUSTOM_ELEMENT_Z {
+        return false;
+    }
+    custom_registry()
+        .write()
+        .map(|mut map| map.remove(&atomic_number).is_some())
+        .unwrap_or(false)
+}
+
+/// Clear every custom-registered element at once. Mainly for test/Editor
+/// hot-reload hygiene — see `register_element`'s own doc on why this
+/// state outlives a single Play Mode session by default.
+pub fn clear_custom_elements() {
+    if let Ok(mut map) = custom_registry().write() {
+        map.clear();
     }
 }
 
@@ -243,5 +410,87 @@ mod tests {
         assert_eq!(a.atomic_number, 1);
         assert!((a.mass - 1.008).abs() < 1e-6);
         assert!((a.radius - 120.0).abs() < 1e-6);
+    }
+
+    // The custom-element registry is a single process-global table, and
+    // Rust runs #[test] functions concurrently on separate threads within
+    // the SAME process by default — every test below uses its own
+    // disjoint Z (10xx/11xx/12xx/13xx/14xx) and never asserts the
+    // registry's global state (e.g. "is empty"), only facts about its own
+    // entries, specifically so these can't interfere with each other or
+    // with a real caller's registrations if this crate is ever linked
+    // into something that also calls register_element concurrently.
+
+    #[test]
+    fn register_element_is_visible_through_params_and_make_atom() {
+        let z = 1001;
+        assert!(register_element(z, 42.0, 150.0, 3.0, 0.05, 1.5, 500.0, 50.0));
+        assert!(is_element_registered(z));
+
+        let p = params(z);
+        assert!((p.mass_amu - 42.0).abs() < 1e-6);
+        assert!((p.radius_vdw_pm - 150.0).abs() < 1e-6);
+        assert!((p.lj_sigma_a - 3.0).abs() < 1e-6);
+        assert!((p.lj_eps_ev - 0.05).abs() < 1e-6);
+        assert!((p.electronegativity - 1.5).abs() < 1e-6);
+
+        let a = make_atom(z, [1.0, 2.0, 3.0]);
+        assert_eq!(a.atomic_number, z);
+        assert!((a.mass - 42.0).abs() < 1e-6);
+        assert!((a.radius - 150.0).abs() < 1e-6);
+
+        assert!(unregister_element(z));
+        assert!(!is_element_registered(z));
+        // params() falls back to all-zero default once unregistered, same
+        // safe behavior as any never-registered z.
+        assert_eq!(params(z).mass_amu, 0.0);
+    }
+
+    #[test]
+    fn register_element_rejects_the_real_element_range() {
+        // Every real element already in TABLE, plus the reserved gap up
+        // to (but not including) MIN_CUSTOM_ELEMENT_Z, must be refused —
+        // real chemistry is never overridable through this path.
+        assert!(!register_element(1, 999.0, 999.0, 999.0, 999.0, 999.0, 999.0, 999.0), "z=1 (real H) must be rejected");
+        assert!(!register_element(82, 999.0, 999.0, 999.0, 999.0, 999.0, 999.0, 999.0), "z=82 (real Pb) must be rejected");
+        assert!(!register_element(118, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0), "z=118 (Oganesson, MAX_REAL_ELEMENT_Z) must be rejected");
+        assert_eq!(MAX_REAL_ELEMENT_Z, 118, "test above assumes this exact value — update both together if it ever changes");
+        assert!(!register_element(500, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0), "z=500 (reserved gap, below MIN_CUSTOM_ELEMENT_Z) must be rejected");
+        assert!(!register_element(999, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0), "z=999 (one below MIN_CUSTOM_ELEMENT_Z) must be rejected");
+
+        // Confirm the real element's actual data is untouched by the
+        // rejected attempt on z=1 above.
+        assert!((params(1).mass_amu - 1.008).abs() < 1e-6, "real H's data must be unaffected by a rejected registration attempt");
+    }
+
+    #[test]
+    fn register_element_rejects_negative_physical_values() {
+        let z = 1101;
+        assert!(!register_element(z, -1.0, 100.0, 1.0, 0.0, 0.0, 0.0, 0.0), "negative mass must be rejected");
+        assert!(!register_element(z, 1.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0), "negative radius must be rejected");
+        assert!(!register_element(z, 1.0, 100.0, -1.0, 0.0, 0.0, 0.0, 0.0), "negative sigma must be rejected");
+        assert!(!is_element_registered(z), "none of the rejected attempts should have registered anything");
+
+        // Negative electronegativity/IE/EA are NOT guarded — 0.0 is
+        // already the correct safe value for all three, and a caller
+        // passing something unusual there (not physically real, but not
+        // corrupting either) is allowed to.
+        assert!(register_element(z, 1.0, 100.0, 1.0, 0.0, -5.0, -5.0, -5.0));
+        assert!(unregister_element(z));
+    }
+
+    #[test]
+    fn unregister_element_is_a_noop_for_real_elements_and_never_registered_custom_ones() {
+        assert!(!unregister_element(1), "real H was never in the custom table, nothing to remove");
+        assert!(!unregister_element(1201), "never registered, nothing to remove");
+    }
+
+    #[test]
+    fn overwriting_an_existing_registration_replaces_it_cleanly() {
+        let z = 1301;
+        assert!(register_element(z, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0));
+        assert!(register_element(z, 2.0, 2.0, 2.0, 2.0, 0.0, 0.0, 0.0));
+        assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
+        assert!(unregister_element(z));
     }
 }

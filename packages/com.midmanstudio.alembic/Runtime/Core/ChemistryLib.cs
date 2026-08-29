@@ -121,6 +121,29 @@ namespace MidManStudio.Alembic.Core
         public float Strain => (CurrentLength - EquilibriumLength) / EquilibriumLength;
     }
 
+    /// <summary>
+    /// Plain data container for authoring a custom element — a
+    /// ScriptableObject field, a JSON entry, whatever your own tooling
+    /// wants to build one from. Not FFI-facing itself (no explicit layout
+    /// needed) — <see cref="ChemistryLib.RegisterElement(CustomElementDefinition)"/>
+    /// unpacks it into the same individual-argument call the direct
+    /// overload uses. See <see cref="ChemistryLib.RegisterElement(int,float,float,float,float,float,float,float)"/>
+    /// for the full contract (atomic number >= 1000, non-negative mass/
+    /// radius/sigma).
+    /// </summary>
+    [Serializable]
+    public struct CustomElementDefinition
+    {
+        public int AtomicNumber;
+        public float MassAmu;
+        public float RadiusVdwPm;
+        public float LjSigmaA;
+        public float LjEpsEv;
+        public float Electronegativity;
+        public float IonizationEnergyKjMol;
+        public float ElectronAffinityKjMol;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  P/Invoke bindings
     // ─────────────────────────────────────────────────────────────────────────
@@ -256,6 +279,66 @@ namespace MidManStudio.Alembic.Core
         /// </summary>
         public static bool TryGetBondGeometry(IntPtr ctx, AtomHandle handle, int index, out BondGeometry geometry) =>
             chem_bond_geometry_at(ctx, handle, index, out geometry) != 0;
+
+        // ── Custom elements ──────────────────────────────────────────────────
+        //
+        // Global, not per-context — see chem_register_element's own Rust-side
+        // doc for why. None of these four take an IntPtr ctx at all, unlike
+        // everything above; that's deliberate, not an oversight.
+        //
+        // This is the actual mechanism behind "end users can add elements
+        // without recompiling Rust": register a fictional reagent (GTG's
+        // Void-Carbon, Fae-Radon, Adrenium, or anything like it) purely from
+        // C#/Editor tooling, no native rebuild involved. Real elements
+        // (atomic number 1-118) are always rejected, on purpose — never
+        // overridable through this path. Custom atomic numbers must be
+        // >= 1000 — a deliberately large gap so "custom" is unambiguous at a
+        // glance in any bug report, never confusable with a real-element typo.
+
+        [DllImport(DLL)] private static extern byte chem_register_element(
+            int atomicNumber, float massAmu, float radiusVdwPm, float ljSigmaA, float ljEpsEv,
+            float electronegativity, float ionizationEnergyKjMol, float electronAffinityKjMol);
+
+        /// <summary>
+        /// Register (or overwrite) a custom element's simulation parameters
+        /// at runtime. False (nothing registered) for: <paramref name="atomicNumber"/>
+        /// under 1000 (real elements 1-118, and the reserved gap above them,
+        /// are always rejected), or any of <paramref name="massAmu"/>/
+        /// <paramref name="radiusVdwPm"/>/<paramref name="ljSigmaA"/> negative
+        /// (physically nonsensical). <paramref name="electronegativity"/>/
+        /// <paramref name="ionizationEnergyKjMol"/>/<paramref name="electronAffinityKjMol"/>
+        /// have no such guard — 0f is already the correct "don't care" value
+        /// for all three if you just want a physical LJ presence and don't
+        /// care about reactivity. Persists for the process's lifetime once
+        /// registered, including across multiple Editor Play Mode sessions —
+        /// see <see cref="ClearCustomElements"/> for a clean slate.
+        /// </summary>
+        public static bool RegisterElement(
+            int atomicNumber, float massAmu, float radiusVdwPm, float ljSigmaA, float ljEpsEv,
+            float electronegativity = 0f, float ionizationEnergyKjMol = 0f, float electronAffinityKjMol = 0f) =>
+            chem_register_element(atomicNumber, massAmu, radiusVdwPm, ljSigmaA, ljEpsEv,
+                electronegativity, ionizationEnergyKjMol, electronAffinityKjMol) != 0;
+
+        /// <summary>
+        /// Convenience overload for data-driven authoring (a ScriptableObject
+        /// custom-element asset, a JSON list, etc.) — same contract as the
+        /// direct overload above.
+        /// </summary>
+        public static bool RegisterElement(CustomElementDefinition def) =>
+            RegisterElement(def.AtomicNumber, def.MassAmu, def.RadiusVdwPm, def.LjSigmaA, def.LjEpsEv,
+                def.Electronegativity, def.IonizationEnergyKjMol, def.ElectronAffinityKjMol);
+
+        [DllImport(DLL)] private static extern byte chem_is_element_registered(int atomicNumber);
+        /// <summary>True if this atomic number is either a real element or a previously-registered custom one.</summary>
+        public static bool IsElementRegistered(int atomicNumber) => chem_is_element_registered(atomicNumber) != 0;
+
+        [DllImport(DLL)] private static extern byte chem_unregister_element(int atomicNumber);
+        /// <summary>Remove one previously-registered custom element. No-op (false) for a real element's atomic number.</summary>
+        public static bool UnregisterElement(int atomicNumber) => chem_unregister_element(atomicNumber) != 0;
+
+        /// <summary>Clear every custom-registered element at once. Real elements are never affected.</summary>
+        [DllImport(DLL)] public static extern void chem_clear_custom_elements();
+        public static void ClearCustomElements() => chem_clear_custom_elements();
 
         // ── Layout validation ───────────────────────────────────────────────
 

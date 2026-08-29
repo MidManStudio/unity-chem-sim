@@ -76,7 +76,7 @@ mod element_data;
 mod fx_hash;
 
 pub use simulation::*;
-pub use element_data::{ElementParams, params, reactivity_index, bond_strength, make_atom};
+pub use element_data::{ElementParams, params, reactivity_index, bond_strength, make_atom, register_element, is_element_registered, unregister_element, clear_custom_elements};
 
 /// FFI-safe atom handle. See module docs for why this exists instead of
 /// passing `mid_collections::GenerationalIndex` directly.
@@ -307,6 +307,55 @@ pub unsafe extern "C" fn chem_bond_geometry_at(
         Some(geo) => { *out = geo; true }
         None => false,
     }
+}
+
+// ── Custom elements ──────────────────────────────────────────────────────
+//
+// Global, not per-SimContext — see `element_data::register_element`'s own
+// doc for why. None of these five take a `ctx` pointer at all, unlike
+// everything above; that's deliberate, not an oversight.
+
+/// Register (or overwrite) a custom element at runtime — no Rust
+/// recompile needed. See `element_data::register_element`'s own doc for
+/// the full contract (real elements 1..=118 always rejected, negative
+/// mass/radius/sigma always rejected, everything else accepted as-is).
+#[no_mangle]
+pub extern "C" fn chem_register_element(
+    atomic_number: i32,
+    mass_amu: f32,
+    radius_vdw_pm: f32,
+    lj_sigma_a: f32,
+    lj_eps_ev: f32,
+    electronegativity: f32,
+    ionization_energy_kj_mol: f32,
+    electron_affinity_kj_mol: f32,
+) -> bool {
+    element_data::register_element(
+        atomic_number, mass_amu, radius_vdw_pm, lj_sigma_a, lj_eps_ev,
+        electronegativity, ionization_energy_kj_mol, electron_affinity_kj_mol,
+    )
+}
+
+/// True if `atomic_number` is either a real element or a previously
+/// registered custom one — false only for something `chem_spawn_atom`
+/// would silently give zero mass/radius to.
+#[no_mangle]
+pub extern "C" fn chem_is_element_registered(atomic_number: i32) -> bool {
+    element_data::is_element_registered(atomic_number)
+}
+
+/// Remove one previously-registered custom element. No-op for a real
+/// element's atomic number.
+#[no_mangle]
+pub extern "C" fn chem_unregister_element(atomic_number: i32) -> bool {
+    element_data::unregister_element(atomic_number)
+}
+
+/// Clear every custom-registered element at once. Real elements are
+/// never affected — there's nothing for this to clear there.
+#[no_mangle]
+pub extern "C" fn chem_clear_custom_elements() {
+    element_data::clear_custom_elements();
 }
 
 /// `AtomState` size validation. Call from C# `ValidateStructSizes()`.
