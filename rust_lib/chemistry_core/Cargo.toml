@@ -59,3 +59,14 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name    = "sim_bench"
 harness = false
+
+# Separate target from sim_bench.rs on purpose -- direct MidVec-vs-Vec
+# container comparison, isolated from physics entirely. See its own
+# module doc for why it needs to be a real dependency (mid-collections,
+# mid-math) available to the bench binary the same way sim_bench.rs
+# already gets chemistry_core itself -- Cargo makes a package's own
+# [dependencies] visible to its own [[bench]] targets automatically, no
+# separate dev-dependency needed for either.
+[[bench]]
+name    = "bond_storage_compare"
+harness = false
