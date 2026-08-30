@@ -219,6 +219,18 @@ namespace MidManStudio.Alembic.Core
         [DllImport(DLL)] public static extern IntPtr chem_atoms_ptr(IntPtr ctx);
 
         /// <summary>
+        /// Read-only pointer into a dense <see cref="AtomHandle"/> array,
+        /// same order and length as <see cref="chem_atoms_ptr"/>'s (index
+        /// <c>i</c> here is the same atom as index <c>i</c> there) — for
+        /// walking every live atom's identity (e.g. to then query bonds
+        /// for each one) instead of just its physical state. Same
+        /// "re-fetch every frame, don't cache across a frame boundary" and
+        /// "order not stable across despawns" contract as
+        /// <see cref="chem_atoms_ptr"/>.
+        /// </summary>
+        [DllImport(DLL)] public static extern IntPtr chem_handles_ptr(IntPtr ctx);
+
+        /// <summary>
         /// Initialise every currently-live atom's velocity from a Maxwell-
         /// Boltzmann distribution at <paramref name="temperatureK"/>, zero
         /// their force accumulators. Call once after spawning your initial

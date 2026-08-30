@@ -196,6 +196,23 @@ pub unsafe extern "C" fn chem_atoms_ptr(ctx: *const SimContext) -> *const AtomSt
     simulation::atoms_ptr(ctx)
 }
 
+/// Read-only pointer into a dense `AtomHandle` array, same order and
+/// same length as `chem_atoms_ptr`'s (index `i` here is the same atom as
+/// index `i` there) — for a caller that needs to walk every live atom's
+/// identity (e.g. to then query bonds for each one), not just its
+/// physical state. Same "re-fetch every frame" and "order not stable
+/// across despawns" contract as `chem_atoms_ptr`. Unlike that one, this
+/// takes `*mut`, not `*const` — it genuinely refreshes an internal
+/// scratch buffer each call (`GenerationalIndex` isn't FFI-safe to
+/// expose directly, so this exists at all instead of just being another
+/// raw field pointer — see `simulation::refresh_handles_scratch`'s own
+/// doc for why).
+#[no_mangle]
+pub unsafe extern "C" fn chem_handles_ptr(ctx: *mut SimContext) -> *const AtomHandle {
+    let ctx = &mut *ctx;
+    simulation::refresh_handles_scratch(ctx)
+}
+
 /// Initialise every currently-live atom's velocity from a Maxwell-
 /// Boltzmann distribution at `temperature_k`, zero their force
 /// accumulators. Call once after spawning your initial atoms.

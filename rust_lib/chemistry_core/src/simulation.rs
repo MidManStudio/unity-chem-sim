@@ -219,6 +219,17 @@ pub struct SimContext {
     /// of forming immediately — see module docs on the one-new-edge-per-
     /// call rule.
     bonded_this_pass: Vec<bool>,
+    /// FFI-safe mirror of `handles`, refreshed on demand by
+    /// `refresh_handles_scratch` — `handles: Vec<GenerationalIndex>`
+    /// can't be exposed to C# as a raw pointer directly the way `atoms`
+    /// can: `GenerationalIndex` isn't `#[repr(C)]`, so even though its
+    /// two-u32 layout happens to match `AtomHandle`'s today, pointer-
+    /// casting between them without that guarantee would be relying on
+    /// undefined behavior that happens to work, not something actually
+    /// sound. This buffer is the real, correct fix — same "cache,
+    /// refresh on demand" shape `positions` already uses for a different
+    /// reason (see `refresh_grid`).
+    handles_ffi_scratch: Vec<AtomHandle>,
 }
 
 impl SimContext {
@@ -240,6 +251,7 @@ impl SimContext {
             old_accel: Vec::new(),
             candidates: Vec::new(),
             bonded_this_pass: Vec::new(),
+            handles_ffi_scratch: Vec::new(),
         }
     }
 }
@@ -374,6 +386,22 @@ pub fn atoms_ptr(ctx: &SimContext) -> *const AtomState {
 pub fn is_bonded(ctx: &SimContext, h: AtomHandle) -> bool {
     let Some(pos) = resolve(ctx, h) else { return false; };
     ctx.bonds.contains(ctx.handles[pos])
+}
+
+/// Rebuilds `ctx.handles_ffi_scratch` from `ctx.handles` and returns a
+/// pointer to it — same dense order as `chem_atoms_ptr`'s array (index
+/// `i` here is the same atom as index `i` there), same "re-fetch every
+/// frame, don't cache across a spawn/despawn/step" contract, same
+/// "order not stable across despawns" caveat. `&mut` (unlike
+/// `chem_atoms_ptr`'s `&SimContext`) because this genuinely mutates the
+/// scratch buffer to refresh it — seeing why in the field's own doc
+/// comment above.
+pub fn refresh_handles_scratch(ctx: &mut SimContext) -> *const AtomHandle {
+    ctx.handles_ffi_scratch.clear();
+    ctx.handles_ffi_scratch.extend(
+        ctx.handles.iter().map(|h| AtomHandle { index: h.index(), generation: h.generation() })
+    );
+    ctx.handles_ffi_scratch.as_ptr()
 }
 
 /// How many bonds this atom currently holds. 0 for a stale handle or an
@@ -1214,6 +1242,44 @@ mod tests {
         for &s in &satellites {
             assert_eq!(bond_count(&ctx, s), 1, "each satellite should be bonded only to the hub, never to another satellite");
         }
+    }
+
+    #[test]
+    fn handles_scratch_matches_atoms_ptr_order_and_length() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 6, [10.0, 0.0, 0.0]);
+        let c = spawn_atom(&mut ctx, 8, [20.0, 0.0, 0.0]);
+
+        // Despawn the middle one via swap-remove, same as any other test in
+        // this file relies on — the real question here is whether the
+        // handles scratch buffer tracks that reordering correctly, not just
+        // whether it's right for a fresh, never-despawned set.
+        despawn_atom(&mut ctx, b);
+
+        let handles_ptr = refresh_handles_scratch(&mut ctx);
+        let count = ctx.atoms.len();
+        assert_eq!(count, 2, "a and c should remain live after b's despawn");
+
+        let handles: &[AtomHandle] = unsafe { core::slice::from_raw_parts(handles_ptr, count) };
+        let atoms_ptr = atoms_ptr(&ctx);
+        let atoms: &[AtomState] = unsafe { core::slice::from_raw_parts(atoms_ptr, count) };
+
+        assert_eq!(handles.len(), atoms.len(), "same dense array length as atoms_ptr");
+
+        // Every index i's handle must correspond to the SAME atom as index i
+        // in the atoms array — resolve each handle independently via
+        // TryGetAtom-equivalent logic and confirm the position/atomic_number
+        // match what's sitting at that same index in the atoms array.
+        for i in 0..count {
+            let resolved_pos = resolve(&ctx, handles[i]).expect("every handle in the scratch buffer must resolve");
+            assert_eq!(resolved_pos, i, "handles[i] must resolve back to position i — same dense order as atoms_ptr");
+            assert_eq!(ctx.atoms[resolved_pos].atomic_number, atoms[i].atomic_number);
+        }
+
+        // The despawned handle must not appear anywhere in the refreshed buffer.
+        assert!(!handles.contains(&b), "a despawned atom's stale handle must not appear in the refreshed scratch buffer");
+        assert!(handles.contains(&a) && handles.contains(&c), "both surviving atoms' handles must be present");
     }
 }
 
