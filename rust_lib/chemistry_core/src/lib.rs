@@ -115,6 +115,19 @@ pub struct BondGeometry {
 
 const _: () = assert!(core::mem::size_of::<BondGeometry>() == 8);
 
+/// Rest angle and current live angle of one angle triple centered at a
+/// vertex atom, in **radians** — what C# needs to draw/animate an angle
+/// bend, or check how strained it is. Same role `BondGeometry` plays for
+/// a bond edge. See `chem_angle_geometry_at`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AngleGeometry {
+    pub equilibrium_angle: f32,   //  0
+    pub current_angle:     f32,   //  4
+}
+
+const _: () = assert!(core::mem::size_of::<AngleGeometry>() == 8);
+
 // ── FFI surface ───────────────────────────────────────────────────────────────
 
 /// Create a persistent simulation context: owns the atom array, the
@@ -326,6 +339,76 @@ pub unsafe extern "C" fn chem_bond_geometry_at(
     }
 }
 
+/// How many angle triples this atom is currently the **vertex** of — an
+/// atom needs >= 2 simultaneous bonds to be one (every *pair* of its
+/// bonds forms one triple). 0 for a stale handle or an atom that isn't a
+/// vertex right now, deliberately not distinguished — same "nothing
+/// there" contract `chem_bond_count` already uses. Does **not** count
+/// triples where this atom is only an *arm* — walking "every angle this
+/// atom is touched by at all" isn't something this sim indexes (see
+/// `AngleInfo`'s own doc for why); to find those, walk this atom's own
+/// bond partners and check each one's `chem_angle_count`/
+/// `chem_angle_arms_at` instead.
+#[no_mangle]
+pub unsafe extern "C" fn chem_angle_count(ctx: *const SimContext, handle: AtomHandle) -> i32 {
+    let ctx = &*ctx;
+    simulation::angle_count(ctx, handle) as i32
+}
+
+/// This atom's `index`-th angle triple's two arm atoms
+/// (`0..chem_angle_count(...)`) — `handle` itself is always the vertex.
+/// Returns `false` (leaving both out params untouched) for a stale
+/// handle, a non-vertex atom, or an out-of-range index — same "nothing
+/// there" contract every other accessor here uses. Order isn't
+/// semantically meaningful (formation order), just stable within a
+/// single frame — same caveat `chem_bond_partner_at` already carries.
+#[no_mangle]
+pub unsafe extern "C" fn chem_angle_arms_at(
+    ctx:       *const SimContext,
+    handle:    AtomHandle,
+    index:     i32,
+    out_arm_a: *mut AtomHandle,
+    out_arm_b: *mut AtomHandle,
+) -> bool {
+    let ctx = &*ctx;
+    if index < 0 {
+        return false;
+    }
+    match simulation::angle_arms_at(ctx, handle, index as usize) {
+        Some((a, b)) => { *out_arm_a = a; *out_arm_b = b; true }
+        None => false,
+    }
+}
+
+/// Rest angle and current live angle (both **radians**) of this atom's
+/// `index`-th angle triple (`0..chem_angle_count(...)`) — same indexing
+/// as `chem_angle_arms_at`. `current_angle` is computed live from
+/// `ctx.atoms[..].position` — accurate as of whatever the caller's last
+/// `chem_step` left it at, same "always current, no step-ordering
+/// dependency" contract `chem_bond_geometry_at` already documents.
+///
+/// Strain isn't computed here either, same reasoning `chem_bond_geometry_at`
+/// already gives for bonds: `current_angle - equilibrium_angle` is one
+/// line on the C# side, and leaving it there keeps this accessor from
+/// baking in a visualization/threshold opinion the game side hasn't
+/// settled yet.
+#[no_mangle]
+pub unsafe extern "C" fn chem_angle_geometry_at(
+    ctx:    *const SimContext,
+    handle: AtomHandle,
+    index:  i32,
+    out:    *mut AngleGeometry,
+) -> bool {
+    let ctx = &*ctx;
+    if index < 0 {
+        return false;
+    }
+    match simulation::angle_geometry_at(ctx, handle, index as usize) {
+        Some(geo) => { *out = geo; true }
+        None => false,
+    }
+}
+
 // ── Custom elements ──────────────────────────────────────────────────────
 //
 // Global, not per-SimContext — see `element_data::register_element`'s own
@@ -394,4 +477,11 @@ pub extern "C" fn chem_handle_size() -> i32 {
 #[no_mangle]
 pub extern "C" fn chem_bond_geometry_size() -> i32 {
     core::mem::size_of::<BondGeometry>() as i32
+}
+
+/// `AngleGeometry` size validation, same idea as `chem_struct_size`.
+/// Should always return 8.
+#[no_mangle]
+pub extern "C" fn chem_angle_geometry_size() -> i32 {
+    core::mem::size_of::<AngleGeometry>() as i32
 }

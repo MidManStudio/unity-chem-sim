@@ -9,6 +9,7 @@
 //   AtomHandle    = 8 bytes
 //   AtomState     = 48 bytes
 //   BondGeometry  = 8 bytes
+//   AngleGeometry = 8 bytes
 //
 // Rust bool ABI note, worth being explicit about: chemistry_core's Rust
 // side returns `bool` directly from several FFI functions (despawn, get,
@@ -119,6 +120,35 @@ namespace MidManStudio.Alembic.Core
         /// visualized/thresholded" opinion into the FFI boundary.
         /// </summary>
         public float Strain => (CurrentLength - EquilibriumLength) / EquilibriumLength;
+    }
+
+    /// <summary>
+    /// Rest angle and current live angle of one angle triple centered at a
+    /// vertex atom, in <b>radians</b> — enough to draw/animate a bend, or
+    /// show one straining. 8 bytes — must match Rust AngleGeometry repr(C)
+    /// exactly. Same role <see cref="BondGeometry"/> plays for a bond edge.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 8)]
+    public struct AngleGeometry
+    {
+        [FieldOffset(0)] public float EquilibriumAngle;
+        [FieldOffset(4)] public float CurrentAngle;
+
+        /// <summary>
+        /// CurrentAngle - EquilibriumAngle, radians. Same "not computed on
+        /// the Rust side" reasoning <see cref="BondGeometry.Strain"/>'s own
+        /// doc gives, and the same not-a-Strain naming on purpose — an
+        /// angle bending 5 degrees isn't "5% strained" the way a bond
+        /// stretching 5% of its rest length is; there's no natural
+        /// denominator to normalize by the way bond length has one.
+        /// </summary>
+        public float DeltaRadians => CurrentAngle - EquilibriumAngle;
+
+        /// <summary>Convenience — EquilibriumAngle in degrees, for inspector/UI display.</summary>
+        public float EquilibriumDegrees => EquilibriumAngle * Mathf.Rad2Deg;
+
+        /// <summary>Convenience — CurrentAngle in degrees, for inspector/UI display.</summary>
+        public float CurrentDegrees => CurrentAngle * Mathf.Rad2Deg;
     }
 
     /// <summary>
@@ -292,6 +322,56 @@ namespace MidManStudio.Alembic.Core
         public static bool TryGetBondGeometry(IntPtr ctx, AtomHandle handle, int index, out BondGeometry geometry) =>
             chem_bond_geometry_at(ctx, handle, index, out geometry) != 0;
 
+        // ── Angles ───────────────────────────────────────────────────────────
+        //
+        // An angle triple is a property of its VERTEX atom specifically —
+        // the bend at that one atom, between two of its own bonds. `handle`
+        // below is always the vertex; the two arms returned are the other
+        // two atoms forming the angle's legs, not vertices of their own
+        // unless they separately show up with >= 2 bonds. Chasing "every
+        // angle this atom is touched by at all" (not just ones it's the
+        // vertex of) means walking its own bond partners and checking each
+        // one's ChemAngleCount/TryGetAngleArms in turn — this accessor set
+        // doesn't index the reverse direction, same as chemistry_core's own
+        // Rust-side AngleInfo doc explains.
+
+        /// <summary>
+        /// How many angle triples this atom is currently the <b>vertex</b>
+        /// of — needs &gt;= 2 simultaneous bonds to be one (every <i>pair</i>
+        /// of its bonds forms one triple). 0 for a stale handle or an atom
+        /// that isn't a vertex right now, deliberately not distinguished —
+        /// same "nothing there" contract <see cref="chem_bond_count"/>
+        /// already uses. Iterate <c>0..ChemAngleCount(...)</c> with
+        /// <see cref="TryGetAngleArms"/> / <see cref="TryGetAngleGeometry"/>
+        /// to walk every one.
+        /// </summary>
+        [DllImport(DLL)] public static extern int chem_angle_count(IntPtr ctx, AtomHandle handle);
+
+        [DllImport(DLL)] private static extern byte chem_angle_arms_at(IntPtr ctx, AtomHandle handle, int index, out AtomHandle armA, out AtomHandle armB);
+        /// <summary>
+        /// This atom's <paramref name="index"/>-th angle triple's two arm
+        /// atoms (<c>0..ChemAngleCount(...)</c>) — <paramref name="handle"/>
+        /// itself is always the vertex. False (arms left default) for a
+        /// stale handle, a non-vertex atom, or an out-of-range index — same
+        /// "nothing there" contract every other accessor here uses. Order
+        /// isn't semantically meaningful (formation order), just stable
+        /// within a single frame — same caveat <see cref="TryGetBondPartner"/>
+        /// already carries.
+        /// </summary>
+        public static bool TryGetAngleArms(IntPtr ctx, AtomHandle handle, int index, out AtomHandle armA, out AtomHandle armB) =>
+            chem_angle_arms_at(ctx, handle, index, out armA, out armB) != 0;
+
+        [DllImport(DLL)] private static extern byte chem_angle_geometry_at(IntPtr ctx, AtomHandle handle, int index, out AngleGeometry geometry);
+        /// <summary>
+        /// Rest angle and current live angle (both radians) of this atom's
+        /// <paramref name="index"/>-th angle triple — same indexing as
+        /// <see cref="TryGetAngleArms"/>. <see cref="AngleGeometry.CurrentAngle"/>
+        /// reflects whatever the last <see cref="chem_step"/> left it at, no
+        /// extra call needed to refresh it.
+        /// </summary>
+        public static bool TryGetAngleGeometry(IntPtr ctx, AtomHandle handle, int index, out AngleGeometry geometry) =>
+            chem_angle_geometry_at(ctx, handle, index, out geometry) != 0;
+
         // ── Custom elements ──────────────────────────────────────────────────
         //
         // Global, not per-context — see chem_register_element's own Rust-side
@@ -357,6 +437,7 @@ namespace MidManStudio.Alembic.Core
         [DllImport(DLL)] private static extern int chem_struct_size();
         [DllImport(DLL)] private static extern int chem_handle_size();
         [DllImport(DLL)] private static extern int chem_bond_geometry_size();
+        [DllImport(DLL)] private static extern int chem_angle_geometry_size();
 
         private static bool? _isAvailable;
 
@@ -416,6 +497,7 @@ namespace MidManStudio.Alembic.Core
             ok &= Check("AtomState", Marshal.SizeOf<AtomState>(), chem_struct_size(), 48);
             ok &= Check("AtomHandle", Marshal.SizeOf<AtomHandle>(), chem_handle_size(), 8);
             ok &= Check("BondGeometry", Marshal.SizeOf<BondGeometry>(), chem_bond_geometry_size(), 8);
+            ok &= Check("AngleGeometry", Marshal.SizeOf<AngleGeometry>(), chem_angle_geometry_size(), 8);
 
             if (!ok)
                 throw new InvalidOperationException(
