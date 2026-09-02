@@ -1,11 +1,16 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 20 elements now — the original H, He, Li, Be, B, plus the
-//! full gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb,
-//! Zn, Cu, Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization
-//! pass. This table grows with the source; not generated automatically,
-//! re-sync by eye when it grows further.
+//! Source has 26 elements now — the original H, He, Li, Be, B, the full
+//! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
+//! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
+//! and now F, Ne, Na, Mg, Al, Si — the first batch of the full
+//! periodic-table fill-in (ascending Z, batch by batch; this batch finishes
+//! period 2 and starts period 3). Completing this batch also finishes the
+//! gameplay-doc §1.2 procedural-root-table naming set (Na/K/Ca/Cl were the
+//! only elements that set still needed; K and Ca land in the next batch).
+//! This table grows with the source; not generated automatically, re-sync
+//! by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -61,6 +66,37 @@
 //! have. Treat the 15 new sigma/epsilon pairs as "real published
 //! force-field values," not "spectroscopically exact," when tuning game
 //! feel against them.
+//!
+//! ## Where the F/Ne/Na/Mg/Al/Si batch's LJ parameters come from
+//!
+//! This batch mixes both sourcing strategies above, per element, rather
+//! than picking one uniformly — chosen per the same "real spectroscopic
+//! data first, UFF fallback" standard used for He/H:
+//!
+//! - **F, Ne** — real gas-phase transport/viscosity-derived values (same
+//!   category of source as H/He), specifically Poling, Prausnitz &
+//!   O'Connell, *The Properties of Gases and Liquids*, 5th ed. (2001),
+//!   Appendix B. Cross-checked via the `chemicals` Python package
+//!   (CalebBell/chemicals), which transcribes the same table with its own
+//!   citation. This is why F's sigma/epsilon here (3.357 Å / 112.6 K)
+//!   don't match UFF's F values (2.997 Å / 25.16 K, visible in the raw
+//!   `UFF.csv` if compared directly) — the real value took priority, same
+//!   as the existing He-vs-UFF spot check above already demonstrates.
+//! - **Na, Mg, Al, Si** — UFF, same as the 15-element batch. None of the
+//!   four are simple monatomic/diatomic gases, so no real transport-derived
+//!   LJ measurement exists for them in the first place (the same reason
+//!   every metal in the 15-element batch fell back to UFF) — this isn't
+//!   an inconsistent methodology choice, it's the same rule applied
+//!   per-element and landing on a different answer because the physical
+//!   situation is different.
+//!
+//! Also folded into this pass: Be and B's sigma/epsilon, left at
+//! `(0.0, 0.0)` since the original 5-element table ("unparameterized in
+//! source") predate the UFF pass, now get real UFF values too
+//! (σ=2.4455 Å/ε=42.774 K for Be, σ=3.6375 Å/ε=90.580 K for B) — pulled
+//! from the exact same `UFF.csv` fetch as this batch's own metals, purely
+//! because it was a near-zero-cost consistency fix while already in this
+//! file, not a signal anything was wrong with leaving them at zero before.
 
 use crate::AtomState;
 
@@ -96,14 +132,24 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (1,    1.008,  120.0, 2.928, 37.0,   2.20, 1312.0,  72.8),  // Hydrogen
     (2,    4.0026, 140.0, 2.551, 10.22,  0.0,  2372.3,  0.0),   // Helium
     (3,    6.94,   182.0, 2.451, 183.0,  0.98, 520.2,   59.6),  // Lithium
-    (4,    9.0122, 153.0, 0.0,   0.0,    1.57, 899.5,   0.0),   // Beryllium — LJ unparameterized in source
-    (5,    10.81,  192.0, 0.0,   0.0,    2.04, 800.6,   26.7),  // Boron — LJ unparameterized in source
+    (4,    9.0122, 153.0, 2.4455, 42.774,  1.57, 899.5,   0.0),   // Beryllium — UFF (was unparameterized; backfilled alongside the F-Ne-Na-Mg-Al-Si batch)
+    (5,    10.81,  192.0, 3.6375, 90.580,  2.04, 800.6,   26.7),  // Boron — UFF (was unparameterized; backfilled alongside the F-Ne-Na-Mg-Al-Si batch)
     // --- added alongside the bonding generalization (unbounded bonds/atom) ---
     // sigma/eps_K below are UFF (Rappé et al. 1992), not the H/He-style
     // viscosity-derived values — see module docs.
     (6,    12.011, 170.0, 3.4309, 52.838,  2.55, 1086.5, 121.78), // Carbon
     (7,    14.007, 155.0, 3.2607, 34.722,  3.04, 1402.3, 0.0),    // Nitrogen — EA effectively 0/unbound (half-filled 2p3 is extra-stable), same treatment as He
     (8,    15.999, 152.0, 3.1181, 30.193,  3.44, 1313.9, 141.0),  // Oxygen
+    // --- periodic-table fill-in, batch 1 (ascending Z, finishes period 2 + starts period 3) ---
+    // F/Ne sigma+eps_K are real gas-phase viscosity-derived values (Poling
+    // et al. 2001), same category as H/He, NOT UFF. Na/Mg/Al/Si are UFF,
+    // same reasoning as every metal above — see module docs.
+    (9,    18.998, 147.0, 3.357,  112.6,   3.98, 1681.0,  328.0),  // Fluorine — real (Poling), not UFF
+    (10,   20.180, 154.0, 2.82,   32.8,    0.0,  2080.7,  0.0),    // Neon — real (Poling), not UFF; EN=0 (noble gas convention, matches He)
+    (11,   22.990, 227.0, 2.6576, 15.097,  0.93, 495.8,   52.8),   // Sodium — UFF
+    (12,   24.305, 173.0, 2.6914, 55.857,  1.31, 737.7,   0.0),    // Magnesium — UFF; EA effectively 0/unbound (filled 3s2), same treatment as Be/Zn/Hg
+    (13,   26.982, 184.0, 4.0082, 254.126, 1.61, 577.5,   41.76),  // Aluminium — UFF
+    (14,   28.085, 210.0, 3.8264, 202.294, 1.90, 786.5,   134.07), // Silicon — UFF
     (15,   30.974, 180.0, 3.6946, 153.482, 2.19, 1011.8, 72.03),  // Phosphorus
     (16,   32.06,  180.0, 3.5948, 137.882, 2.58, 999.6,  200.41), // Sulfur
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
@@ -385,6 +431,12 @@ mod tests {
             (26, 0.004_901), // Fe
             (30, 0.003_641), // Zn — EA=0 (unbound), like N
             (79, 0.007_613), // Au — highest EA of any metal, still a normal (not inert) reactivity value
+            (9,  0.005_883), // F
+            (10, 0.0),       // Ne — zero electronegativity -> zero reactivity, same shape as He
+            (11, 0.004_199), // Na
+            (12, 0.003_552), // Mg — EA=0 (unbound), like N/Zn/Hg
+            (13, 0.006_010), // Al
+            (14, 0.005_824), // Si
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -410,6 +462,46 @@ mod tests {
         assert_eq!(a.atomic_number, 1);
         assert!((a.mass - 1.008).abs() < 1e-6);
         assert!((a.radius - 120.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_1_landed_with_real_values() {
+        // Silicon: UFF-sourced LJ, spot-checked against the same UFF.csv
+        // transcription used for every other UFF entry in this table.
+        let si = params(14);
+        assert!((si.mass_amu - 28.085).abs() < 1e-6);
+        assert!((si.lj_sigma_a - 3.8264).abs() < 1e-4);
+        assert!((si.lj_eps_ev - 202.294 * K_B_EV_PER_K).abs() < 1e-5);
+
+        // Neon: real (Poling) LJ, not UFF — UFF.csv doesn't even carry a
+        // Ne row, so this value could only have come from the real source.
+        let ne = params(10);
+        assert!((ne.lj_sigma_a - 2.82).abs() < 1e-6);
+        assert!((ne.electronegativity - 0.0).abs() < 1e-6, "noble gas convention, matches He");
+
+        // Fluorine's sigma should NOT equal UFF's F value (2.996983...) —
+        // confirms the real-spectroscopic-first rule actually took
+        // priority over UFF for this element, not just documented as if
+        // it did.
+        let f = params(9);
+        assert!(
+            (f.lj_sigma_a - 2.996983).abs() > 0.1,
+            "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
+        );
+    }
+
+    #[test]
+    fn be_and_b_backfilled_with_real_uff_values() {
+        // Regression guard: Be/B used to be (0.0, 0.0) ("unparameterized
+        // in source"). Confirms the batch-1 backfill actually replaced
+        // them, and didn't accidentally leave either at the old zero.
+        let be = params(4);
+        assert!(be.lj_sigma_a > 0.0 && be.lj_eps_ev > 0.0, "Be must no longer be zero-LJ");
+        assert!((be.lj_sigma_a - 2.4455).abs() < 1e-3);
+
+        let b = params(5);
+        assert!(b.lj_sigma_a > 0.0 && b.lj_eps_ev > 0.0, "B must no longer be zero-LJ");
+        assert!((b.lj_sigma_a - 3.6375).abs() < 1e-3);
     }
 
     // The custom-element registry is a single process-global table, and
@@ -493,4 +585,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-}
+     }
