@@ -1,16 +1,15 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 30 elements now — the original H, He, Li, Be, B, the full
+//! Source has 40 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
-//! F/Ne/Na/Mg/Al/Si (periodic fill-in batch 1, finishes period 2 + starts
-//! period 3), and now Cl/Ar/K/Ca (batch 2, finishes period 3 entirely and
-//! starts period 4). Completing batch 2 also finishes the gameplay-doc
-//! §1.2 procedural-root-table naming set in full — Na/K/Ca/Cl were the
-//! only elements it still needed, and all four are now in the table.
-//! This table grows with the source; not generated automatically, re-sync
-//! by eye when it grows further.
+//! F/Ne/Na/Mg/Al/Si (batch 1, finishes period 2 + starts period 3), Cl/Ar/
+//! K/Ca (batch 2, finishes period 3 entirely and finishes the gameplay-doc
+//! §1.2 naming set), and now Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3, closes
+//! out period 4's d-block — skipping Fe/Cu/Zn, already present — and
+//! starts period 4's p-block). This table grows with the source; not
+//! generated automatically, re-sync by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -162,6 +161,20 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (18,   39.95,  188.0, 3.542,  93.3,    0.0,  1520.6, 0.0),    // Argon — real (Poling), not UFF; EN=0 (noble gas convention, matches He/Ne)
     (19,   39.098, 275.0, 3.396,  17.613,  0.82, 418.8,  48.4),   // Potassium — UFF
     (20,   40.078, 231.0, 3.028,  119.766, 1.00, 589.8,  2.37),   // Calcium — UFF; EA is a small measured positive value (not unbound like Be/Mg)
+    // --- periodic-table fill-in, batch 3 (ascending Z, closes out period 4's
+    // d-block: Sc-Ni, skipping Fe/Cu/Zn already present; starts period 4's
+    // p-block: Ga/Ge/Se) — all 10 are solids at STP, so all use UFF, no
+    // real-vs-UFF split needed this batch.
+    (21,   44.956, 211.0, 2.9355, 9.561,   1.36, 633.1,  18.14),  // Scandium — UFF
+    (22,   47.867, 0.0,   2.8286, 8.555,   1.54, 658.8,  8.1),    // Titanium — UFF; vdW radius genuinely not commonly cited, left 0.0 rather than guessed
+    (23,   50.9415,205.0, 2.8010, 8.052,   1.63, 650.9,  50.65),  // Vanadium — UFF
+    (24,   51.9961,0.0,   2.6932, 7.548,   1.66, 652.9,  65.21),  // Chromium — UFF; first ANTIFERROMAGNETIC element in this table
+    (25,   54.938, 205.0, 2.6380, 6.542,   1.55, 717.3,  0.0),    // Manganese — UFF; EA effectively 0/unbound (half-filled 3d5 4s2), same treatment as N
+    (27,   58.933, 0.0,   2.5587, 7.045,   1.88, 760.4,  64.0),   // Cobalt — UFF; FERROMAGNETIC (Curie point 1394.15 K, highest of any magnetic element)
+    (28,   58.6934,163.0, 2.5248, 7.548,   1.91, 737.1,  111.65), // Nickel — UFF; FERROMAGNETIC (Curie point 631.15 K)
+    (31,   69.723, 187.0, 3.9048, 208.836, 1.81, 578.8,  39.56),  // Gallium — UFF; famously melts just above room temperature (302.91 K)
+    (32,   72.63,  211.0, 3.8130, 190.720, 2.01, 762.0,  118.94), // Germanium — UFF
+    (34,   78.971, 190.0, 3.7462, 146.437, 2.55, 941.0,  194.96), // Selenium — UFF
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -451,6 +464,16 @@ mod tests {
             (18, 0.0),       // Ar — zero electronegativity -> zero reactivity, same shape as He/Ne
             (19, 0.004_428), // K
             (20, 0.003_405), // Ca — EA is small-but-nonzero (2.37), unlike Be/Mg's clean 0.0
+            (21, 0.004_423), // Sc
+            (22, 0.004_733), // Ti
+            (23, 0.005_431), // V
+            (24, 0.005_649), // Cr
+            (25, 0.004_322), // Mn — EA=0 (unbound, half-filled 3d5), like N
+            (27, 0.005_399), // Co
+            (28, 0.006_108), // Ni
+            (31, 0.006_713), // Ga
+            (32, 0.006_251), // Ge
+            (34, 0.006_836), // Se
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -502,6 +525,29 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_3_landed_with_real_values() {
+        // Selenium: UFF-sourced LJ, spot-checked.
+        let se = params(34);
+        assert!((se.mass_amu - 78.971).abs() < 1e-6);
+        assert!((se.lj_sigma_a - 3.7462).abs() < 1e-3);
+        assert!((se.lj_eps_ev - 146.437 * K_B_EV_PER_K).abs() < 1e-4);
+
+        // Manganese: EA effectively 0/unbound (half-filled 3d5 4s2), same
+        // pattern as N's half-filled 2p3 — confirms this landed as a real
+        // physical claim, not an oversight.
+        let mn = params(25);
+        assert!((mn.electron_affinity_kj_mol - 0.0).abs() < 1e-6);
+
+        // No gases in this batch (all 10 are solids at STP), so every LJ
+        // pair should trace back to UFF — spot-check Ga's UFF sigma
+        // specifically, since it's the odd one out (a metal that's
+        // liquid barely above room temperature, easy to mistakenly treat
+        // like a "simple" real-spectroscopic case the way F/Ne/Cl/Ar were).
+        let ga = params(31);
+        assert!((ga.lj_sigma_a - 3.9048090816091072).abs() < 1e-4);
     }
 
     #[test]
