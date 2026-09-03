@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use chemistry_core::{BondParams, SimContext};
+use chemistry_core::{AngleParams, BondParams, SimContext};
 
 /// Spawn a grid of hydrogen atoms spaced 3 Angstroms apart into `ctx`.
 ///
@@ -167,6 +167,10 @@ fn bench_mixed_elements(c: &mut Criterion) {
 fn bench_bond_kernel(c: &mut Criterion) {
     let mut group = c.benchmark_group("bond_kernel");
     let params = BondParams::default();
+    // compute_bonds gained this third parameter alongside angular bonding
+    // (forms one angle triple per pre-existing neighbor when a new bond
+    // edge lands) -- bound once here and reused below, same as `params`.
+    let angle_params = AngleParams::default();
 
     for &n in &[64usize, 256usize, 1024usize] {
         group.throughput(Throughput::Elements(n as u64));
@@ -184,7 +188,7 @@ fn bench_bond_kernel(c: &mut Criterion) {
                     ctx
                 },
                 |mut ctx| {
-                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params));
+                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params), black_box(&angle_params));
                     ctx
                 },
                 BatchSize::SmallInput,
@@ -205,12 +209,12 @@ fn bench_bond_kernel(c: &mut Criterion) {
                     // this grid's 6-neighbor-per-atom geometric max.
                     for _ in 0..8 {
                         chemistry_core::compute_forces_scalar(&mut ctx, 10.0);
-                        chemistry_core::compute_bonds(&mut ctx, &params);
+                        chemistry_core::compute_bonds(&mut ctx, &params, &angle_params);
                     }
                     ctx
                 },
                 |mut ctx| {
-                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params));
+                    chemistry_core::compute_bonds(black_box(&mut ctx), black_box(&params), black_box(&angle_params));
                     ctx
                 },
                 BatchSize::LargeInput,
