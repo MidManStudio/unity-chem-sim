@@ -1,14 +1,14 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 26 elements now — the original H, He, Li, Be, B, the full
+//! Source has 30 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
-//! and now F, Ne, Na, Mg, Al, Si — the first batch of the full
-//! periodic-table fill-in (ascending Z, batch by batch; this batch finishes
-//! period 2 and starts period 3). Completing this batch also finishes the
-//! gameplay-doc §1.2 procedural-root-table naming set (Na/K/Ca/Cl were the
-//! only elements that set still needed; K and Ca land in the next batch).
+//! F/Ne/Na/Mg/Al/Si (periodic fill-in batch 1, finishes period 2 + starts
+//! period 3), and now Cl/Ar/K/Ca (batch 2, finishes period 3 entirely and
+//! starts period 4). Completing batch 2 also finishes the gameplay-doc
+//! §1.2 procedural-root-table naming set in full — Na/K/Ca/Cl were the
+//! only elements it still needed, and all four are now in the table.
 //! This table grows with the source; not generated automatically, re-sync
 //! by eye when it grows further.
 //!
@@ -152,6 +152,16 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (14,   28.085, 210.0, 3.8264, 202.294, 1.90, 786.5,   134.07), // Silicon — UFF
     (15,   30.974, 180.0, 3.6946, 153.482, 2.19, 1011.8, 72.03),  // Phosphorus
     (16,   32.06,  180.0, 3.5948, 137.882, 2.58, 999.6,  200.41), // Sulfur
+    // --- periodic-table fill-in, batch 2 (ascending Z, Cl/K/Ca finish the
+    // gameplay doc's §1.2 procedural-root-table naming set entirely) ---
+    // Cl/Ar sigma+eps_K are real gas-phase viscosity-derived values
+    // (Poling et al. 2001), same as batch 1's F/Ne — NOT UFF, even though
+    // UFF.csv does carry both Cl and Ar rows this time (unlike Ne). K/Ca
+    // are UFF, same reasoning as every other metal in this table.
+    (17,   35.45,  175.0, 4.217,  316.0,   3.16, 1251.2, 348.6),  // Chlorine — real (Poling), not UFF
+    (18,   39.95,  188.0, 3.542,  93.3,    0.0,  1520.6, 0.0),    // Argon — real (Poling), not UFF; EN=0 (noble gas convention, matches He/Ne)
+    (19,   39.098, 275.0, 3.396,  17.613,  0.82, 418.8,  48.4),   // Potassium — UFF
+    (20,   40.078, 231.0, 3.028,  119.766, 1.00, 589.8,  2.37),   // Calcium — UFF; EA is a small measured positive value (not unbound like Be/Mg)
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -437,6 +447,10 @@ mod tests {
             (12, 0.003_552), // Mg — EA=0 (unbound), like N/Zn/Hg
             (13, 0.006_010), // Al
             (14, 0.005_824), // Si
+            (17, 0.007_002), // Cl
+            (18, 0.0),       // Ar — zero electronegativity -> zero reactivity, same shape as He/Ne
+            (19, 0.004_428), // K
+            (20, 0.003_405), // Ca — EA is small-but-nonzero (2.37), unlike Be/Mg's clean 0.0
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -488,6 +502,33 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_2_landed_with_real_values() {
+        // Calcium: UFF-sourced LJ, spot-checked against the same UFF.csv
+        // transcription used everywhere else.
+        let ca = params(20);
+        assert!((ca.mass_amu - 40.078).abs() < 1e-6);
+        assert!((ca.lj_sigma_a - 3.028).abs() < 1e-3);
+        assert!((ca.lj_eps_ev - 119.766 * K_B_EV_PER_K).abs() < 1e-4);
+
+        // Argon: real (Poling) LJ, not UFF — this is the more interesting
+        // regression guard than batch 1's Ne case, since UFF.csv actually
+        // DOES carry an Ar row (3.446 A) this time. Confirms the
+        // real-spectroscopic-first rule took priority even when a UFF
+        // fallback was available and could have been used unnoticed.
+        let ar = params(18);
+        assert!(
+            (ar.lj_sigma_a - 3.4459962417668324).abs() > 0.05,
+            "Ar's sigma should be the real Poling value (3.542), not UFF's (3.446)"
+        );
+        assert!((ar.electronegativity - 0.0).abs() < 1e-6, "noble gas convention, matches He/Ne");
+
+        // Calcium's EA is a small measured POSITIVE value, unlike Be/Mg's
+        // clean 0.0-unbound treatment for the same filled-ns2 pattern —
+        // confirms this wasn't accidentally force-fit to match them.
+        assert!(ca.electron_affinity_kj_mol > 0.0, "Ca's EA should be small-but-nonzero, not forced to 0 like Be/Mg");
     }
 
     #[test]
