@@ -1,15 +1,17 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 50 elements now — the original H, He, Li, Be, B, the full
+//! Source has 60 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
 //! F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca (batch 2, finishes the
 //! gameplay-doc §1.2 naming set), Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3,
-//! closes period 4's d-block), and now Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru
-//! (batch 4, finishes period 4 entirely and opens period 5's s-block and
-//! most of its d-block). This table grows with the source; not generated
-//! automatically, re-sync by eye when it grows further.
+//! closes period 4's d-block), Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru (batch 4,
+//! finishes period 4 entirely and opens period 5's s-block/most of its
+//! d-block), and now Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5, finishes
+//! period 5 entirely, opens period 6, and reaches the first lanthanide).
+//! This table grows with the source; not generated automatically, re-sync
+//! by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -191,6 +193,22 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (42,   95.95,  0.0,   2.7190, 28.180,  2.16, 684.3,  72.09),  // Molybdenum — UFF
     (43,   98.0,   0.0,   2.6709, 24.155,  1.90, 702.4,  53.07),  // Technetium — UFF; NO stable isotopes at all (first such element in this table), atomic weight is its longest-lived isotope's mass per IUPAC convention
     (44,   101.07, 0.0,   2.6397, 28.180,  2.20, 710.2,  100.96), // Ruthenium — UFF
+    // --- periodic-table fill-in, batch 5 (ascending Z, finishes period 5:
+    // Rh/Pd/Cd/In/Te/I/Xe, skipping Ag/Sn/Sb already present; opens period
+    // 6 with Cs/Ba; reaches the first lanthanide, La) ---
+    // I/Xe sigma+eps_K are real gas-phase viscosity-derived values (Poling
+    // et al. 2001), same as every prior batch's gases — NOT UFF. The rest
+    // are UFF, same reasoning as every other metal/metalloid.
+    (45,   102.906,0.0,   2.6094, 26.671,  2.28, 719.7,  110.27), // Rhodium — UFF
+    (46,   106.42, 163.0, 2.5827, 24.155,  2.20, 804.4,  54.24),  // Palladium — UFF
+    (48,   112.414,158.0, 2.5373, 114.734, 1.69, 867.8,  0.0),    // Cadmium — UFF; EA effectively 0/unbound (filled 4d10 5s2), same treatment as Zn/Hg
+    (49,   114.818,193.0, 3.9761, 301.429, 1.78, 558.3,  38.98),  // Indium — UFF
+    (52,   127.6,  206.0, 3.9823, 200.281, 2.10, 869.3,  190.16), // Tellurium — UFF
+    (53,   126.904,198.0, 5.16,   474.2,   2.66, 1008.4, 295.15), // Iodine — real (Poling), not UFF
+    (54,   131.293,216.0, 4.047,  231.0,   0.0,  1170.4, 0.0),    // Xenon — real (Poling), not UFF; EN=0 (noble gas convention — despite real, extensive Xe chemistry; see mdix module docs)
+    (55,   132.905,343.0, 4.0242, 22.645,  0.79, 375.7,  45.5),   // Caesium — UFF
+    (56,   137.327,268.0, 3.2990, 183.172, 0.89, 502.9,  13.95),  // Barium — UFF
+    (57,   138.905,0.0,   3.1377, 8.555,   1.10, 538.1,  45.35),  // Lanthanum — UFF; first lanthanide, no 4f electrons in ground state (classification quirk)
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -500,6 +518,16 @@ mod tests {
             (42, 0.007_056), // Mo
             (43, 0.005_852), // Tc
             (44, 0.007_222), // Ru
+            (45, 0.007_482), // Rh
+            (46, 0.005_865), // Pd
+            (48, 0.003_895), // Cd — EA=0 (unbound, filled 4d10 5s2), like Zn/Hg
+            (49, 0.006_855), // In
+            (52, 0.006_184), // Te
+            (53, 0.007_459), // I
+            (54, 0.0),       // Xe — zero electronegativity -> zero reactivity, same shape as He/Ne/Ar/Kr (NOT Wikipedia's real 2.60 Pauling value — see TABLE comment)
+            (55, 0.004_785), // Cs
+            (56, 0.003_640), // Ba
+            (57, 0.004_465), // La
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -551,6 +579,35 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_5_landed_with_real_values() {
+        // Lanthanum: UFF-sourced LJ, spot-checked — first lanthanide in
+        // the table, worth confirming it landed as a normal, fully
+        // populated row despite the f-block classification quirk.
+        let la = params(57);
+        assert!((la.mass_amu - 138.905).abs() < 1e-6);
+        assert!((la.lj_sigma_a - 3.1377).abs() < 1e-3);
+        assert!((la.lj_eps_ev - 8.555 * K_B_EV_PER_K).abs() < 1e-5);
+
+        // Xenon: real (Poling) LJ, not UFF — same "UFF has a row too, real
+        // still wins" check as Ar (batch 2) and Kr (batch 4). This is the
+        // THIRD noble gas in a row where UFF happened to have a usable
+        // fallback that could have been picked up unnoticed; the pattern
+        // holding three times running is itself worth a regression guard.
+        let xe = params(54);
+        assert!(
+            (xe.lj_sigma_a - 3.923517954690054).abs() > 0.05,
+            "Xe's sigma should be the real Poling value (4.047), not UFF's (3.9235)"
+        );
+        assert!((xe.electronegativity - 0.0).abs() < 1e-6, "noble gas convention, matches He/Ne/Ar/Kr");
+
+        // Cadmium: EA effectively 0/unbound (filled 4d10 5s2), same
+        // pattern as Zn/Hg/Be/Mg — confirms it landed as a real physical
+        // claim, not an oversight.
+        let cd = params(48);
+        assert!((cd.electron_affinity_kj_mol - 0.0).abs() < 1e-6);
     }
 
     #[test]
@@ -726,4 +783,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-     }
+    }
