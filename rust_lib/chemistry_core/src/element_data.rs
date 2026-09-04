@@ -1,17 +1,18 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 60 elements now — the original H, He, Li, Be, B, the full
+//! Source has 70 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
 //! F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca (batch 2, finishes the
 //! gameplay-doc §1.2 naming set), Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3,
 //! closes period 4's d-block), Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru (batch 4,
-//! finishes period 4 entirely and opens period 5's s-block/most of its
-//! d-block), and now Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5, finishes
-//! period 5 entirely, opens period 6, and reaches the first lanthanide).
-//! This table grows with the source; not generated automatically, re-sync
-//! by eye when it grows further.
+//! finishes period 4 and opens period 5's s-block/most of its d-block),
+//! Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5, finishes period 5, opens period
+//! 6, reaches the first lanthanide), and now Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho
+//! (batch 6, first ten of the main lanthanide series — Er/Tm/Yb/Lu land
+//! next batch). This table grows with the source; not generated
+//! automatically, re-sync by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -209,6 +210,24 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (55,   132.905,343.0, 4.0242, 22.645,  0.79, 375.7,  45.5),   // Caesium — UFF
     (56,   137.327,268.0, 3.2990, 183.172, 0.89, 502.9,  13.95),  // Barium — UFF
     (57,   138.905,0.0,   3.1377, 8.555,   1.10, 538.1,  45.35),  // Lanthanum — UFF; first lanthanide, no 4f electrons in ground state (classification quirk)
+    // --- periodic-table fill-in, batch 6 (ascending Z, first ten of the
+    // main lanthanide series: Ce-Ho; Er-Lu land next batch) ---
+    // All 10 are solids at STP, so all use UFF, no real-vs-UFF split this
+    // batch. electron_affinity_kj_mol is a shared low-confidence estimate
+    // (40.0) for 8 of these 10 — lanthanide EAs beyond Ce/Eu are genuinely
+    // unsettled in the literature even in recent papers, sometimes
+    // disagreeing by 2-4x for the SAME element; see mdix module docs for
+    // the full reasoning. Ce and Eu use real, precisely measured values.
+    (58,   140.116,0.0,   3.1680, 6.542,   1.12, 541.0,  57.9),   // Cerium — UFF; EA real (0.600 eV, Fu et al. 2020)
+    (59,   140.90766,0.0, 3.2126, 5.032,   1.13, 522.0,  40.0),   // Praseodymium — UFF; EA is a shared low-confidence estimate
+    (60,   144.242,0.0,   3.1850, 5.032,   1.14, 530.0,  40.0),   // Neodymium — UFF; EA is a shared low-confidence estimate
+    (61,   145.0,  0.0,   3.1600, 4.529,   1.13, 536.0,  40.0),   // Promethium — UFF; NO stable isotopes at all (like Tc), atomic weight is its longest-lived isotope's mass
+    (62,   150.36, 0.0,   3.1360, 4.026,   1.17, 542.0,  40.0),   // Samarium — UFF; EA is a shared low-confidence estimate
+    (63,   151.964,0.0,   3.1119, 4.026,   1.20, 547.0,  11.2),   // Europium — UFF; EA real (0.116 eV, Cheng & Castleman 2015)
+    (64,   157.25, 0.0,   3.0005, 4.529,   1.20, 595.0,  40.0),   // Gadolinium — UFF; EA is a shared low-confidence estimate; ferromagnetic below 292 K
+    (65,   158.92535,0.0, 3.0745, 3.523,   1.10, 569.0,  40.0),   // Terbium — UFF; EA is a shared low-confidence estimate
+    (66,   162.500,0.0,   3.0540, 3.523,   1.22, 567.0,  40.0),   // Dysprosium — UFF; EA is a shared low-confidence estimate
+    (67,   164.93033,0.0, 3.0371, 3.523,   1.23, 574.0,  40.0),   // Holmium — UFF; EA is a shared low-confidence estimate
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -528,6 +547,16 @@ mod tests {
             (55, 0.004_785), // Cs
             (56, 0.003_640), // Ba
             (57, 0.004_465), // La
+            (58, 0.004_637), // Ce
+            (59, 0.004_689), // Pr
+            (60, 0.004_653), // Nd
+            (61, 0.004_556), // Pm
+            (62, 0.004_661), // Sm
+            (63, 0.004_479), // Eu
+            (64, 0.004_324), // Gd
+            (65, 0.004_159), // Tb
+            (66, 0.004_630), // Dy
+            (67, 0.004_607), // Ho
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -579,6 +608,46 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_6_landed_with_real_values() {
+        // Holmium: UFF-sourced LJ, spot-checked.
+        let ho = params(67);
+        assert!((ho.mass_amu - 164.93033).abs() < 1e-6);
+        assert!((ho.lj_sigma_a - 3.0371).abs() < 1e-3);
+        assert!((ho.lj_eps_ev - 3.523 * K_B_EV_PER_K).abs() < 1e-5);
+
+        // Ce and Eu have real, precisely measured EA values (0.600 eV and
+        // 0.116 eV respectively) — confirms they did NOT get swept into
+        // the shared low-confidence placeholder the other 8 lanthanides
+        // in this batch use.
+        let ce = params(58);
+        let eu = params(63);
+        assert!((ce.electron_affinity_kj_mol - 57.9).abs() < 1e-6);
+        assert!((eu.electron_affinity_kj_mol - 11.2).abs() < 1e-6);
+        assert!(
+            (ce.electron_affinity_kj_mol - eu.electron_affinity_kj_mol).abs() > 1.0,
+            "Ce and Eu should NOT share the same EA value"
+        );
+
+        // The other 8 lanthanides in this batch (Pr, Nd, Pm, Sm, Gd, Tb,
+        // Dy, Ho) deliberately share one placeholder EA value (40.0) —
+        // confirms this landed as the documented shared estimate, not 8
+        // coincidentally-identical real measurements.
+        for z in [59, 60, 61, 62, 64, 65, 66, 67] {
+            assert!(
+                (params(z).electron_affinity_kj_mol - 40.0).abs() < 1e-6,
+                "Z={z} should carry the shared lanthanide EA placeholder"
+            );
+        }
+
+        // Promethium: no stable isotopes at all (mdix-side fact, like Tc
+        // in batch 4) — but its TABLE row is still a normal, fully
+        // populated UFF entry.
+        let pm = params(61);
+        assert!((pm.mass_amu - 145.0).abs() < 1e-6);
+        assert!(pm.lj_sigma_a > 0.0 && pm.lj_eps_ev > 0.0);
     }
 
     #[test]
@@ -783,4 +852,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-    }
+}
