@@ -1,15 +1,15 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 40 elements now — the original H, He, Li, Be, B, the full
+//! Source has 50 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
-//! F/Ne/Na/Mg/Al/Si (batch 1, finishes period 2 + starts period 3), Cl/Ar/
-//! K/Ca (batch 2, finishes period 3 entirely and finishes the gameplay-doc
-//! §1.2 naming set), and now Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3, closes
-//! out period 4's d-block — skipping Fe/Cu/Zn, already present — and
-//! starts period 4's p-block). This table grows with the source; not
-//! generated automatically, re-sync by eye when it grows further.
+//! F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca (batch 2, finishes the
+//! gameplay-doc §1.2 naming set), Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3,
+//! closes period 4's d-block), and now Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru
+//! (batch 4, finishes period 4 entirely and opens period 5's s-block and
+//! most of its d-block). This table grows with the source; not generated
+//! automatically, re-sync by eye when it grows further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -175,6 +175,22 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (31,   69.723, 187.0, 3.9048, 208.836, 1.81, 578.8,  39.56),  // Gallium — UFF; famously melts just above room temperature (302.91 K)
     (32,   72.63,  211.0, 3.8130, 190.720, 2.01, 762.0,  118.94), // Germanium — UFF
     (34,   78.971, 190.0, 3.7462, 146.437, 2.55, 941.0,  194.96), // Selenium — UFF
+    // --- periodic-table fill-in, batch 4 (ascending Z, opens period 5:
+    // Br/Kr finish period 4 entirely; Rb-Ru start period 5's s-block and
+    // d-block) ---
+    // Br/Kr sigma+eps_K are real gas-phase viscosity-derived values
+    // (Poling et al. 2001), same as every prior batch's gases — NOT UFF.
+    // Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru are UFF, same reasoning as every other metal.
+    (35,   79.904, 185.0, 4.296,  507.9,   2.96, 1139.9, 324.6),  // Bromine — real (Poling), not UFF; liquid at STP
+    (36,   83.798, 202.0, 3.655,  178.9,   0.0,  1350.8, 0.0),    // Krypton — real (Poling), not UFF; EN=0 (noble gas convention, matches He/Ne/Ar — NOT Wikipedia's cited 3.00, which is real but breaks family consistency; see module docs)
+    (37,   85.4678,303.0, 3.6652, 20.129,  0.82, 403.0,  46.88),  // Rubidium — UFF
+    (38,   87.62,  249.0, 3.2438, 118.257, 0.95, 549.5,  5.02),   // Strontium — UFF
+    (39,   88.906, 0.0,   2.9801, 36.232,  1.22, 600.0,  29.62),  // Yttrium — UFF; vdW radius not commonly cited, left 0.0 rather than guessed
+    (40,   91.224, 0.0,   2.7832, 34.722,  1.33, 640.1,  41.1),   // Zirconium — UFF
+    (41,   92.90638,0.0,  2.8197, 29.690,  1.60, 652.1,  86.16),  // Niobium — UFF; superconductor below 9.3 K (highest Tc of any elemental superconductor)
+    (42,   95.95,  0.0,   2.7190, 28.180,  2.16, 684.3,  72.09),  // Molybdenum — UFF
+    (43,   98.0,   0.0,   2.6709, 24.155,  1.90, 702.4,  53.07),  // Technetium — UFF; NO stable isotopes at all (first such element in this table), atomic weight is its longest-lived isotope's mass per IUPAC convention
+    (44,   101.07, 0.0,   2.6397, 28.180,  2.20, 710.2,  100.96), // Ruthenium — UFF
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -474,6 +490,16 @@ mod tests {
             (31, 0.006_713), // Ga
             (32, 0.006_251), // Ge
             (34, 0.006_836), // Se
+            (35, 0.007_261), // Br
+            (36, 0.0),       // Kr — zero electronegativity -> zero reactivity, same shape as He/Ne/Ar (NOT Wikipedia's real 3.00 Pauling value — see TABLE comment)
+            (37, 0.004_605), // Rb
+            (38, 0.003_490), // Sr
+            (39, 0.004_278), // Y
+            (40, 0.004_441), // Zr
+            (41, 0.005_654), // Nb
+            (42, 0.007_056), // Mo
+            (43, 0.005_852), // Tc
+            (44, 0.007_222), // Ru
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -525,6 +551,34 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_4_landed_with_real_values() {
+        // Ruthenium: UFF-sourced LJ, spot-checked.
+        let ru = params(44);
+        assert!((ru.mass_amu - 101.07).abs() < 1e-6);
+        assert!((ru.lj_sigma_a - 2.6397).abs() < 1e-3);
+        assert!((ru.lj_eps_ev - 28.180 * K_B_EV_PER_K).abs() < 1e-4);
+
+        // Krypton: real (Poling) LJ, not UFF — same "UFF has a row too,
+        // real still wins" check as batch 2's Ar case, since UFF.csv DOES
+        // carry a Kr row (3.689 A) that could have been used unnoticed.
+        let kr = params(36);
+        assert!(
+            (kr.lj_sigma_a - 3.689211591819145).abs() > 0.02,
+            "Kr's sigma should be the real Poling value (3.655), not UFF's (3.689)"
+        );
+        assert!((kr.electronegativity - 0.0).abs() < 1e-6, "noble gas convention, matches He/Ne/Ar");
+
+        // Technetium: no stable isotopes exist (mdix-side fact, not a
+        // Rust-table field) — but its TABLE row should still be a normal,
+        // fully-populated UFF entry like every other metal here, not a
+        // degraded/placeholder one just because the element itself is
+        // synthetic.
+        let tc = params(43);
+        assert!((tc.mass_amu - 98.0).abs() < 1e-6);
+        assert!(tc.lj_sigma_a > 0.0 && tc.lj_eps_ev > 0.0);
     }
 
     #[test]
