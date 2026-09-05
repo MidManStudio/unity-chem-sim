@@ -12,10 +12,34 @@
 //! 6, reaches the first lanthanide), Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho
 //! (batch 6, first ten of the lanthanide series), and now
 //! Er/Tm/Yb/Lu/Hf/Ta/W/Re/Os/Ir (batch 7, closes the lanthanide series
-//! and continues period 6's d-block — Pt lands next batch, then period
-//! 6's remaining p-block, then period 7). This table grows with the
+//! and continues period 6's d-block), and now, out of ascending order
+//! because it was produced by a second, parallel session working the
+//! Z=100-118 tail of the table while this table's own Z=78/81/83-99 gap
+//! is closed separately: Fm/Md/No/Lr/Rf/Db/Sg/Bh/Hs/Mt (batch 9, Z=100-109
+//! — the last four actinides plus the first six transactinides). Batch 8
+//! (Pt, then 81/83-99) is not yet in this file as of batch 9 landing;
+//! whoever merges these should expect Z=78/81/83-99 to still be missing
+//! even though Z=100-109 is now present. This table grows with the
 //! source; not generated automatically, re-sync by eye when it grows
 //! further.
+//!
+//! ## Batch 9 (Z=100-109) — a qualitatively different data regime
+//!
+//! Every element from here on is synthetic with no stable isotopes and,
+//! past Lr (Z=103), no measured atomic properties at all — UFF has no
+//! entries here, and ionization energies are theoretical predictions
+//! only. Fm/Md/No/Lr are the exception: all four have real *measured*
+//! first ionization energies (one-atom-at-a-time laser/surface
+//! ionization spectroscopy, Sato et al. 2015 Nature and 2018 JACS;
+//! Chhetri et al. 2018 PRL for No specifically), and Fm/Md/No/Lr's LJ
+//! parameters are real UFF values — UFF.csv's coverage was reconfirmed
+//! this session to end exactly at Lr (listed as "Lw", element 103's
+//! older name). Db/Sg/Bh/Hs/Mt have no predicted Pauling electronegativity
+//! in the literature at all (not even a theoretical estimate) — their
+//! EN and hence `reactivity_index()` read 0.0 as a **data-gap artifact**,
+//! not the real chemical-inertness zero the noble gases use elsewhere in
+//! this table. See the inline comment on the TABLE rows below before
+//! trusting reactivity_index for those five.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -257,6 +281,51 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (79,   196.967,166.0, 2.9337, 19.626,  2.54, 890.1,  222.8),  // Gold — highest EA of any metal (relativistic effect on 6s), not a typo
     (80,   200.592,155.0, 2.4099, 193.740, 2.00, 1007.1, 0.0),    // Mercury — EA effectively 0/unbound (filled 5d10 6s2), same treatment as He/N/Zn
     (82,   207.2,  202.0, 3.8282, 333.635, 2.33, 715.6,  35.1),   // Lead
+    // --- periodic-table fill-in, batch 9 (parallel chat, ascending Z: Z=100-118 range,
+    // this slice covers Fm-Mt / Z=100-109 -- the tail of the actinide series plus the
+    // first six transactinides). Every element here is fully synthetic with zero stable
+    // isotopes; ALL abundance fields for this whole range are (0.0,0.0,0.0,0.0) in the
+    // mdix source -- not a placeholder, the real physical situation.
+    //
+    // LJ sigma/eps_K: Fm/Md/No/Lr are real UFF (Rappe 1992, via UFF.csv, which covers
+    // this far and NO FURTHER -- confirmed by direct refetch this session, coverage
+    // stops at 'Lw' i.e. Lr). Rf-Mt get (0.0, 0.0) -- genuinely no UFF entry and no
+    // substitute theoretical LJ parameterization found; NOT the same as an unmeasured
+    // metal earlier in this table, there just isn't a source to fall back to here.
+    //
+    // electronegativity: Fm/Md/No/Lr = 1.3 (predicted, matches WebElements/Wikipedia).
+    // Db/Sg/Bh/Hs/Mt = 0.0, but this is a DATA-GAP zero, not the noble-gas real-zero
+    // convention used elsewhere in this table -- no predicted Pauling EN has been
+    // published for these five as of this session's research (WebElements explicitly
+    // lists 'no data' for all five). This means reactivity_index() will read 0.0 for
+    // these five too, which reads as chemically inert -- IT IS NOT; Sg and Hs in
+    // particular have real demonstrated multivalent chemistry (Sg(CO)6 carbonyl, HsO4
+    // volatility). Don't trust reactivity_index for Db/Sg/Bh/Hs/Mt until a real EN
+    // estimate is sourced and this comment is removed.
+    //
+    // ionization energy: Fm/Md/No/Lr are REAL MEASURED values (Sato et al. 2018 JACS;
+    // No refined by Chhetri et al. 2018 PRL laser spectroscopy; Lr first measured by
+    // Sato et al. 2015 Nature, the first-ever IP measurement of any transactinide-
+    // adjacent/superheavy element). Rf-Mt are THEORETICAL ONLY -- no IP measurement
+    // exists past Lr as of this session (confirmed via Physics Today commentary on the
+    // Sato 2015 paper, which explicitly frames Lr as the current experimental frontier).
+    //
+    // electron affinity: none measured for any of these 10. Fm/Md/No use a shared
+    // low-confidence placeholder (40.0 kJ/mol, same convention as the batch-6 lanthanide
+    // placeholder). Lr gets a real, recent, specifically-computed theoretical value
+    // (0.446(11) eV, Guo et al. 2024 relativistic coupled-cluster) -- kept distinct from
+    // the shared placeholder because an actual citable calculation exists for it.
+    // Rf-Mt get 0.0 -- no measured or predicted EA found in literature at all.
+    (100, 257.0, 0.0, 2.927493187809155, 6.038636403436467, 1.30, 629.0, 40.00), // Fermium
+    (101, 258.0, 0.0, 2.916802403191471, 5.535416703150094, 1.30, 636.0, 40.00), // Mendelevium
+    (102, 259.0, 0.0, 2.893639036519822, 5.535416703150094, 1.30, 639.2, 40.00), // Nobelium
+    (103, 266.0, 0.0, 2.882948251902138, 5.535416703150094, 1.30, 478.6, 43.05), // Lawrencium
+    (104, 267.0, 0.0, 0.0, 0.0, 1.30, 580.0, 0.00), // Rutherfordium
+    (105, 268.0, 0.0, 0.0, 0.0, 0.00, 665.0, 0.00), // Dubnium
+    (106, 269.0, 0.0, 0.0, 0.0, 0.00, 757.0, 0.00), // Seaborgium
+    (107, 270.0, 0.0, 0.0, 0.0, 0.00, 740.0, 0.00), // Bohrium
+    (108, 269.0, 0.0, 0.0, 0.0, 0.00, 730.0, 0.00), // Hassium
+    (109, 278.0, 0.0, 0.0, 0.0, 0.00, 800.0, 0.00), // Meitnerium
 ];
 
 /// Look up an element's simulation parameters by atomic number.
@@ -913,4 +982,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-     }
+}
