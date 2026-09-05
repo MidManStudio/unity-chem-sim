@@ -1,7 +1,7 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 70 elements now — the original H, He, Li, Be, B, the full
+//! Source has 80 elements now — the original H, He, Li, Be, B, the full
 //! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
 //! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
 //! F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca (batch 2, finishes the
@@ -9,10 +9,13 @@
 //! closes period 4's d-block), Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru (batch 4,
 //! finishes period 4 and opens period 5's s-block/most of its d-block),
 //! Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5, finishes period 5, opens period
-//! 6, reaches the first lanthanide), and now Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho
-//! (batch 6, first ten of the main lanthanide series — Er/Tm/Yb/Lu land
-//! next batch). This table grows with the source; not generated
-//! automatically, re-sync by eye when it grows further.
+//! 6, reaches the first lanthanide), Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho
+//! (batch 6, first ten of the lanthanide series), and now
+//! Er/Tm/Yb/Lu/Hf/Ta/W/Re/Os/Ir (batch 7, closes the lanthanide series
+//! and continues period 6's d-block — Pt lands next batch, then period
+//! 6's remaining p-block, then period 7). This table grows with the
+//! source; not generated automatically, re-sync by eye when it grows
+//! further.
 //!
 //! ## What's stored vs what's derived
 //!
@@ -228,6 +231,22 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (65,   158.92535,0.0, 3.0745, 3.523,   1.10, 569.0,  40.0),   // Terbium — UFF; EA is a shared low-confidence estimate
     (66,   162.500,0.0,   3.0540, 3.523,   1.22, 567.0,  40.0),   // Dysprosium — UFF; EA is a shared low-confidence estimate
     (67,   164.93033,0.0, 3.0371, 3.523,   1.23, 574.0,  40.0),   // Holmium — UFF; EA is a shared low-confidence estimate
+    // --- periodic-table fill-in, batch 7 (ascending Z, closes the
+    // lanthanide series: Er/Tm/Yb/Lu; continues period 6's d-block:
+    // Hf/Ta/W/Re/Os/Ir) ---
+    // All 10 are solids at STP, so all use UFF. Er/Tm/Yb/Lu's EA is the
+    // same shared lanthanide-series placeholder as batch 6's non-Ce/Eu
+    // entries. Hf/Ta/W/Re/Os/Ir have real, per-element EA values.
+    (68,   167.259,0.0,  3.0209, 3.523,   1.24, 589.3,  40.0),   // Erbium — UFF; EA is a shared low-confidence estimate
+    (69,   168.93421,0.0,3.0056, 2.013,   1.25, 596.7,  40.0),   // Thulium — UFF; EA is a shared low-confidence estimate
+    (70,   173.045,0.0,  2.9890, 114.734, 1.10, 603.4,  40.0),   // Ytterbium — UFF; EA is a shared low-confidence estimate
+    (71,   174.9668,0.0, 3.2429, 20.632,  1.27, 523.5,  40.0),   // Lutetium — UFF; closes the lanthanide series; EA is a shared low-confidence estimate
+    (72,   178.49, 0.0,  2.7983, 36.232,  1.30, 658.5,  0.0),    // Hafnium — UFF; EA real (effectively unbound, d2s2 pattern like Ti/Zr)
+    (73,   180.94788,0.0,2.8241, 40.761,  1.50, 761.0,  31.07),  // Tantalum — UFF; EA real
+    (74,   183.84, 0.0,  2.7342, 33.716,  2.36, 770.0,  78.64),  // Tungsten — UFF; EA real; highest melting point of any element
+    (75,   186.207,0.0,  2.6317, 33.213,  1.90, 760.0,  14.47),  // Rhenium — UFF; EA real
+    (76,   190.23, 0.0,  2.7796, 18.619,  2.20, 814.2,  103.99), // Osmium — UFF; EA real; highest bulk modulus of any element
+    (77,   192.217,0.0,  2.5302, 36.735,  2.20, 865.2,  150.94), // Iridium — UFF; EA real
     (26,   55.845, 194.0, 2.5943, 6.542,   1.83, 762.5,  15.7),   // Iron
     (29,   63.546, 140.0, 3.1137, 2.516,   1.90, 745.5,  118.4),  // Copper
     (30,   65.38,  139.0, 2.4616, 62.399,  1.65, 906.4,  0.0),    // Zinc — EA effectively 0/unbound (filled 3d10 4s2), same treatment as He/N
@@ -557,6 +576,16 @@ mod tests {
             (65, 0.004_159), // Tb
             (66, 0.004_630), // Dy
             (67, 0.004_607), // Ho
+            (68, 0.004_515), // Er
+            (69, 0.004_491), // Tm
+            (70, 0.003_905), // Yb
+            (71, 0.005_253), // Lu
+            (72, 0.003_948), // Hf — EA real (effectively 0/unbound), not the lanthanide placeholder
+            (73, 0.004_110), // Ta
+            (74, 0.006_827), // W
+            (75, 0.005_097), // Re
+            (76, 0.006_195), // Os
+            (77, 0.006_160), // Ir
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -608,6 +637,38 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_7_landed_with_real_values() {
+        // Iridium: UFF-sourced LJ, spot-checked.
+        let ir = params(77);
+        assert!((ir.mass_amu - 192.217).abs() < 1e-6);
+        assert!((ir.lj_sigma_a - 2.5302).abs() < 1e-3);
+        assert!((ir.lj_eps_ev - 36.735 * K_B_EV_PER_K).abs() < 1e-4);
+
+        // Hafnium: EA is REAL (effectively 0/unbound, d2s2 pattern like
+        // Ti/Zr) — must NOT be confused with the shared 40.0 lanthanide
+        // placeholder Er/Tm/Yb/Lu (this batch's own lanthanide tail) use.
+        let hf = params(72);
+        assert!((hf.electron_affinity_kj_mol - 0.0).abs() < 1e-6);
+
+        // Er/Tm/Yb/Lu share the same lanthanide EA placeholder as batch
+        // 6's non-Ce/Eu entries — confirms the convention carried over
+        // correctly into this batch's own lanthanide tail.
+        for z in [68, 69, 70, 71] {
+            assert!(
+                (params(z).electron_affinity_kj_mol - 40.0).abs() < 1e-6,
+                "Z={z} should carry the shared lanthanide EA placeholder"
+            );
+        }
+
+        // Tungsten: highest melting point of any element is a real,
+        // well-known fact — sanity check that mass/LJ landed correctly
+        // for the specific row that claim is attached to.
+        let w = params(74);
+        assert!((w.mass_amu - 183.84).abs() < 1e-6);
+        assert!(w.lj_sigma_a > 0.0 && w.lj_eps_ev > 0.0);
     }
 
     #[test]
@@ -852,4 +913,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-}
+     }
