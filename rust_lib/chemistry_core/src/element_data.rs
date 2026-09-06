@@ -18,12 +18,13 @@
 //! is closed separately: Fm/Md/No/Lr/Rf/Db/Sg/Bh/Hs/Mt (batch 9, Z=100-109
 //! — the last four actinides plus the first six transactinides) and
 //! Ds/Rg/Cn/Nh/Fl/Mc/Lv/Ts/Og (batch 10, Z=110-118 — closes out this
-//! chat's assigned range, the rest of period 7). Batch 8 (Pt, then
-//! 81/83-99) is not yet in this file as of batch 10 landing; whoever
-//! merges these should expect Z=78/81/83-99 to still be missing even
-//! though Z=100-118 is now fully present. This table grows with the
-//! source; not generated automatically, re-sync by eye when it grows
-//! further.
+//! chat's assigned range, the rest of period 7), and Th/Pa/U/Np/Pu/Am/
+//! Cm/Bk/Cf/Es (batch 11, Z=90-99 — the actinide "middle", picked up
+//! from the primary chat's still-open Z=78/81/83-99 gap since this is a
+//! much richer real-data range than most of Z=100-118 and was worth
+//! doing directly rather than waiting). Z=78/81/83-89 is still missing
+//! as of batch 11 landing. This table grows with the source; not
+//! generated automatically, re-sync by eye when it grows further.
 //!
 //! ## Batch 9 (Z=100-109) — a qualitatively different data regime
 //!
@@ -365,6 +366,36 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (116, 293.0, 0.0, 0.0, 0.0, 0.00, 663.9, 0.00), // Livermorium
     (117, 294.0, 0.0, 0.0, 0.0, 0.00, 742.9, 0.00), // Tennessine
     (118, 294.0, 0.0, 0.0, 0.0, 0.00, 860.0, 7.72), // Oganesson -- predicted solid at STP, only noble gas with a positive predicted EA
+    // --- periodic-table fill-in, batch 11 (Z=90-99, Th-Es -- a much richer,
+    // mostly-REAL data regime than batches 9-10. Th and U are essentially normal
+    // fully-characterized metals; Pa/Np/Pu still occur in nature in trace amounts;
+    // only Am-Es are purely synthetic. All ten have real, specifically-cited
+    // electronegativity and IE1 values (no data-gap zeros in this batch).
+    //
+    // LJ sigma/eps_K: real UFF for ALL TEN -- UFF.csv actually covers this entire
+    // range (it only runs out past Lr/Z=103, confirmed in batch 9).
+    //
+    // electron affinity: only Th has a real measured value (113.0 kJ/mol). The
+    // other nine reuse the batch-6/batch-9 shared actinide-analog placeholder
+    // (40.0 kJ/mol) -- EBSCO explicitly confirms Cm and Es EA as literally
+    // 'unknown' rather than merely unfound.
+    //
+    // mass_amu uses the longest-lived isotope per element (IUPAC standard-atomic-
+    // weight convention, matching batch 9): Pu=244, Am=243, Cm=247, Bk=247, Cf=251,
+    // Es=252. The mdix isotopes:: entries instead use each element's PRACTICALLY
+    // significant isotope (Pu-239, Am-241, Cm-244, Bk-249, Cf-252, Es-253) --
+    // the same Tc-99/Pm-147 convention used throughout this table. The two
+    // numbers deliberately differ; this is not a mismatch to fix.
+    (90, 232.0377, 0.0, 3.025492046804592, 13.083712207445677, 1.30, 587.0, 113.00), // Thorium
+    (91, 231.0359, 0.0, 3.0504372109125217, 11.070833406300189, 1.50, 568.0, 40.00), // Protactinium
+    (92, 238.0289, 186.0, 3.0246011480864516, 11.070833406300189, 1.38, 597.6, 40.00), // Uranium
+    (93, 237.0000, 0.0, 3.0504372109125217, 9.561174305441073, 1.36, 604.5, 40.00), // Neptunium
+    (94, 244.0000, 0.0, 3.0504372109125217, 8.051515204581957, 1.28, 584.7, 40.00), // Plutonium
+    (95, 243.0000, 0.0, 3.012128566032487, 7.045075804009212, 1.30, 578.0, 40.00), // Americium
+    (96, 247.0000, 0.0, 2.9631291365347683, 6.541856103722838, 1.30, 581.0, 40.00), // Curium
+    (97, 247.0000, 0.0, 2.9747108198705927, 6.541856103722838, 1.30, 601.0, 40.00), // Berkelium
+    (98, 251.0000, 0.0, 2.9515474531989443, 6.541856103722838, 1.30, 608.0, 40.00), // Californium
+    (99, 252.0000, 0.0, 2.939074871144979, 6.038636403436467, 1.30, 619.0, 40.00), // Einsteinium
 ];
 
 /// Look up an element's simulation parameters by atomic number.
@@ -1002,6 +1033,41 @@ mod tests {
         for z in 110..=117 {
             assert_eq!(params(z).electron_affinity_kj_mol, 0.0, "Z={z}: EA must be 0.0, not accidentally copied from Og");
         }
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_11_landed_with_real_values() {
+        // Z=90-99 (Th-Es), a much richer real-data regime than batches
+        // 9-10: every element here has a genuine sourced EN, so
+        // reactivity_index must be NONZERO throughout, unlike batches
+        // 9-10's data-gap zeros.
+        for z in 90..=99 {
+            let p = params(z);
+            assert!(p.electronegativity > 0.0, "Z={z}: batch 11 elements must all have a real sourced EN, not a data gap");
+            assert!(p.lj_sigma_a > 0.0 && p.lj_eps_ev > 0.0, "Z={z}: UFF.csv covers all of Z=90-99, no zeros expected here");
+            assert!(reactivity_index(p) > 0.0, "Z={z}: batch 11 reactivity_index must be real and nonzero");
+        }
+
+        // Thorium is the one element in this batch with a real MEASURED
+        // electron affinity, not the shared 40.0 actinide placeholder.
+        let th = params(90);
+        assert!((th.electron_affinity_kj_mol - 113.0).abs() < 1e-6, "Th EA must be the real measured value, not the shared placeholder");
+        assert!((th.mass_amu - 232.0377).abs() < 1e-4);
+
+        // Every other element in this batch must still be on the shared
+        // placeholder, not accidentally copy Th's real value.
+        for z in 91..=99 {
+            assert_eq!(params(z).electron_affinity_kj_mol, 40.0, "Z={z}: EA must be the shared actinide placeholder, not Th's real value");
+        }
+
+        // U and Pu spot-checks: mass_amu here is each element's
+        // LONGEST-LIVED isotope (IUPAC convention) even though the
+        // mdix isotopes:: entry for Pu/Am/Cm/Bk/Cf/Es deliberately uses
+        // the practically-significant isotope instead (Tc-99/Pm-147
+        // convention) -- confirms the TABLE row wasn't accidentally
+        // switched to match the mdix practical-isotope choice.
+        assert!((params(92).mass_amu - 238.0289).abs() < 1e-3, "U mass must be U-238 (primordial, 99.27% abundant)");
+        assert!((params(94).mass_amu - 244.0).abs() < 1e-6, "Pu TABLE mass must be Pu-244 (longest-lived), NOT Pu-239 (practically significant, used only in the mdix isotopes:: entry)");
     }
 
     // The custom-element registry is a single process-global table, and
