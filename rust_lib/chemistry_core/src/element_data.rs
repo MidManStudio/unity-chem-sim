@@ -16,10 +16,12 @@
 //! because it was produced by a second, parallel session working the
 //! Z=100-118 tail of the table while this table's own Z=78/81/83-99 gap
 //! is closed separately: Fm/Md/No/Lr/Rf/Db/Sg/Bh/Hs/Mt (batch 9, Z=100-109
-//! — the last four actinides plus the first six transactinides). Batch 8
-//! (Pt, then 81/83-99) is not yet in this file as of batch 9 landing;
-//! whoever merges these should expect Z=78/81/83-99 to still be missing
-//! even though Z=100-109 is now present. This table grows with the
+//! — the last four actinides plus the first six transactinides) and
+//! Ds/Rg/Cn/Nh/Fl/Mc/Lv/Ts/Og (batch 10, Z=110-118 — closes out this
+//! chat's assigned range, the rest of period 7). Batch 8 (Pt, then
+//! 81/83-99) is not yet in this file as of batch 10 landing; whoever
+//! merges these should expect Z=78/81/83-99 to still be missing even
+//! though Z=100-118 is now fully present. This table grows with the
 //! source; not generated automatically, re-sync by eye when it grows
 //! further.
 //!
@@ -326,6 +328,43 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (107, 270.0, 0.0, 0.0, 0.0, 0.00, 740.0, 0.00), // Bohrium
     (108, 269.0, 0.0, 0.0, 0.0, 0.00, 730.0, 0.00), // Hassium
     (109, 278.0, 0.0, 0.0, 0.0, 0.00, 800.0, 0.00), // Meitnerium
+    // --- periodic-table fill-in, batch 10 (parallel chat, closes out the assigned
+    // Z=100-118 range: Z=110-118, Ds through Og). Every element here is fully
+    // synthetic, zero stable isotopes, all abundance 0.0 in the mdix source.
+    //
+    // electronegativity: ALL NINE get 0.0 as a DATA-GAP, not the noble-gas
+    // real-zero convention. Every individual Wikipedia infobox in this range was
+    // checked this session; none lists even a predicted Pauling EN (unlike Rf/Lr
+    // in batch 9, which did). reactivity_index() reads 0.0 for all nine as a
+    // pure data-gap artifact -- do not read that as chemical inertness, least of
+    // all for Og, which is discussed below.
+    //
+    // LJ sigma/eps_K: (0.0, 0.0) for all nine. UFF.csv coverage was reconfirmed
+    // in batch 9 to end at Lr (Z=103); nothing past that has a substitute.
+    //
+    // ionization energy: theoretical/calculated only for all nine -- no IP
+    // measurement exists past Lr (Z=103, batch 9).
+    //
+    // electron affinity: 0.0 for all except Og. Og's EA is a real, distinctive,
+    // recent theoretical result (+0.080(6) eV, e.g. arXiv:2107.02164) -- POSITIVE,
+    // making Og the only noble gas predicted to form a stable anion at all. Kept
+    // as a real citable value, not the batch's usual 0.0 data-gap default.
+    //
+    // Cn (112) and Fl (114) are predicted LIQUID at room temperature (not solid)
+    // -- real specific melting/boiling-point predictions exist for Cn; Fl's
+    // boiling point specifically was not found this session and is left 0.0.
+    // Og (118) is predicted to be a SOLID despite sitting under radon in the
+    // noble gases -- a real, actively-discussed relativistic-effects result, the
+    // mirror image of the Cn/Fl liquid predictions one row above it.
+    (110, 281.0, 0.0, 0.0, 0.0, 0.00, 960.0, 0.00), // Darmstadtium
+    (111, 282.0, 0.0, 0.0, 0.0, 0.00, 1020.0, 0.00), // Roentgenium
+    (112, 285.0, 0.0, 0.0, 0.0, 0.00, 1155.0, 0.00), // Copernicium -- predicted liquid at STP
+    (113, 286.0, 0.0, 0.0, 0.0, 0.00, 704.9, 0.00), // Nihonium
+    (114, 289.0, 0.0, 0.0, 0.0, 0.00, 832.2, 0.00), // Flerovium -- predicted liquid at STP
+    (115, 290.0, 0.0, 0.0, 0.0, 0.00, 538.3, 0.00), // Moscovium
+    (116, 293.0, 0.0, 0.0, 0.0, 0.00, 663.9, 0.00), // Livermorium
+    (117, 294.0, 0.0, 0.0, 0.0, 0.00, 742.9, 0.00), // Tennessine
+    (118, 294.0, 0.0, 0.0, 0.0, 0.00, 860.0, 7.72), // Oganesson -- predicted solid at STP, only noble gas with a positive predicted EA
 ];
 
 /// Look up an element's simulation parameters by atomic number.
@@ -901,6 +940,70 @@ mod tests {
         assert!((b.lj_sigma_a - 3.6375).abs() < 1e-3);
     }
 
+    #[test]
+    fn periodic_fill_in_batch_9_landed_with_real_values() {
+        // Spot-check the batch-9 entries (Z=100-109) against the exact
+        // literals this session intended to transcribe -- catches a
+        // transcription slip the way the Kr/Xe electronegativity bug was
+        // caught in earlier batches. Specifically checks the fields where
+        // two candidate values existed (real-measured vs theoretical-only
+        // IE1; real-UFF vs no-substitute LJ; shared-placeholder vs a real
+        // citable theoretical EA for Lr).
+        let fm = params(100);
+        assert!((fm.mass_amu - 257.0).abs() < 1e-6);
+        assert!((fm.ionization_energy_kj_mol - 629.0).abs() < 1e-6, "Fm IE1 must be the real measured value (Sato 2018), not a placeholder");
+        assert!((fm.electron_affinity_kj_mol - 40.0).abs() < 1e-6, "Fm EA must be the shared actinide placeholder");
+
+        let lr = params(103);
+        assert!((lr.ionization_energy_kj_mol - 478.6).abs() < 1e-6, "Lr IE1 must be the real measured value (Sato 2015 Nature)");
+        assert!(
+            (lr.electron_affinity_kj_mol - 43.05).abs() < 1e-6,
+            "Lr EA must be the real theoretical value (Guo et al. 2024), NOT the 40.0 shared placeholder used for Fm/Md/No"
+        );
+        assert!((lr.lj_sigma_a - 2.882948251902138).abs() < 1e-9, "Lr LJ sigma must be the real UFF value (UFF.csv confirmed to cover up to 'Lw')");
+
+        let rf = params(104);
+        assert_eq!(rf.lj_sigma_a, 0.0, "Rf must have NO LJ substitute -- UFF.csv coverage ends at Lr");
+        assert_eq!(rf.lj_eps_ev, 0.0);
+        assert!((rf.electronegativity - 1.3).abs() < 1e-6, "Rf DOES have a predicted Pauling EN (1.3) -- unlike Db-Mt below");
+
+        for z in [105, 106, 107, 108, 109] {
+            let p = params(z);
+            assert_eq!(p.electronegativity, 0.0, "Z={z}: EN should be 0.0 (data gap, not a real value)");
+            assert_eq!(reactivity_index(p), 0.0, "Z={z}: reactivity_index reads 0.0 as a data-gap artifact, not real inertness");
+        }
+
+        assert!((params(108).mass_amu - 269.0).abs() < 1e-6, "Hs mass must be 269 (the chosen reference isotope), not 271");
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_10_landed_with_real_values() {
+        // Z=110-118, closes out this chat's assigned Z=100-118 range.
+        // Every element here has EN=0.0 as a data-gap (checked
+        // individually against Wikipedia this session, none list a
+        // predicted Pauling EN at all -- unlike Rf/Lr in batch 9).
+        for z in 110..=118 {
+            let p = params(z);
+            assert_eq!(p.electronegativity, 0.0, "Z={z}: EN should be 0.0 (data gap for the whole Z=110-118 range)");
+            assert_eq!(p.lj_sigma_a, 0.0, "Z={z}: no LJ substitute exists past Lr (Z=103)");
+            assert_eq!(reactivity_index(p), 0.0, "Z={z}: reactivity_index reads 0.0 as a data-gap artifact, not real inertness");
+        }
+
+        // Oganesson is the one deliberate exception in this batch: a
+        // real, distinctive, recent theoretical EA (positive -- the only
+        // noble gas predicted to form a stable anion at all). Confirms
+        // it wasn't accidentally left at the batch's usual 0.0 default.
+        let og = params(118);
+        assert!((og.electron_affinity_kj_mol - 7.72).abs() < 1e-6, "Og EA must be the real +0.080(6) eV theoretical prediction, not 0.0");
+        assert!((og.mass_amu - 294.0).abs() < 1e-6);
+
+        // Every other element in this batch must NOT have picked up
+        // Og's nonzero EA by copy-paste accident.
+        for z in 110..=117 {
+            assert_eq!(params(z).electron_affinity_kj_mol, 0.0, "Z={z}: EA must be 0.0, not accidentally copied from Og");
+        }
+    }
+
     // The custom-element registry is a single process-global table, and
     // Rust runs #[test] functions concurrently on separate threads within
     // the SAME process by default — every test below uses its own
@@ -982,4 +1085,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-}
+     }
