@@ -56,6 +56,18 @@ lazy_static = "1.5"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# Vendored copy, refreshed via .github/workflows/vendor-mid-arena.yml --
+# same zero-third-party-dependency vendoring pattern as mid-math/
+# mid-collections above, but dev-only for now: bond_pass_scratch_compare.rs
+# is the only thing that touches it, and it exists to answer "would an
+# arena actually help form_bond's/compute_bonds' transient scratch Vecs",
+# not because that decision is already made. Promote to [dependencies]
+# (and wire into simulation.rs) if and when the bench results say to --
+# not before. `features = ["bump"]` enables BumpArena<T> specifically;
+# see bond_pass_scratch_compare.rs's own module doc for why `compact`
+# isn't needed here.
+mid-arena = { path = "../vendor/mid-arena", features = ["bump"] }
+
 [[bench]]
 name    = "sim_bench"
 harness = false
@@ -69,4 +81,12 @@ harness = false
 # separate dev-dependency needed for either.
 [[bench]]
 name    = "bond_storage_compare"
+harness = false
+
+# Separate target again, same reasoning as bond_storage_compare.rs above
+# -- isolated container/allocator comparison, not real physics. This one
+# needs mid-arena specifically (see the [dev-dependencies] comment above
+# for why that's a dev-dependency rather than a real one right now).
+[[bench]]
+name    = "bond_pass_scratch_compare"
 harness = false
