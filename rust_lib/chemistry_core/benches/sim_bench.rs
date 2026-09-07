@@ -224,5 +224,85 @@ fn bench_bond_kernel(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_step, bench_lj_kernel, bench_mixed_elements, bench_bond_kernel);
+/// Isolates `compute_angles` -- the harmonic angle-bend force pass added
+/// alongside angular bonding (commit 60f1d66) -- the same way
+/// `bench_lj_kernel` isolates the LJ pass and `bench_bond_kernel` isolates
+/// `compute_bonds`. It landed without its own isolated bench until now;
+/// it was only ever exercised indirectly through `bench_step`/
+/// `bench_mixed_elements`, which also pay for LJ and bonding every call --
+/// the exact gap `bench_bond_kernel`'s own doc comment already called out
+/// for `compute_bonds`, back when *that* only had `chem_step`'s combined
+/// number to go on. A change to angle-force cost specifically had nothing
+/// here that could have caught it on its own.
+///
+/// Two states, same reasoning `bench_bond_kernel` already established:
+///
+/// - **`cold`**: fresh grid, one force pass, zero bonds -- and therefore
+///   zero angle triples, since triples only ever form as a side effect of
+///   `form_bond` (`compute_angles`'s own doc comment: "doesn't form or
+///   remove any triples ... driven entirely by bond-topology changes").
+///   Expected to cost close to nothing; this row exists to make that
+///   explicit and comparable across commits, not because it's expected to
+///   be interesting on its own.
+/// - **`warm`**: same 8-round saturation setup as `bench_bond_kernel`'s
+///   `warm` state, so real angle triples exist by the time
+///   `compute_angles` is what's actually timed -- the steady-state number
+///   for a long-running sim, same role `bond_kernel`'s own `warm` row
+///   plays for bonding.
+///
+/// `iter_batched` for the same reason `bench_bond_kernel` uses it over
+/// plain `iter`: setup has to be genuinely fresh per sample so `cold`
+/// stays honestly cold and `warm`'s saturation doesn't compound sample to
+/// sample the way a shared, reused `ctx` would.
+fn bench_angle_kernel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("angle_kernel");
+    let bond_params = BondParams::default();
+    let angle_params = AngleParams::default();
+
+    for &n in &[64usize, 256usize, 1024usize] {
+        group.throughput(Throughput::Elements(n as u64));
+
+        group.bench_function(format!("cold_n={n}"), |b| {
+            b.iter_batched(
+                || {
+                    let mut ctx = SimContext::new(10.0);
+                    spawn_hydrogen_grid(&mut ctx, n);
+                    chemistry_core::compute_forces_scalar(&mut ctx, 10.0);
+                    ctx
+                },
+                |mut ctx| {
+                    chemistry_core::compute_angles(black_box(&mut ctx), black_box(&angle_params));
+                    ctx
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        // Same 8-round saturation setup as bench_bond_kernel's warm state
+        // above -- deliberately not re-deriving a different saturation
+        // point, so this row's atom/angle topology is directly comparable
+        // to that one's, not just similarly named.
+        group.bench_function(format!("warm_n={n}"), |b| {
+            b.iter_batched(
+                || {
+                    let mut ctx = SimContext::new(10.0);
+                    spawn_hydrogen_grid(&mut ctx, n);
+                    for _ in 0..8 {
+                        chemistry_core::compute_forces_scalar(&mut ctx, 10.0);
+                        chemistry_core::compute_bonds(&mut ctx, &bond_params, &angle_params);
+                    }
+                    ctx
+                },
+                |mut ctx| {
+                    chemistry_core::compute_angles(black_box(&mut ctx), black_box(&angle_params));
+                    ctx
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_step, bench_lj_kernel, bench_mixed_elements, bench_bond_kernel, bench_angle_kernel);
 criterion_main!(benches);
