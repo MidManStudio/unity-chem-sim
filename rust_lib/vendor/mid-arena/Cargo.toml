@@ -1,0 +1,26 @@
+[package]
+name        = "mid-arena"
+version     = "0.1.0"
+edition     = "2021"
+description = "Arena/slot allocators for Mid Engine, built and feature-gated piece by piece against a real survey of the Rust arena-crate ecosystem. See docs/mid-arena.md for what's built, what's planned, and why."
+
+[lib]
+name       = "mid_arena"
+crate-type = ["lib"]
+
+[dependencies]
+# Intentionally empty for the default build. See docs/mid-arena.md
+# "Feature gates" -- `compact`, `ffi` will each add exactly one
+# optional dependency the same way mid-collections' own `ffi` feature
+# does (zerocopy, optional, gated, zero-cost when the feature is off),
+# not a new pattern.
+
+[features]
+default = []
+# `bump` and `compact` built -- see src/bump_arena.rs,
+# src/compact_slot_arena.rs, and docs/mid-arena.md "Modules".
+bump = []
+compact = []
+# Still planned, not yet built -- see docs/mid-arena.md "Feature gates".
+# intern  = []
+# ffi     = ["dep:zerocopy"]
