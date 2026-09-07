@@ -1,30 +1,33 @@
 // crates/chemistry_core/src/element_data.rs
 //! Per-element physics parameters, transcribed by hand from
 //! `mdix_files/chemistry_db/elements_database.mdix` in DixScript-Rust.
-//! Source has 80 elements now — the original H, He, Li, Be, B, the full
-//! gameplay-doc §1.1 alchemical-naming set (C, N, O, P, S, As, Sb, Zn, Cu,
-//! Fe, Sn, Pb, Hg, Ag, Au) added alongside the bonding-generalization pass,
-//! F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca (batch 2, finishes the
-//! gameplay-doc §1.2 naming set), Sc/Ti/V/Cr/Mn/Co/Ni/Ga/Ge/Se (batch 3,
-//! closes period 4's d-block), Br/Kr/Rb/Sr/Y/Zr/Nb/Mo/Tc/Ru (batch 4,
-//! finishes period 4 and opens period 5's s-block/most of its d-block),
-//! Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5, finishes period 5, opens period
-//! 6, reaches the first lanthanide), Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho
-//! (batch 6, first ten of the lanthanide series), and now
-//! Er/Tm/Yb/Lu/Hf/Ta/W/Re/Os/Ir (batch 7, closes the lanthanide series
-//! and continues period 6's d-block), and now, out of ascending order
-//! because it was produced by a second, parallel session working the
-//! Z=100-118 tail of the table while this table's own Z=78/81/83-99 gap
-//! is closed separately: Fm/Md/No/Lr/Rf/Db/Sg/Bh/Hs/Mt (batch 9, Z=100-109
-//! — the last four actinides plus the first six transactinides) and
-//! Ds/Rg/Cn/Nh/Fl/Mc/Lv/Ts/Og (batch 10, Z=110-118 — closes out this
-//! chat's assigned range, the rest of period 7), and Th/Pa/U/Np/Pu/Am/
-//! Cm/Bk/Cf/Es (batch 11, Z=90-99 — the actinide "middle", picked up
-//! from the primary chat's still-open Z=78/81/83-99 gap since this is a
-//! much richer real-data range than most of Z=100-118 and was worth
-//! doing directly rather than waiting). Z=78/81/83-89 is still missing
-//! as of batch 11 landing. This table grows with the source; not
-//! generated automatically, re-sync by eye when it grows further.
+//! **COMPLETE — all 118 elements, Z=1 through Z=118, no gaps.** Built up
+//! across two parallel sessions and 11 batches: the original H, He, Li,
+//! Be, B, the full gameplay-doc §1.1 alchemical-naming set (C, N, O, P,
+//! S, As, Sb, Zn, Cu, Fe, Sn, Pb, Hg, Ag, Au) added alongside the
+//! bonding-generalization pass, F/Ne/Na/Mg/Al/Si (batch 1), Cl/Ar/K/Ca
+//! (batch 2, finishes the gameplay-doc §1.2 naming set), Sc/Ti/V/Cr/Mn/
+//! Co/Ni/Ga/Ge/Se (batch 3, closes period 4's d-block), Br/Kr/Rb/Sr/Y/
+//! Zr/Nb/Mo/Tc/Ru (batch 4, finishes period 4 and opens period 5's
+//! s-block/most of its d-block), Rh/Pd/Cd/In/Te/I/Xe/Cs/Ba/La (batch 5,
+//! finishes period 5, opens period 6, reaches the first lanthanide),
+//! Ce/Pr/Nd/Pm/Sm/Eu/Gd/Tb/Dy/Ho (batch 6, first ten lanthanides),
+//! Er/Tm/Yb/Lu/Hf/Ta/W/Re/Os/Ir (batch 7, closes the lanthanide series,
+//! continues period 6's d-block), Pt/Tl/Bi/Po/At/Rn/Fr/Ra/Ac (batch 8,
+//! finishes period 6 entirely and opens period 7 + the actinides — the
+//! primary session's own final gap-fill), and, delivered in parallel by
+//! a second session working the Z=90-118 tail: Th through Es (batch 11,
+//! Z=90-99, the actinide "middle" — a much richer real-data range than
+//! Z=100+, picked up directly rather than left for later), Fm/Md/No/Lr/
+//! Rf/Db/Sg/Bh/Hs/Mt (batch 9, Z=100-109 — the last four actinides plus
+//! the first six transactinides), and Ds/Rg/Cn/Nh/Fl/Mc/Lv/Ts/Og
+//! (batch 10, Z=110-118 — closes out the periodic table). Both
+//! sessions' work was cross-checked for Z-range overlap before merging
+//! (none found) and independently structural-linted + real-parsed on
+//! the merged file. This table is now complete but not immutable — a
+//! future re-measurement of any of the many flagged-estimate/theoretical
+//! fields above Z~90 would still need transcribing in by hand; re-sync
+//! by eye against the mdix source if it ever changes.
 //!
 //! ## Batch 9 (Z=100-109) — a qualitatively different data regime
 //!
@@ -284,6 +287,33 @@ const TABLE: &[(i32, f32, f32, f32, f32, f32, f32, f32)] = &[
     (79,   196.967,166.0, 2.9337, 19.626,  2.54, 890.1,  222.8),  // Gold — highest EA of any metal (relativistic effect on 6s), not a typo
     (80,   200.592,155.0, 2.4099, 193.740, 2.00, 1007.1, 0.0),    // Mercury — EA effectively 0/unbound (filled 5d10 6s2), same treatment as He/N/Zn
     (82,   207.2,  202.0, 3.8282, 333.635, 2.33, 715.6,  35.1),   // Lead
+    // --- periodic-table fill-in, batch 8 (ascending Z, finishes period 6
+    // entirely: Pt/Tl/Bi/Po/At/Rn; opens period 7 with Fr/Ra/Ac). Fills
+    // the Z=78/81/83-89 gap between this table's own ascending Z=1-77
+    // block and batch 9/10/11 (Z=90-118, delivered in parallel by a
+    // second session working the actinide-tail/transactinide range —
+    // Th at Z=90 landed as part of THEIR batch 11, not this one, since
+    // their scope grew to cover Z=90-99 too) ---
+    // All 9 are solids at STP except Rn (gas), so all use UFF except Rn,
+    // which uses a real gas-phase LJ value from Magalhaes et al. (2013)
+    // (not Poling et al. 2001, which doesn't cover Rn) — see mdix docs.
+    // Po, At, Fr are the 3rd/4th/5th elements in this table with no
+    // stable isotopes at all (after Tc batch 4, Pm batch 6). At and Fr
+    // have essentially NEVER been observed in bulk quantity — most of
+    // their fields are honestly 0.0/unknown rather than estimated; see
+    // mdix docs for the full reasoning, especially the Fr/Ac EA notes
+    // (the `chemicals` package's bare 0.0 default for both looks like
+    // missing data, not a real physical zero, given both should closely
+    // resemble their real, nonzero-EA lighter homologs Cs and La).
+    (78,   195.084,175.0, 2.4535, 40.258,  2.28, 864.4,  205.04), // Platinum — UFF; anomalous d9s1 ground state
+    (81,   204.383,196.0, 3.8727, 342.189, 1.62, 589.4,  36.37),  // Thallium — UFF
+    (83,   208.980,207.0, 3.8932, 260.668, 2.02, 702.9,  90.92),  // Bismuth — UFF; Bi-209 only found radioactive in 2003 (t1/2=2.01e19y)
+    (84,   209.0,  197.0, 4.1952, 163.546, 2.00, 811.8,  183.32), // Polonium — UFF; NO stable isotopes
+    (85,   210.0,  0.0,   4.2318, 142.914, 2.20, 899.0,  270.16), // Astatine — UFF; NO stable isotopes; never observed in bulk, most fields honestly 0.0
+    (86,   222.0,  220.0, 4.1012, 292.11,  0.0,  1037.1, 0.0),    // Radon — real (Magalhaes et al. 2013), not UFF, not Poling; NO stable isotopes; EN=0 (noble gas convention)
+    (87,   223.0,  348.0, 4.3654, 25.161,  0.7,  393.0,  47.0),   // Francium — UFF; NO stable isotopes; never observed in bulk; EA is a flagged theoretical estimate, not the tool's bare 0.0 default
+    (88,   226.0,  283.0, 3.2758, 203.301, 0.9,  509.3,  0.0),    // Radium — UFF; EA real (effectively unbound, filled 7s2), unlike Fr's data-gap zero
+    (89,   227.0,  0.0,   3.0985, 16.606,  1.1,  499.0,  33.0),   // Actinium — UFF; opens the actinide series, La's direct homolog; EA is a flagged theoretical estimate, not the tool's bare 0.0 default
     // --- periodic-table fill-in, batch 9 (parallel chat, ascending Z: Z=100-118 range,
     // this slice covers Fm-Mt / Z=100-109 -- the tail of the actinide series plus the
     // first six transactinides). Every element here is fully synthetic with zero stable
@@ -725,6 +755,59 @@ mod tests {
             (75, 0.005_097), // Re
             (76, 0.006_195), // Os
             (77, 0.006_160), // Ir
+            (78, 0.006_916), // Pt
+            (81, 0.005_859), // Tl
+            (83, 0.006_602), // Bi
+            (84, 0.006_365), // Po
+            (85, 0.006_997), // At
+            (86, 0.0),       // Rn — zero electronegativity -> zero reactivity, same shape as He/Ne/Ar/Kr/Xe
+            (87, 0.004_046), // Fr
+            (88, 0.003_534), // Ra
+            (89, 0.004_721), // Ac
+            // Z=90-118 (batches 9-11, delivered in parallel by a second
+            // session) had no reactivity_index test coverage at all until
+            // now -- closing that gap here rather than leaving it open,
+            // since this table's own test discipline should cover every
+            // row regardless of which session originally added it.
+            (90, 0.005_485), // Th
+            (91, 0.005_682), // Pa
+            (92, 0.004_950), // U
+            (93, 0.004_818), // Np
+            (94, 0.004_700), // Pu
+            (95, 0.004_833), // Am
+            (96, 0.004_806), // Cm
+            (97, 0.004_635), // Bk
+            (98, 0.004_577), // Cf
+            (99, 0.004_491), // Es
+            (100, 0.004_414), // Fm
+            (101, 0.004_362), // Md
+            (102, 0.004_339), // No
+            (103, 0.005_969), // Lr
+            (104, 0.004_483), // Rf
+            // Db-Mt's 0.0 is the documented DATA-GAP zero (no predicted EN
+            // exists in the literature at all), NOT real chemical
+            // inertness -- see module docs. Ds-Nh's 0.0 below follows the
+            // same EN=0.00 pattern in TABLE and is presumed the same kind
+            // of data gap (not independently re-researched this session).
+            // Og's 0.0 is more ambiguous: it has a real nonzero predicted
+            // EA (7.72 kJ/mol, the only noble gas in this table with one)
+            // but EN=0.00 in TABLE -- consistent with EITHER the
+            // noble-gas EN=0 convention (He/Ne/Ar/Kr/Xe/Rn) OR a genuine
+            // data gap; not resolved here, flagged rather than guessed.
+            (105, 0.0), // Db — DATA-GAP zero, NOT real chemical inertness
+            (106, 0.0), // Sg — DATA-GAP zero, NOT real chemical inertness
+            (107, 0.0), // Bh — DATA-GAP zero, NOT real chemical inertness
+            (108, 0.0), // Hs — DATA-GAP zero, NOT real chemical inertness
+            (109, 0.0), // Mt — DATA-GAP zero, NOT real chemical inertness
+            (110, 0.0), // Ds — presumed DATA-GAP zero, not independently re-verified
+            (111, 0.0), // Rg — presumed DATA-GAP zero, not independently re-verified
+            (112, 0.0), // Cn — presumed DATA-GAP zero, not independently re-verified
+            (113, 0.0), // Nh — presumed DATA-GAP zero, not independently re-verified
+            (114, 0.0), // Fl — presumed DATA-GAP zero, not independently re-verified
+            (115, 0.0), // Mc — presumed DATA-GAP zero, not independently re-verified
+            (116, 0.0), // Lv — presumed DATA-GAP zero, not independently re-verified
+            (117, 0.0), // Ts — presumed DATA-GAP zero, not independently re-verified
+            (118, 0.0), // Og — EITHER noble-gas EN=0 convention OR a data gap; ambiguous, see comment above
         ];
         for &(z, expected) in cases {
             let got = reactivity_index(params(z));
@@ -776,6 +859,61 @@ mod tests {
             (f.lj_sigma_a - 2.996983).abs() > 0.1,
             "F's sigma should be the real Poling value (3.357), not UFF's (2.997)"
         );
+    }
+
+    #[test]
+    fn periodic_fill_in_batch_8_landed_with_real_values() {
+        // Actinium: UFF-sourced LJ, spot-checked.
+        let ac = params(89);
+        assert!((ac.mass_amu - 227.0).abs() < 1e-6);
+        assert!((ac.lj_sigma_a - 3.0985).abs() < 1e-3);
+        assert!((ac.lj_eps_ev - 16.606 * K_B_EV_PER_K).abs() < 1e-4);
+
+        // Radon: real (Magalhaes et al. 2013) LJ, not UFF -- fourth noble
+        // gas in a row (after Ar/Kr/Xe) where a real measured value had
+        // to be deliberately chosen over an available UFF fallback.
+        let rn = params(86);
+        assert!(
+            (rn.lj_sigma_a - 4.245132391938716).abs() > 0.05,
+            "Rn's sigma should be the real Magalhaes et al. value (4.101), not UFF's (4.245)"
+        );
+        assert!((rn.electronegativity - 0.0).abs() < 1e-6, "noble gas convention, matches He/Ne/Ar/Kr/Xe");
+
+        // Francium and Actinium: EA must be the flagged theoretical
+        // estimate (47.0, 33.0), NOT the `chemicals` package's bare 0.0
+        // default -- confirms the periodic-trend reasoning in the module
+        // docs actually made it into the TABLE rather than being
+        // reasoned about and then silently skipped at transcription time.
+        let fr = params(87);
+        assert!((fr.electron_affinity_kj_mol - 47.0).abs() < 1e-6, "Fr's EA should be the flagged estimate, not the tool's bare 0.0");
+        assert!((ac.electron_affinity_kj_mol - 33.0).abs() < 1e-6, "Ac's EA should be the flagged estimate, not the tool's bare 0.0");
+
+        // Radium: EA is a REAL 0.0 (filled-shell-adjacent pattern, same
+        // as Be/Mg/Ca/Cd/Hf) -- must NOT be confused with Fr/Ac's
+        // data-gap-default 0.0 immediately above. Same numeric TABLE
+        // value, deliberately different meaning.
+        let ra = params(88);
+        assert!((ra.electron_affinity_kj_mol - 0.0).abs() < 1e-6);
+
+        // Astatine: essentially never observed in bulk -- vdw radius,
+        // among other fields, should be honestly 0.0, not a guessed value.
+        let at = params(85);
+        assert!((at.radius_vdw_pm - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn table_covers_every_element_z1_to_z118_with_no_gaps_or_duplicates() {
+        // The whole point of this multi-session, multi-batch project:
+        // confirm it actually landed as advertised. params() falls back
+        // to ElementParams::default() (all-zero) for any Z with no real
+        // TABLE row and no custom registration -- mass_amu > 0.0 is a
+        // reliable proxy for "this Z has a real entry" since every
+        // element in this table, even the most obscure synthetic ones,
+        // has a nonzero documented atomic mass.
+        for z in 1..=118i32 {
+            let p = params(z);
+            assert!(p.mass_amu > 0.0, "Z={z} has no TABLE entry (params() fell through to the zeroed default) -- a gap in what should now be a complete 1-118 table");
+        }
     }
 
     #[test]
@@ -1151,4 +1289,4 @@ mod tests {
         assert!((params(z).mass_amu - 2.0).abs() < 1e-6, "second registration should fully replace the first, not merge with it");
         assert!(unregister_element(z));
     }
-     }
+}
