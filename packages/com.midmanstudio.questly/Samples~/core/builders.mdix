@@ -27,44 +27,44 @@
   // keeps every quest database generating keys the same way, so a host
   // wiring up MdixLocalizationManager.Get(...) always finds them at
   // "quest.<quest_id>.<field>".
-  ~locKey<string>(quest_id<string>, field<string>) {
-    return $"quest.{quest_id}.{field}"
+  ~locKey<string>(_quest_id<string>, _field<string>) {
+    return $"quest.{_quest_id}.{_field}"
   }
 
   // ── Identity ────────────────────────────────────────────────────────────
-  // giver_id is an opaque, host-defined string (an NPC id, a faction id, or
-  // "" for a systemic/no-giver quest) — Questly never interprets it.
-  // category_tags is free-form host taxonomy layered on top of the fixed
+  // _giver_id is an opaque, host-defined string (an NPC id, a faction id,
+  // or "" for a systemic/no-giver quest) — Questly never interprets it.
+  // _category_tags is free-form host taxonomy layered on top of the fixed
   // QuestType enum (e.g. a game might tag a quest "richard_arc" or "heist").
-  ~createIdentity<object>(id<string>, type<enum>, title_key<string>, giver_id<string>, category_tags<array>) {
+  ~createIdentity<object>(_id<string>, _type<enum>, _title_key<string>, _giver_id<string>, _category_tags<array>) {
     return {
-      id            = id
-      type          = type
-      title_key     = title_key
-      giver_id      = giver_id
-      category_tags = category_tags
+      id            = _id
+      type          = _type
+      title_key     = _title_key
+      giver_id      = _giver_id
+      category_tags = _category_tags
     }
   }
 
   // ── Objectives ─────────────────────────────────────────────────────────
-  // One shape for every kind. target / duration_seconds / child_ids /
-  // evaluator_key / params are left at neutral defaults when a given kind
+  // One shape for every kind. _target / _duration_seconds / _child_ids /
+  // _evaluator_key / _params are left at neutral defaults when a given kind
   // doesn't use them — the same convention chemistry_db's createIsotope
   // uses, always passing 0.0 for decay_energy_mev on a stable isotope.
   ~objective<object>(
-    id<string>, kind<enum>, label_key<string>,
-    target<float>, duration_seconds<float>,
-    child_ids<array>, evaluator_key<string>, params<object>
+    _id<string>, _kind<enum>, _label_key<string>,
+    _target<float>, _duration_seconds<float>,
+    _child_ids<array>, _evaluator_key<string>, _params<object>
   ) {
     return {
-      id                = id
-      kind              = kind
-      label_key         = label_key
-      target            = target
-      duration_seconds  = duration_seconds
-      child_ids         = child_ids
-      evaluator_key     = evaluator_key
-      params            = params
+      id                = _id
+      kind              = _kind
+      label_key         = _label_key
+      target            = _target
+      duration_seconds  = _duration_seconds
+      child_ids         = _child_ids
+      evaluator_key     = _evaluator_key
+      params            = _params
     }
   }
 
@@ -73,28 +73,28 @@
   // prereqs simply omits its `prereqs::` path entirely rather than declaring
   // an empty one — Questly treats a missing path as "always available".
   ~prereq<object>(
-    kind<enum>, quest_id<string>, objective_id<string>,
-    expected<bool>, min_value<int>,
-    evaluator_key<string>, params<object>
+    _kind<enum>, _quest_id<string>, _objective_id<string>,
+    _expected<bool>, _min_value<int>,
+    _evaluator_key<string>, _params<object>
   ) {
     return {
-      kind          = kind
-      quest_id      = quest_id
-      objective_id  = objective_id
-      expected      = expected
-      min_value     = min_value
-      evaluator_key = evaluator_key
-      params        = params
+      kind          = _kind
+      quest_id      = _quest_id
+      objective_id  = _objective_id
+      expected      = _expected
+      min_value     = _min_value
+      evaluator_key = _evaluator_key
+      params        = _params
     }
   }
 
   // ── Rewards ────────────────────────────────────────────────────────────
-  // reward_id and payload are entirely host-defined and host-interpreted.
+  // _reward_id and _payload are entirely host-defined and host-interpreted.
   // Questly stores and hands them back on completion; it never acts on them.
-  ~reward<object>(reward_id<string>, payload<object>) {
+  ~reward<object>(_reward_id<string>, _payload<object>) {
     return {
-      reward_id = reward_id
-      payload   = payload
+      reward_id = _reward_id
+      payload   = _payload
     }
   }
 
@@ -103,19 +103,19 @@
   // than nested arrays-of-objects) — easy to append/update a single row
   // without touching the rest of the save, and avoids relying on nested
   // array-of-function-call construction inside @DATA.
-  ~questProgress<object>(quest_id<string>, state<enum>) {
+  ~questProgress<object>(_quest_id<string>, _state<enum>) {
     return {
-      quest_id = quest_id
-      state    = state
+      quest_id = _quest_id
+      state    = _state
     }
   }
 
-  ~questObjectiveProgress<object>(quest_id<string>, objective_id<string>, state<enum>, value<float>) {
+  ~questObjectiveProgress<object>(_quest_id<string>, _objective_id<string>, _state<enum>, _value<float>) {
     return {
-      quest_id     = quest_id
-      objective_id = objective_id
-      state        = state
-      value        = value
+      quest_id     = _quest_id
+      objective_id = _objective_id
+      state        = _state
+      value        = _value
     }
   }
 )
