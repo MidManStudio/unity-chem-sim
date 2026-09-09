@@ -1,0 +1,83 @@
+// com.midmanstudio.questly/Samples~/example_quests.mdix
+// Fully generic example content — no GTG-specific text or logic. Demonstrates
+// the schema shape a consuming game's own quest database should follow.
+// reward_id strings ("currency", "reputation") below are arbitrary examples
+// invented for this file only — Questly defines no reward vocabulary at all.
+
+@CONFIG(
+  version  -> "1.0.0",
+  author   -> "MidMan Studio",
+  features -> "advanced"
+)
+
+@IMPORTS(
+  enums    from "core/enums.mdix",
+  builders from "core/builders.mdix"
+)
+
+@DATA(
+  database_name    = "Questly Example Quest Database",
+  database_version  = "1.0.0",
+
+  // ── Quest 1: simple COUNTER objective, no prereqs, no giver ──────────────
+  // No `prereqs::` path below — omitted entirely, so this quest starts
+  // AVAILABLE the moment the database loads.
+  quests.collect_wood.identity:
+    core = builders.createIdentity("collect_wood", enums.QuestType.SIDE, builders.locKey("collect_wood", "title"), "", [])
+
+  quests.collect_wood.objectives::
+    builders.objective("obj_counter", enums.ObjectiveKind.COUNTER, builders.locKey("collect_wood", "obj_counter"), 5.0, 0.0, [], "", {})
+
+  quests.collect_wood.rewards::
+    builders.reward("currency", { amount = 25 })
+
+  // ── Quest 2: FLAG objective, gated behind Quest 1's completion ───────────
+  // Starts LOCKED. The unlock watcher flips it to AVAILABLE the instant
+  // "collect_wood" completes — no polling required.
+  quests.deliver_package.identity:
+    core = builders.createIdentity("deliver_package", enums.QuestType.SIDE, builders.locKey("deliver_package", "title"), "npc_merchant", [])
+
+  quests.deliver_package.objectives::
+    builders.objective("obj_flag", enums.ObjectiveKind.FLAG, builders.locKey("deliver_package", "obj_flag"), 0.0, 0.0, [], "", {})
+
+  quests.deliver_package.prereqs::
+    builders.prereq(enums.PrereqKind.QUEST_COMPLETED, "collect_wood", "", false, 0, "", {})
+
+  quests.deliver_package.rewards::
+    builders.reward("currency", { amount = 60 }),
+    builders.reward("reputation", { faction = "merchants", delta = 5 })
+
+  // ── Quest 3: COMPOSITE_ALL over two sub-objectives ───────────────────────
+  quests.clear_camp.identity:
+    core = builders.createIdentity("clear_camp", enums.QuestType.MAIN, builders.locKey("clear_camp", "title"), "npc_captain", ["heist"])
+
+  quests.clear_camp.objectives::
+    builders.objective("obj_defeat", enums.ObjectiveKind.COUNTER, builders.locKey("clear_camp", "obj_defeat"), 10.0, 0.0, [], "", {}),
+    builders.objective("obj_flag_leader", enums.ObjectiveKind.FLAG, builders.locKey("clear_camp", "obj_flag_leader"), 0.0, 0.0, [], "", {}),
+    builders.objective("obj_all", enums.ObjectiveKind.COMPOSITE_ALL, builders.locKey("clear_camp", "obj_all"), 0.0, 0.0, ["obj_defeat", "obj_flag_leader"], "", {})
+
+  quests.clear_camp.rewards::
+    builders.reward("currency", { amount = 200 })
+
+  // ── Quest 4: EXTERNAL objective — hybrid extensibility hook ──────────────
+  // Questly ships zero knowledge of "player_in_region" — the host registers
+  // an IQuestObjectiveEvaluator under this exact evaluator_key.
+  quests.scout_ruins.identity:
+    core = builders.createIdentity("scout_ruins", enums.QuestType.SIDE, builders.locKey("scout_ruins", "title"), "", [])
+
+  quests.scout_ruins.objectives::
+    builders.objective("obj_reach", enums.ObjectiveKind.EXTERNAL, builders.locKey("scout_ruins", "obj_reach"), 0.0, 0.0, [], "player_in_region", { region_id = "old_ruins" })
+
+  quests.scout_ruins.rewards::
+    builders.reward("currency", { amount = 15 })
+
+  // ── Quest 5: CONTRACT type — repeatable job-board content ────────────────
+  quests.bounty_board.identity:
+    core = builders.createIdentity("bounty_board", enums.QuestType.CONTRACT, builders.locKey("bounty_board", "title"), "npc_bounty_clerk", [])
+
+  quests.bounty_board.objectives::
+    builders.objective("obj_bounty_kill", enums.ObjectiveKind.COUNTER, builders.locKey("bounty_board", "obj_kill"), 3.0, 0.0, [], "", {})
+
+  quests.bounty_board.rewards::
+    builders.reward("currency", { amount = 40 })
+)

@@ -1,0 +1,59 @@
+// com.midmanstudio.questly/Samples~/core/enums.mdix
+// Generic quest-system enums. Every entry here is a structural / control-flow
+// concept (state machine, objective kind, prereq kind) — never a gameplay-
+// domain concept. Game-specific taxonomy (e.g. "richard_arc", "heist")
+// belongs in a quest's own category_tags array, not in this enum set.
+//
+// These enum names are consumed directly by MdixEnumCodeGenerator to produce
+// matching C# enum types (MidManStudio.Questly.Generated) — this file *is*
+// the source of truth for both the DixScript data and the C# runtime types,
+// nothing here needs to be kept in sync by hand.
+
+@CONFIG(
+  version  -> "1.0.0",
+  author   -> "MidMan Studio - Questly Core Enums",
+  created  -> 2026-09-09T00:00:00Z,
+  encoding -> "UTF-8",
+  features -> "advanced"
+)
+
+@ENUMS(
+  QuestType {
+    MAIN,
+    SIDE,
+    CONTRACT,
+    HIDDEN
+  }
+
+  QuestState {
+    LOCKED,
+    AVAILABLE,
+    ACTIVE,
+    COMPLETED,
+    FAILED,
+    ABANDONED
+  }
+
+  ObjectiveKind {
+    FLAG,
+    COUNTER,
+    TIMER,
+    COMPOSITE_ALL,
+    COMPOSITE_ANY,
+    EXTERNAL
+  }
+
+  ObjectiveState {
+    INCOMPLETE,
+    COMPLETE,
+    FAILED
+  }
+
+  PrereqKind {
+    QUEST_COMPLETED,
+    OBJECTIVE_COMPLETE,
+    FLAG_VALUE,
+    COUNTER_AT_LEAST,
+    EXTERNAL
+  }
+)

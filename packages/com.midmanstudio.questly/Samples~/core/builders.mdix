@@ -1,0 +1,121 @@
+// com.midmanstudio.questly/Samples~/core/builders.mdix
+// Object builders for the generic quest schema. Every object returned here
+// has ONE fixed shape per family (all objectives share a shape, all prereqs
+// share a shape) regardless of kind — fields that don't apply to a given
+// kind are simply left at a neutral default. This keeps every group array
+// of objectives/prereqs homogeneous, and keeps the C# side able to
+// deserialize with one fixed struct per family, discriminating on `kind`.
+
+@CONFIG(
+  version  -> "1.0.0",
+  author   -> "MidMan Studio - Questly Core Builders",
+  created  -> 2026-09-09T00:00:00Z,
+  encoding -> "UTF-8",
+  features -> "advanced"
+)
+
+@IMPORTS(
+  enums from "enums.mdix"
+)
+
+@QUICKFUNCS(
+
+  // ── Localization key convention ────────────────────────────────────────
+  // Every player-facing text field in this schema is a KEY, never a literal
+  // string. Questly stays fully decoupled from com.midmanstudio.mdix.localization
+  // (no dependency, no assumption it's even installed) — but this helper
+  // keeps every quest database generating keys the same way, so a host
+  // wiring up MdixLocalizationManager.Get(...) always finds them at
+  // "quest.<quest_id>.<field>".
+  ~locKey<string>(quest_id<string>, field<string>) {
+    return $"quest.{quest_id}.{field}"
+  }
+
+  // ── Identity ────────────────────────────────────────────────────────────
+  // giver_id is an opaque, host-defined string (an NPC id, a faction id, or
+  // "" for a systemic/no-giver quest) — Questly never interprets it.
+  // category_tags is free-form host taxonomy layered on top of the fixed
+  // QuestType enum (e.g. a game might tag a quest "richard_arc" or "heist").
+  ~createIdentity<object>(id<string>, type<enum>, title_key<string>, giver_id<string>, category_tags<array>) {
+    return {
+      id            = id
+      type          = type
+      title_key     = title_key
+      giver_id      = giver_id
+      category_tags = category_tags
+    }
+  }
+
+  // ── Objectives ─────────────────────────────────────────────────────────
+  // One shape for every kind. target / duration_seconds / child_ids /
+  // evaluator_key / params are left at neutral defaults when a given kind
+  // doesn't use them — the same convention chemistry_db's createIsotope
+  // uses, always passing 0.0 for decay_energy_mev on a stable isotope.
+  ~objective<object>(
+    id<string>, kind<enum>, label_key<string>,
+    target<float>, duration_seconds<float>,
+    child_ids<array>, evaluator_key<string>, params<object>
+  ) {
+    return {
+      id                = id
+      kind              = kind
+      label_key         = label_key
+      target            = target
+      duration_seconds  = duration_seconds
+      child_ids         = child_ids
+      evaluator_key     = evaluator_key
+      params            = params
+    }
+  }
+
+  // ── Prerequisites ──────────────────────────────────────────────────────
+  // Same "one shape, neutral defaults" rule as objectives. A quest with no
+  // prereqs simply omits its `prereqs::` path entirely rather than declaring
+  // an empty one — Questly treats a missing path as "always available".
+  ~prereq<object>(
+    kind<enum>, quest_id<string>, objective_id<string>,
+    expected<bool>, min_value<int>,
+    evaluator_key<string>, params<object>
+  ) {
+    return {
+      kind          = kind
+      quest_id      = quest_id
+      objective_id  = objective_id
+      expected      = expected
+      min_value     = min_value
+      evaluator_key = evaluator_key
+      params        = params
+    }
+  }
+
+  // ── Rewards ────────────────────────────────────────────────────────────
+  // reward_id and payload are entirely host-defined and host-interpreted.
+  // Questly stores and hands them back on completion; it never acts on them.
+  ~reward<object>(reward_id<string>, payload<object>) {
+    return {
+      reward_id = reward_id
+      payload   = payload
+    }
+  }
+
+  // ── Runtime progress (optional package-owned save path) ───────────────────
+  // Flat, per-row shape (quest_id / objective_id carried on every row rather
+  // than nested arrays-of-objects) — easy to append/update a single row
+  // without touching the rest of the save, and avoids relying on nested
+  // array-of-function-call construction inside @DATA.
+  ~questProgress<object>(quest_id<string>, state<enum>) {
+    return {
+      quest_id = quest_id
+      state    = state
+    }
+  }
+
+  ~questObjectiveProgress<object>(quest_id<string>, objective_id<string>, state<enum>, value<float>) {
+    return {
+      quest_id     = quest_id
+      objective_id = objective_id
+      state        = state
+      value        = value
+    }
+  }
+)
