@@ -8,9 +8,10 @@ namespace MidManStudio.Alembic.Rendering
     /// decision and the same Unity hard limit, so it lives here once
     /// instead of twice. Deliberately NOT a shared base class for the
     /// renderers themselves — atoms and bonds pull from genuinely
-    /// different data sources (the dense atom array vs. a per-atom bond
-    /// walk), and forcing them through one inheritance hierarchy for the
-    /// sake of a threshold check and a constant isn't worth the coupling.
+    /// different data sources (the dense atom array vs. the bulk bond
+    /// snapshot processed by <c>Adapters.BondBatchAdapter</c>), and
+    /// forcing them through one inheritance hierarchy for the sake of a
+    /// threshold check and a constant isn't worth the coupling.
     /// </summary>
     public static class InstancingSupport
     {

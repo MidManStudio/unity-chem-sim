@@ -51,7 +51,7 @@
 //! popping into existence — total bonds held is still unbounded, only
 //! the *growth rate* is capped.
 
-use crate::{AtomState, AtomHandle, BondGeometry, AngleGeometry, element_data};
+use crate::{AtomState, AtomHandle, BondGeometry, AngleGeometry, BondRecord, element_data};
 use crate::spatial_hash::SpatialHash;
 use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64, MidVec};
 use mid_collections::{GenerationalIndex, GenerationalIndexAllocator, SparseSet};
@@ -335,6 +335,33 @@ pub struct SimContext {
     /// refresh on demand" shape `positions` already uses for a different
     /// reason (see `refresh_grid`).
     handles_ffi_scratch: Vec<AtomHandle>,
+    /// Persistent scratch for `compute_bonds` Pass 1's per-call list of
+    /// edges that broke this step — reused via `mem::take`/`drain`/
+    /// restore across calls instead of a fresh `Vec::new()` every
+    /// `step()`, same pattern `candidates`/`bonded_this_pass` above
+    /// already use. Bench-driven: `bond_pass_scratch_compare.rs`'s
+    /// `reused_vec` strategy beat both plain `Vec::new()` (this field's
+    /// prior behavior) and a naive `mid_arena::BumpArena` swap at every
+    /// population count tested — including the common `m=0` case (bonds
+    /// rarely break most steps), where the arena's eager first-region
+    /// allocation made it the *worst* of the three, not just not-the-best.
+    broken_scratch: Vec<(GenerationalIndex, GenerationalIndex)>,
+    /// Same reasoning and same bench result as `broken_scratch`, for
+    /// Pass 2's per-call list of candidate new bonds.
+    new_bonds_scratch: Vec<(usize, usize, GenerationalIndex, GenerationalIndex, f32)>,
+    /// FFI-safe flat, deduplicated snapshot of every live bond edge,
+    /// refreshed fresh on every `refresh_bonds_scratch` call — same
+    /// "always rebuilt, never assume stability across calls" contract
+    /// `handles_ffi_scratch`/`refresh_handles_scratch` already
+    /// established for the same reason (`BondRecord` isn't derivable by
+    /// pointer-casting `bonds`'s own per-atom `SparseSet` storage the way
+    /// `atoms`/`handles` are already dense and castable). See
+    /// `chem_bonds_ptr`'s own doc in `lib.rs` for why this exists —
+    /// replaces `BondRenderer.cs`'s prior per-bond P/Invoke walk
+    /// (`chem_bond_count` + `chem_bond_partner_at` + `chem_get_atom` x2 +
+    /// `chem_bond_geometry_at`, once per edge, every frame) with one bulk
+    /// fetch.
+    bonds_ffi_scratch: Vec<BondRecord>,
 }
 
 impl SimContext {
@@ -358,6 +385,9 @@ impl SimContext {
             candidates: Vec::new(),
             bonded_this_pass: Vec::new(),
             handles_ffi_scratch: Vec::new(),
+            broken_scratch: Vec::new(),
+            new_bonds_scratch: Vec::new(),
+            bonds_ffi_scratch: Vec::new(),
         }
     }
 }
@@ -651,6 +681,80 @@ pub fn bond_geometry_at(ctx: &SimContext, h: AtomHandle, index: usize) -> Option
     })
 }
 
+/// Rebuilds `ctx.bonds_ffi_scratch` into a flat, deduplicated snapshot of
+/// every live bond edge and returns a pointer to it — same "always
+/// rebuilt fresh, never assume stability across calls" contract
+/// `refresh_handles_scratch` already established, for the same
+/// `#[repr(C)]`-safety reason: `bonds` is a per-atom `SparseSet` of
+/// small-vecs, not something that can be pointer-cast to an FFI struct
+/// array directly, so an actual rebuild pass is unavoidable — this does
+/// it once, here, instead of `BondRenderer.cs` paying a P/Invoke call per
+/// bond per frame to reconstruct the same information on the managed
+/// side.
+///
+/// Each edge is stored symmetrically (see `BondInfo` docs) — emitted
+/// exactly once here, from whichever side has the **larger** raw
+/// `GenerationalIndex` value, same convention `BondRenderer.cs`'s own
+/// prior per-bond walk already used (its real condition is `if
+/// (partner.Index >= h.Index) continue;`, i.e. it only proceeds when
+/// `h.Index > partner.Index`) rather than a new one invented for this
+/// accessor — a caller migrating from that walk to this bulk snapshot
+/// sees the same edge set either way, not a reshuffled one. (Verified
+/// directly against a real `GenerationalIndexAllocator` before this
+/// shipped — an earlier draft of this comment had the direction backwards.)
+///
+/// `BondRecord.atom_a_index`/`atom_b_index` are dense-array **positions**
+/// (`ctx.atoms`/`ctx.handles` indices), not handles — the same indices
+/// `atoms_ptr`'s own array uses — specifically so a caller that already
+/// holds that array (every renderer does) can index straight into it,
+/// zero further FFI calls needed. `current_length` is read from
+/// `ctx.atoms[..].position` (matches `bond_geometry_at`'s own reasoning
+/// for doing the same) — always current the moment this runs, not
+/// dependent on `ctx.positions` having been populated by a force kernel
+/// first.
+pub fn refresh_bonds_scratch(ctx: &mut SimContext) -> *const BondRecord {
+    ctx.bonds_ffi_scratch.clear();
+    for pos in 0..ctx.atoms.len() {
+        let h = ctx.handles[pos];
+        let Some(list) = ctx.bonds.get(h) else { continue; };
+        for info in list.iter() {
+            if info.partner.index() >= h.index() {
+                continue; // other side of this edge already emitted it, or will
+            }
+            let Some(&partner_pos) = ctx.slot_of.get(info.partner.index()) else { continue; };
+            let partner_pos = partner_pos as usize;
+            if ctx.handles[partner_pos] != info.partner {
+                continue; // stale -- shouldn't happen, same defensive check bond_geometry_at makes
+            }
+
+            let pi = ctx.atoms[pos].position;
+            let pj = ctx.atoms[partner_pos].position;
+            let dx = pj[0] - pi[0];
+            let dy = pj[1] - pi[1];
+            let dz = pj[2] - pi[2];
+            let current_length = (dx * dx + dy * dy + dz * dz).sqrt();
+
+            ctx.bonds_ffi_scratch.push(BondRecord {
+                atom_a_index: pos as u32,
+                atom_b_index: partner_pos as u32,
+                equilibrium_length: info.equilibrium_length,
+                current_length,
+            });
+        }
+    }
+    ctx.bonds_ffi_scratch.as_ptr()
+}
+
+/// Number of entries `refresh_bonds_scratch`'s most recent call produced.
+/// Deliberately not exposed as its own independent FFI function the way
+/// `chem_atom_count` is alongside `chem_atoms_ptr` — see `chem_bonds_ptr`'s
+/// own doc in `lib.rs` for why this total only exists as a byproduct of
+/// the refresh itself, and has to be read atomically with it rather than
+/// via a second, independently-ordered call.
+pub fn bond_total_count(ctx: &SimContext) -> usize {
+    ctx.bonds_ffi_scratch.len()
+}
+
 /// Initialise every currently-live atom's velocity from a Maxwell-
 /// Boltzmann distribution at `temperature_k`, zero their force
 /// accumulators.
@@ -926,13 +1030,20 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
     // One entry in `broken` per *edge* (owner, partner) now, not per
     // atom — an atom mid-multi-bond only loses the specific edge that
     // stretched too far, not every bond it holds.
-    let mut broken: Vec<(GenerationalIndex, GenerationalIndex)> = Vec::new();
+    //
+    // `ctx.broken_scratch` is reused, not `Vec::new()`'d fresh here —
+    // see its own field doc for the bench that justifies this. Populated
+    // via a plain field borrow (`&mut ctx.broken_scratch` alongside the
+    // other disjoint field borrows below), same as how `atoms` already
+    // gets a `&mut` here without conflicting with `bonds`/`slot_of`/
+    // `handles`/`positions`'s shared borrows.
     {
         let bonds = &ctx.bonds;
         let slot_of = &ctx.slot_of;
         let handles = &ctx.handles;
         let positions = &ctx.positions;
         let atoms = &mut ctx.atoms;
+        let broken = &mut ctx.broken_scratch;
 
         for (owner, list) in bonds.iter() {
             let Some(&owner_pos) = slot_of.get(owner.index()) else { continue; };
@@ -981,9 +1092,17 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
             }
         }
     }
-    for (owner, partner) in broken {
+    // `break_one_bond` needs `&mut SimContext` as a whole, which conflicts
+    // with holding a live borrow of `ctx.broken_scratch` while iterating
+    // it — `mem::take`/`drain`/restore sidesteps that (standard idiom for
+    // "mutate self while consuming a self-owned collection") while still
+    // handing the *same* already-allocated buffer back afterward, empty
+    // and ready for next call, instead of dropping it and starting over.
+    let mut broken = core::mem::take(&mut ctx.broken_scratch);
+    for (owner, partner) in broken.drain(..) {
         break_one_bond(ctx, owner, partner);
     }
+    ctx.broken_scratch = broken;
 
     // --- Pass 2: form new bonds among in-range, reactive pairs ---
     // No longer skips atoms that already have a bond (that was the
@@ -998,7 +1117,9 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
     //    atom don't both land in one pass. See module docs for why that
     //    cap exists.
     let n = ctx.atoms.len();
-    let mut new_bonds: Vec<(usize, usize, GenerationalIndex, GenerationalIndex, f32)> = Vec::new();
+    // Reused, not `Vec::new()`'d fresh — see `ctx.new_bonds_scratch`'s
+    // own field doc for the bench that justifies this.
+    ctx.new_bonds_scratch.clear();
 
     for i in 0..n {
         let handle_i = ctx.handles[i];
@@ -1059,13 +1180,16 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         }
 
         if let Some((j, _r, r_min)) = best {
-            new_bonds.push((i, j, handle_i, ctx.handles[j], r_min));
+            ctx.new_bonds_scratch.push((i, j, handle_i, ctx.handles[j], r_min));
         }
     }
 
     ctx.bonded_this_pass.clear();
     ctx.bonded_this_pass.resize(n, false);
-    for (i_pos, j_pos, a, b, eq_len) in new_bonds {
+    // Same `mem::take`/`drain`/restore reasoning as Pass 1's `broken`
+    // above — `form_bond` also needs `&mut SimContext` as a whole.
+    let mut new_bonds = core::mem::take(&mut ctx.new_bonds_scratch);
+    for (i_pos, j_pos, a, b, eq_len) in new_bonds.drain(..) {
         if ctx.bonded_this_pass[i_pos] || ctx.bonded_this_pass[j_pos] {
             continue; // one side already claimed by an earlier pair this pass
         }
@@ -1073,6 +1197,7 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         ctx.bonded_this_pass[j_pos] = true;
         form_bond(ctx, a, b, eq_len, angle_params);
     }
+    ctx.new_bonds_scratch = new_bonds;
 }
 
 /// Harmonic angle-bend force for every currently-tracked angle triple —

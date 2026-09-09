@@ -152,6 +152,31 @@ namespace MidManStudio.Alembic.Core
     }
 
     /// <summary>
+    /// One live, deduplicated bond edge, flattened for zero-copy bulk
+    /// consumption — see <see cref="ChemistryLib.chem_bonds_ptr"/>.
+    /// <see cref="AtomAIndex"/>/<see cref="AtomBIndex"/> are dense-array
+    /// positions — the same indices <see cref="ChemistryLib.chem_atoms_ptr"/>'s
+    /// own array uses, not <see cref="AtomHandle"/>s — so a caller that
+    /// already holds that array (every renderer does) indexes straight
+    /// into it, no further FFI call needed per edge. Same "re-fetch every
+    /// frame, don't cache across a frame boundary" contract
+    /// <see cref="AtomState"/> read via <see cref="ChemistryLib.chem_atoms_ptr"/>
+    /// already carries. 16 bytes — must match Rust BondRecord repr(C)
+    /// exactly.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 16)]
+    public struct BondRecord
+    {
+        [FieldOffset(0)]  public uint  AtomAIndex;
+        [FieldOffset(4)]  public uint  AtomBIndex;
+        [FieldOffset(8)]  public float EquilibriumLength;
+        [FieldOffset(12)] public float CurrentLength;
+
+        /// <summary>Same Strain convenience property <see cref="BondGeometry.Strain"/> already has.</summary>
+        public float Strain => EquilibriumLength > 1e-6f ? (CurrentLength - EquilibriumLength) / EquilibriumLength : 0f;
+    }
+
+    /// <summary>
     /// Plain data container for authoring a custom element — a
     /// ScriptableObject field, a JSON entry, whatever your own tooling
     /// wants to build one from. Not FFI-facing itself (no explicit layout
@@ -322,6 +347,35 @@ namespace MidManStudio.Alembic.Core
         public static bool TryGetBondGeometry(IntPtr ctx, AtomHandle handle, int index, out BondGeometry geometry) =>
             chem_bond_geometry_at(ctx, handle, index, out geometry) != 0;
 
+        /// <summary>
+        /// Read-only pointer into a flat, deduplicated snapshot of every
+        /// live bond edge this frame — <paramref name="count"/> entries
+        /// of <see cref="BondRecord"/> starting at the returned pointer.
+        /// Rebuilt fresh on every call, same "re-fetch every frame, don't
+        /// cache across a frame boundary" contract
+        /// <see cref="chem_atoms_ptr"/>/<see cref="chem_handles_ptr"/>
+        /// already carry.
+        ///
+        /// Exists to replace a per-bond P/Invoke walk (<see cref="chem_bond_count"/>
+        /// + <see cref="TryGetBondPartner"/> + <see cref="TryGetAtom"/> ×2
+        /// + <see cref="TryGetBondGeometry"/>, once per edge, every frame)
+        /// with one bulk fetch — see <see cref="BondRecord"/>'s own doc
+        /// for why its two atom indices need no further lookup once you
+        /// hold this frame's <see cref="chem_atoms_ptr"/> array too. Used
+        /// by <c>Adapters.BondBatchAdapter</c>, not called directly by
+        /// <c>BondRenderer</c> anymore.
+        ///
+        /// Pointer <b>and</b> <paramref name="count"/> both come from this
+        /// one call on purpose, not this plus a separate independent count
+        /// function — unlike <see cref="chem_atom_count"/> (a stable,
+        /// independently-readable field, safe to call before or after
+        /// <see cref="chem_atoms_ptr"/> in either order), the total
+        /// distinct-edge count only exists as a byproduct of the rebuild
+        /// this call performs on the Rust side. See <c>chem_bonds_ptr</c>'s
+        /// own Rust-side doc for the ordering-hazard reasoning.
+        /// </summary>
+        [DllImport(DLL)] public static extern IntPtr chem_bonds_ptr(IntPtr ctx, out int count);
+
         // ── Angles ───────────────────────────────────────────────────────────
         //
         // An angle triple is a property of its VERTEX atom specifically —
@@ -438,6 +492,7 @@ namespace MidManStudio.Alembic.Core
         [DllImport(DLL)] private static extern int chem_handle_size();
         [DllImport(DLL)] private static extern int chem_bond_geometry_size();
         [DllImport(DLL)] private static extern int chem_angle_geometry_size();
+        [DllImport(DLL)] private static extern int chem_bond_record_size();
 
         private static bool? _isAvailable;
 
@@ -498,6 +553,7 @@ namespace MidManStudio.Alembic.Core
             ok &= Check("AtomHandle", Marshal.SizeOf<AtomHandle>(), chem_handle_size(), 8);
             ok &= Check("BondGeometry", Marshal.SizeOf<BondGeometry>(), chem_bond_geometry_size(), 8);
             ok &= Check("AngleGeometry", Marshal.SizeOf<AngleGeometry>(), chem_angle_geometry_size(), 8);
+            ok &= Check("BondRecord", Marshal.SizeOf<BondRecord>(), chem_bond_record_size(), 16);
 
             if (!ok)
                 throw new InvalidOperationException(

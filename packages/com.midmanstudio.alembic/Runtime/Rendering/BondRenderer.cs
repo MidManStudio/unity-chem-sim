@@ -1,42 +1,40 @@
 using System;
-using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Rendering;
 using MidManStudio.Alembic.Core;
+using MidManStudio.Alembic.Adapters;
 
 namespace MidManStudio.Alembic.Rendering
 {
     /// <summary>
     /// Renders every live bond in a chemistry_core context as a thin
     /// cylinder between its two atoms, colored by
-    /// <see cref="BondGeometry.Strain"/> — the actual payoff of that FFI
-    /// accessor's own stated purpose ("show a bond visually straining
-    /// before it snaps"). Same dual-path (GPU instanced / combined-mesh)
-    /// design as <see cref="AtomRenderer"/>, same
-    /// <see cref="InstancingSupport"/> decision logic.
+    /// <see cref="BondDrawInfo.Strain"/> — the actual payoff of that
+    /// value's own stated purpose ("show a bond visually straining before
+    /// it snaps"). Same dual-path (GPU instanced / combined-mesh) design
+    /// as <see cref="AtomRenderer"/>, same <see cref="InstancingSupport"/>
+    /// decision logic.
     ///
-    /// A real, worth-knowing scaling difference from
-    /// <see cref="AtomRenderer"/>: atoms have a genuine zero-copy bulk
-    /// accessor (<see cref="ChemistryLib.chem_atoms_ptr"/>), but bonds
-    /// don't — chemistry_core's FFI surface only offers per-atom,
-    /// per-index bond queries
-    /// (<see cref="ChemistryLib.TryGetBondPartner"/>/
-    /// <see cref="ChemistryLib.TryGetBondGeometry"/>), so this walks
-    /// every live atom's bond list one P/Invoke call at a time. Correct
-    /// and fully functional at the scales this was actually tested
-    /// against, but genuinely more P/Invoke-call-heavy per frame than
-    /// atom rendering is at very large (six-figure) bond counts — if
-    /// that ever becomes a real bottleneck, the right fix is a bulk
-    /// bonds accessor mirroring how <see cref="ChemistryLib.chem_handles_ptr"/>
-    /// mirrors <see cref="ChemistryLib.chem_atoms_ptr"/>, not something
-    /// this file tries to work around on its own.
+    /// Reads bonds via <see cref="ChemistryLib.chem_bonds_ptr"/> — a
+    /// flat, deduplicated, zero-copy snapshot of every live edge, one
+    /// bulk fetch per frame — then hands it to
+    /// <see cref="BondBatchAdapter.FillBatch"/> to compute TRS + strain
+    /// for all of them at once. This replaced an earlier per-bond
+    /// P/Invoke walk (<c>chem_bond_count</c> + <c>chem_bond_partner_at</c>
+    /// + <c>chem_get_atom</c> ×2 + <c>chem_bond_geometry_at</c>, once per
+    /// edge, every frame) once that walk's own doc comment flagged it as
+    /// the thing to fix if bond counts ever got large — this is that
+    /// fix. <see cref="AtomState"/> positions still come from
+    /// <see cref="ChemistryLib.chem_atoms_ptr"/> (same zero-copy accessor
+    /// <see cref="AtomRenderer"/> already uses), never cached across
+    /// frames — same "re-fetch every frame" contract that accessor's own
+    /// doc already establishes, now shared by <see cref="ChemistryLib.chem_bonds_ptr"/>
+    /// too.
     ///
-    /// Bonds are stored symmetrically on the Rust side (both atoms in a
-    /// pair hold an entry for the same edge) — walked naively, every
-    /// edge would be visited, and drawn, twice. Deduplicated here by only
-    /// drawing an edge when <c>handle.Index &lt; partner.Index</c> —
-    /// cheap, no hash set needed, and correct given both handles being
-    /// compared are for atoms that are, by construction, live right now.
+    /// Bonds are already deduplicated on the Rust side (see
+    /// <c>chem_bonds_ptr</c>'s own doc for the exact rule) — no dedup
+    /// logic needed here anymore, unlike the old per-atom walk which had
+    /// to skip the reverse direction of each symmetric edge itself.
     /// </summary>
     [ExecuteAlways]
     public sealed class BondRenderer : MonoBehaviour
@@ -74,6 +72,16 @@ namespace MidManStudio.Alembic.Rendering
         private Color32[] _combinedColors;
         private int[]     _combinedTris;
 
+        /// <summary>
+        /// TRS + strain for this frame's bonds, filled once per
+        /// <see cref="Render"/> call by <see cref="BondBatchAdapter.FillBatch"/>
+        /// and consumed by whichever of <see cref="RenderInstanced"/>/
+        /// <see cref="RenderCombined"/> runs after it — grown (doubled),
+        /// never shrunk, same policy every other scratch buffer in this
+        /// class already uses.
+        /// </summary>
+        private BondDrawInfo[] _drawInfoScratch = Array.Empty<BondDrawInfo>();
+
         private void Awake()
         {
             _defaultCylinderMesh = AlembicMeshUtility.CreatePrimitiveMesh(PrimitiveType.Cylinder, "AlembicBonds_DefaultCylinder");
@@ -105,16 +113,29 @@ namespace MidManStudio.Alembic.Rendering
             int atomCount = ChemistryLib.chem_atom_count(ctx);
             if (atomCount <= 0) return;
 
-            IntPtr handlesPtr = ChemistryLib.chem_handles_ptr(ctx);
-            if (handlesPtr == IntPtr.Zero) return;
-            AtomHandle* handles = (AtomHandle*)handlesPtr;
+            IntPtr atomsPtr = ChemistryLib.chem_atoms_ptr(ctx);
+            if (atomsPtr == IntPtr.Zero) return;
+            AtomState* atoms = (AtomState*)atomsPtr;
+
+            IntPtr bondsPtr = ChemistryLib.chem_bonds_ptr(ctx, out int bondCount);
+            if (bondCount <= 0 || bondsPtr == IntPtr.Zero) return;
+            BondRecord* bonds = (BondRecord*)bondsPtr;
+
+            EnsureDrawInfoCapacity(bondCount);
+            BondBatchAdapter.FillBatch(bonds, bondCount, atoms, atomCount, _drawInfoScratch, _bondRadius);
 
             Mesh mesh = _bondMeshOverride != null ? _bondMeshOverride : _defaultCylinderMesh;
 
             if (InstancingSupport.DecidePath(_forceCombinedMesh) == InstancingSupport.RenderPath.Instanced)
-                RenderInstanced(ctx, handles, atomCount, mesh);
+                RenderInstanced(mesh, bondCount);
             else
-                RenderCombined(ctx, handles, atomCount, mesh);
+                RenderCombined(mesh, bondCount);
+        }
+
+        private void EnsureDrawInfoCapacity(int needed)
+        {
+            if (_drawInfoScratch.Length < needed)
+                _drawInfoScratch = new BondDrawInfo[Math.Max(needed, _drawInfoScratch.Length * 2)];
         }
 
         private Color ColorForStrain(float strain)
@@ -125,65 +146,25 @@ namespace MidManStudio.Alembic.Rendering
                 : Color.Lerp(_relaxedColor, _stretchedColor, t);
         }
 
-        /// <summary>
-        /// TRS for a cylinder spanning posA..posB. Unity's built-in
-        /// cylinder is 2 units tall along local Y (Y = -1..1), radius 0.5
-        /// — hence scale.y = length/2 (not length) and scale.x/z =
-        /// 2*_bondRadius. Returns false (matrix left as identity, caller
-        /// must skip) for a degenerate near-zero-length pair — a
-        /// same-position edge has no meaningful orientation, and
-        /// Quaternion.FromToRotation on a near-zero vector is exactly the
-        /// kind of near-singular input worth guarding rather than trusting
-        /// to happen to behave.
-        /// </summary>
-        private bool TryComputeBondTRS(Vector3 posA, Vector3 posB, out Matrix4x4 trs)
-        {
-            Vector3 delta = posB - posA;
-            float length = delta.magnitude;
-            if (length < 1e-6f)
-            {
-                trs = Matrix4x4.identity;
-                return false;
-            }
-            Vector3 mid = (posA + posB) * 0.5f;
-            Quaternion rot = Quaternion.FromToRotation(Vector3.up, delta / length);
-            Vector3 scale = new Vector3(_bondRadius * 2f, length * 0.5f, _bondRadius * 2f);
-            trs = Matrix4x4.TRS(mid, rot, scale);
-            return true;
-        }
-
         // ── Instanced path ──────────────────────────────────────────────────
 
-        private unsafe void RenderInstanced(IntPtr ctx, AtomHandle* handles, int atomCount, Mesh mesh)
+        private void RenderInstanced(Mesh mesh, int bondCount)
         {
             int n = 0;
-            for (int i = 0; i < atomCount; i++)
+            for (int i = 0; i < bondCount; i++)
             {
-                AtomHandle h = handles[i];
-                int bondCount = ChemistryLib.chem_bond_count(ctx, h);
-                for (int b = 0; b < bondCount; b++)
+                BondDrawInfo info = _drawInfoScratch[i];
+                if (!info.Valid) continue; // degenerate near-zero-length edge -- see BondDrawInfo.Valid's own doc
+
+                _matrices[n] = info.Trs; // implicit float4x4 -> Matrix4x4 (Unity.Mathematics' own conversion operator)
+                Color c = ColorForStrain(info.Strain);
+                _instanceColors[n] = new Vector4(c.r, c.g, c.b, c.a);
+                n++;
+
+                if (n == InstancingSupport.MaxBatchSize)
                 {
-                    if (!ChemistryLib.TryGetBondPartner(ctx, h, b, out AtomHandle partner)) continue;
-                    if (partner.Index >= h.Index) continue; // dedup — see class doc
-
-                    if (!ChemistryLib.TryGetAtom(ctx, h, out AtomState stateA)) continue;
-                    if (!ChemistryLib.TryGetAtom(ctx, partner, out AtomState stateB)) continue;
-                    if (!ChemistryLib.TryGetBondGeometry(ctx, h, b, out BondGeometry geom)) continue;
-
-                    float3 pa3 = stateA.Position, pb3 = stateB.Position;
-                    if (!TryComputeBondTRS(new Vector3(pa3.x, pa3.y, pa3.z), new Vector3(pb3.x, pb3.y, pb3.z), out Matrix4x4 trs))
-                        continue;
-
-                    _matrices[n] = trs;
-                    Color c = ColorForStrain(geom.Strain);
-                    _instanceColors[n] = new Vector4(c.r, c.g, c.b, c.a);
-                    n++;
-
-                    if (n == InstancingSupport.MaxBatchSize)
-                    {
-                        FlushInstancedBatch(mesh, n);
-                        n = 0;
-                    }
+                    FlushInstancedBatch(mesh, n);
+                    n = 0;
                 }
             }
             if (n > 0) FlushInstancedBatch(mesh, n);
@@ -199,94 +180,58 @@ namespace MidManStudio.Alembic.Rendering
 
         // ── Combined-mesh path ──────────────────────────────────────────────
 
-        private unsafe void RenderCombined(IntPtr ctx, AtomHandle* handles, int atomCount, Mesh sourceMesh)
+        private void RenderCombined(Mesh sourceMesh, int bondCount)
         {
             EnsureSourceMeshCached(sourceMesh);
 
             int vertsPerBond = _srcVerts.Length;
             int trisPerBond  = _srcTris.Length;
 
-            // Bond count isn't known up front the way atom count is (no
-            // single chem_bond_count-for-everything call) — collect TRS +
-            // color per bond into growable arrays first, THEN bake geometry,
-            // rather than trying to size the mesh buffers before knowing how
-            // many bonds actually exist this frame.
-            EnsureBondScratchCapacity(atomCount * 4); // 4 as a starting guess — grows below if wrong, never shrinks
-            int bondN = 0;
+            // bondCount is known up front now (chem_bonds_ptr's out-count),
+            // unlike the old per-atom walk this replaced -- no more
+            // gather-into-growable-scratch-then-bake two-pass dance, size
+            // the mesh buffers directly. Some entries may end up !Valid
+            // (degenerate edges) and get skipped below, so this is an
+            // upper bound, not an exact final size -- harmless, same
+            // "never shrink" policy the capacity helpers already use.
+            EnsureCombinedMeshCapacity(bondCount * vertsPerBond, bondCount * trisPerBond);
 
-            for (int i = 0; i < atomCount; i++)
+            int actualBondN = 0;
+            for (int i = 0; i < bondCount; i++)
             {
-                AtomHandle h = handles[i];
-                int bondCount = ChemistryLib.chem_bond_count(ctx, h);
-                for (int b = 0; b < bondCount; b++)
-                {
-                    if (!ChemistryLib.TryGetBondPartner(ctx, h, b, out AtomHandle partner)) continue;
-                    if (partner.Index >= h.Index) continue;
+                BondDrawInfo info = _drawInfoScratch[i];
+                if (!info.Valid) continue;
 
-                    if (!ChemistryLib.TryGetAtom(ctx, h, out AtomState stateA)) continue;
-                    if (!ChemistryLib.TryGetAtom(ctx, partner, out AtomState stateB)) continue;
-                    if (!ChemistryLib.TryGetBondGeometry(ctx, h, b, out BondGeometry geom)) continue;
+                Matrix4x4 trs = info.Trs;
+                Color32 col = ColorForStrain(info.Strain);
 
-                    float3 pa3 = stateA.Position, pb3 = stateB.Position;
-                    if (!TryComputeBondTRS(new Vector3(pa3.x, pa3.y, pa3.z), new Vector3(pb3.x, pb3.y, pb3.z), out Matrix4x4 trs))
-                        continue;
-
-                    if (bondN >= _bondTrsScratch.Length) GrowBondScratch();
-                    _bondTrsScratch[bondN] = trs;
-                    _bondColorScratch[bondN] = ColorForStrain(geom.Strain);
-                    bondN++;
-                }
-            }
-
-            int neededVerts = bondN * vertsPerBond;
-            int neededTris  = bondN * trisPerBond;
-            EnsureCombinedMeshCapacity(neededVerts, neededTris);
-
-            for (int i = 0; i < bondN; i++)
-            {
-                Matrix4x4 trs = _bondTrsScratch[i];
-                Color32 col = _bondColorScratch[i];
-                int vBase = i * vertsPerBond;
+                int vBase = actualBondN * vertsPerBond;
                 for (int v = 0; v < vertsPerBond; v++)
                 {
                     _combinedVerts[vBase + v]   = trs.MultiplyPoint3x4(_srcVerts[v]);
                     _combinedNormals[vBase + v] = trs.MultiplyVector(_srcNormals[v]).normalized;
                     _combinedColors[vBase + v]  = col;
                 }
-                int tBase = i * trisPerBond;
+                int tBase = actualBondN * trisPerBond;
                 for (int t = 0; t < trisPerBond; t++)
                     _combinedTris[tBase + t] = _srcTris[t] + vBase;
+
+                actualBondN++;
             }
 
+            int usedVerts = actualBondN * vertsPerBond;
+            int usedTris  = actualBondN * trisPerBond;
+
             _combinedMesh.Clear();
-            if (bondN > 0)
+            if (actualBondN > 0)
             {
-                _combinedMesh.SetVertices(_combinedVerts, 0, neededVerts);
-                _combinedMesh.SetNormals(_combinedNormals, 0, neededVerts);
-                _combinedMesh.SetColors(_combinedColors, 0, neededVerts);
-                _combinedMesh.SetTriangles(_combinedTris, 0, neededTris, 0);
+                _combinedMesh.SetVertices(_combinedVerts, 0, usedVerts);
+                _combinedMesh.SetNormals(_combinedNormals, 0, usedVerts);
+                _combinedMesh.SetColors(_combinedColors, 0, usedVerts);
+                _combinedMesh.SetTriangles(_combinedTris, 0, usedTris, 0);
                 _combinedMesh.bounds = new Bounds(Vector3.zero, Vector3.one * 1_000_000f);
                 Graphics.DrawMesh(_combinedMesh, Matrix4x4.identity, _material, gameObject.layer);
             }
-        }
-
-        private Matrix4x4[] _bondTrsScratch;
-        private Color32[]   _bondColorScratch;
-
-        private void EnsureBondScratchCapacity(int needed)
-        {
-            if (_bondTrsScratch == null || _bondTrsScratch.Length < needed)
-            {
-                _bondTrsScratch = new Matrix4x4[needed];
-                _bondColorScratch = new Color32[needed];
-            }
-        }
-
-        private void GrowBondScratch()
-        {
-            int newCap = Math.Max(_bondTrsScratch.Length * 2, 16);
-            Array.Resize(ref _bondTrsScratch, newCap);
-            Array.Resize(ref _bondColorScratch, newCap);
         }
 
         private void EnsureSourceMeshCached(Mesh sourceMesh)

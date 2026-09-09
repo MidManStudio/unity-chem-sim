@@ -128,6 +128,32 @@ pub struct AngleGeometry {
 
 const _: () = assert!(core::mem::size_of::<AngleGeometry>() == 8);
 
+/// One live, deduplicated bond edge, flattened for zero-copy bulk
+/// consumption via `chem_bonds_ptr` — sits alongside the existing
+/// per-bond `chem_bond_partner_at`/`chem_bond_geometry_at` accessors
+/// rather than replacing them (a handful of one-off lookups is fine
+/// either way; this is for "walk every live bond, every frame," which
+/// those weren't built for).
+///
+/// `atom_a_index`/`atom_b_index` are dense-array **positions** — the
+/// same indices `chem_atoms_ptr`'s own array uses, not `AtomHandle`s —
+/// so a caller that already holds that array (every renderer does)
+/// indexes straight into it with zero further FFI calls. Same "re-fetch
+/// every frame, don't cache across a frame boundary" contract
+/// `chem_atoms_ptr`/`chem_handles_ptr` already carry: a spawn/despawn/
+/// step between one `chem_bonds_ptr` call and the next can move these
+/// positions.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BondRecord {
+    pub atom_a_index:      u32,   //  0
+    pub atom_b_index:      u32,   //  4
+    pub equilibrium_length: f32,  //  8
+    pub current_length:     f32,  // 12
+}
+
+const _: () = assert!(core::mem::size_of::<BondRecord>() == 16);
+
 // ── FFI surface ───────────────────────────────────────────────────────────────
 
 /// Create a persistent simulation context: owns the atom array, the
@@ -339,6 +365,38 @@ pub unsafe extern "C" fn chem_bond_geometry_at(
     }
 }
 
+/// Read-only pointer into a flat, deduplicated snapshot of every live
+/// bond edge — `*out_count` entries of `BondRecord` starting here,
+/// rebuilt fresh on every call (see `simulation::refresh_bonds_scratch`),
+/// same "re-fetch every frame, don't cache across a frame boundary"
+/// contract `chem_atoms_ptr`/`chem_handles_ptr` already carry.
+///
+/// Exists specifically to replace a per-bond P/Invoke walk
+/// (`chem_bond_count` + `chem_bond_partner_at` + `chem_get_atom` ×2 +
+/// `chem_bond_geometry_at`, once per edge, every frame — `BondRenderer.cs`'s
+/// prior approach, by its own doc comment's admission) with one bulk
+/// fetch. `atom_a_index`/`atom_b_index` on each `BondRecord` are the same
+/// dense-array positions `chem_atoms_ptr`'s own array uses — a caller
+/// that already holds that array from this frame indexes straight into
+/// it, no further FFI call needed per edge.
+///
+/// Pointer **and** count both come from this one call, not
+/// `chem_bonds_ptr()` plus a separate `chem_bond_total_count()` — unlike
+/// `chem_atom_count` (a stable, independently-readable field, safe to
+/// call before or after `chem_atoms_ptr` in either order), the total
+/// distinct-edge count only exists as a byproduct of the rebuild this
+/// function performs. Splitting it into two calls would create a real
+/// ordering hazard — call a hypothetical count function first and it
+/// reports last frame's number — that this signature makes structurally
+/// impossible instead of documenting away and hoping callers read it.
+#[no_mangle]
+pub unsafe extern "C" fn chem_bonds_ptr(ctx: *mut SimContext, out_count: *mut i32) -> *const BondRecord {
+    let ctx = &mut *ctx;
+    let ptr = simulation::refresh_bonds_scratch(ctx);
+    *out_count = simulation::bond_total_count(ctx) as i32;
+    ptr
+}
+
 /// How many angle triples this atom is currently the **vertex** of — an
 /// atom needs >= 2 simultaneous bonds to be one (every *pair* of its
 /// bonds forms one triple). 0 for a stale handle or an atom that isn't a
@@ -484,4 +542,11 @@ pub extern "C" fn chem_bond_geometry_size() -> i32 {
 #[no_mangle]
 pub extern "C" fn chem_angle_geometry_size() -> i32 {
     core::mem::size_of::<AngleGeometry>() as i32
+}
+
+/// `BondRecord` size validation, same idea as `chem_struct_size`. Should
+/// always return 16.
+#[no_mangle]
+pub extern "C" fn chem_bond_record_size() -> i32 {
+    core::mem::size_of::<BondRecord>() as i32
 }
