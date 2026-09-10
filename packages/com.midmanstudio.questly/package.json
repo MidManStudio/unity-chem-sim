@@ -1,0 +1,20 @@
+{
+    "name": "com.midmanstudio.questly",
+    "version": "0.1.0",
+    "displayName": "Questly \u2014 Generic Quest System",
+    "description": "Game-agnostic quest engine on top of the DixScript (.mdix) database: declarative objectives/prereqs/rewards, an automatic unlock watcher plus manual override, push-based progress reporting, and a pluggable evaluator hook for game-specific objective/prereq types. Zero game-specific logic \u2014 a consuming game layers its own interpretation on top, the same relationship it has with com.midmanstudio.alembic.",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {
+        "com.midmanstudio.mdix": "https://github.com/Mid-D-Man/DixScript-Rust.git?path=com.midmanstudio.mdix"
+    },
+    "keywords": [ "quest", "quests", "gameplay", "mdix", "dixscript" ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}
