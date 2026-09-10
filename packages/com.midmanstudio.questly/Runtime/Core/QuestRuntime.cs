@@ -47,21 +47,63 @@ namespace MidManStudio.Questly.Core
             _table = table;
 
             foreach (var quest in table.AllQuests)
-            {
-                var questId = quest.Identity.Id;
+                InitializeQuest(quest, isNewQuest: true);
+
+            _table.DefinitionsChanged += Reconcile;
+        }
+
+        private void InitializeQuest(QuestDefinition quest, bool isNewQuest)
+        {
+            var questId = quest.Identity.Id;
+
+            if (isNewQuest)
                 _questStates[questId] = quest.Prereqs.Count == 0 ? QuestState.AVAILABLE : QuestState.LOCKED;
 
-                var perObjective = new Dictionary<string, ObjectiveRuntimeState>();
-                foreach (var objective in quest.Objectives)
-                    perObjective[objective.Id] = new ObjectiveRuntimeState { State = ObjectiveState.INCOMPLETE, Value = 0f };
-                _objectiveStates[questId] = perObjective;
+            var oldObjectiveStates = _objectiveStates.TryGetValue(questId, out var existing)
+                ? existing
+                : new Dictionary<string, ObjectiveRuntimeState>();
 
-                _rootObjectiveIds[questId] = ComputeRootObjectiveIds(quest);
-                _compositeParentsByQuest[questId] = ComputeCompositeParents(quest);
+            var newObjectiveStates = new Dictionary<string, ObjectiveRuntimeState>();
+            foreach (var objective in quest.Objectives)
+                newObjectiveStates[objective.Id] = oldObjectiveStates.TryGetValue(objective.Id, out var kept)
+                    ? kept
+                    : new ObjectiveRuntimeState { State = ObjectiveState.INCOMPLETE, Value = 0f };
+            _objectiveStates[questId] = newObjectiveStates;
 
-                foreach (var prereq in quest.Prereqs)
-                    IndexPrereq(questId, prereq);
+            _rootObjectiveIds[questId] = ComputeRootObjectiveIds(quest);
+            _compositeParentsByQuest[questId] = ComputeCompositeParents(quest);
+
+            RemoveFromAllIndexes(questId);
+            foreach (var prereq in quest.Prereqs)
+                IndexPrereq(questId, prereq);
+        }
+
+        /// <summary>
+        /// Reconciles runtime state against <see cref="_table"/>'s current
+        /// content after a hot reload. Existing quest <i>progress</i>
+        /// (<see cref="QuestState"/>) is left completely untouched for
+        /// quests that already existed — editing an objective's target
+        /// mid-session doesn't reset a player's progress on it, it just
+        /// changes what "complete" means going forward. Objective values
+        /// are kept by id the same way; a renamed/removed objective id
+        /// simply starts fresh if it's ever reintroduced. A quest id
+        /// removed from the source entirely is left as orphaned runtime
+        /// state — deleting an in-progress quest mid-session isn't a
+        /// supported hot-reload scenario, only additive/tweak changes are.
+        /// </summary>
+        private void Reconcile()
+        {
+            foreach (var quest in _table.AllQuests)
+            {
+                var isNewQuest = !_questStates.ContainsKey(quest.Identity.Id);
+                InitializeQuest(quest, isNewQuest);
             }
+
+            var locked = new List<string>();
+            foreach (var (questId, state) in _questStates)
+                if (state == QuestState.LOCKED)
+                    locked.Add(questId);
+            RunWatcher(locked);
         }
 
         // ── Registration ─────────────────────────────────────────────────────
@@ -398,6 +440,19 @@ namespace MidManStudio.Questly.Core
             }
             if (!list.Contains(dependentQuestId))
                 list.Add(dependentQuestId);
+        }
+
+        /// <summary>
+        /// Strips every watcher-index entry referencing <paramref name="dependentQuestId"/>
+        /// before re-indexing its (possibly changed) prereqs — otherwise a
+        /// prereq removed by a hot reload would leave a stale watcher entry
+        /// behind forever.
+        /// </summary>
+        private void RemoveFromAllIndexes(string dependentQuestId)
+        {
+            foreach (var list in _watchersByCompletedQuest.Values) list.Remove(dependentQuestId);
+            foreach (var list in _watchersByObjectiveKey.Values) list.Remove(dependentQuestId);
+            _questsWithExternalPrereqs.Remove(dependentQuestId);
         }
 
         private static string ObjectiveKey(string questId, string objectiveId) => $"{questId}::{objectiveId}";

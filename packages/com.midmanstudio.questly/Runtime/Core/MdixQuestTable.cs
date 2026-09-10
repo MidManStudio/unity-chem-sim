@@ -4,23 +4,41 @@ using MidManStudio.Mdix.Core;
 
 namespace MidManStudio.Questly.Core
 {
-    /// <summary>Live <see cref="IQuestTable"/> — reads quest definitions straight from a loaded <see cref="MdixDatabase"/>.</summary>
+    /// <summary>
+    /// Live <see cref="IQuestTable"/> — reads quest definitions straight
+    /// from a loaded <see cref="MdixDatabase"/>, and refreshes itself in
+    /// place if that database was loaded via <c>Load(path)</c> and has
+    /// <c>EnableHotReload()</c> turned on.
+    /// </summary>
     public sealed class MdixQuestTable : IQuestTable
     {
-        private readonly Dictionary<string, QuestDefinition> _byId;
-        private readonly List<QuestDefinition> _all;
+        private Dictionary<string, QuestDefinition> _byId;
+        private List<QuestDefinition> _all;
+        private readonly MdixDatabase _db;
 
         public IReadOnlyList<QuestDefinition> AllQuests => _all;
 
         public QuestDefinition? Find(string questId) =>
             _byId.TryGetValue(questId, out var quest) ? quest : null;
 
-        private MdixQuestTable(List<QuestDefinition> all)
+        public event Action? DefinitionsChanged;
+
+        /// <summary>
+        /// Fired instead of <see cref="DefinitionsChanged"/> when the
+        /// underlying file changed but failed to reload (missing, malformed,
+        /// etc.) — matching <c>MdixDatabase.Reload()</c>'s own contract,
+        /// this table's existing content is left completely untouched on
+        /// failure. Not part of <see cref="IQuestTable"/> itself; opt-in for
+        /// hosts that want to surface/log it.
+        /// </summary>
+        public event Action<MdixError>? RefreshFailed;
+
+        private MdixQuestTable(MdixDatabase db, List<QuestDefinition> all, Dictionary<string, QuestDefinition> byId)
         {
+            _db = db;
             _all = all;
-            _byId = new Dictionary<string, QuestDefinition>(all.Count);
-            foreach (var quest in all)
-                _byId[quest.Identity.Id] = quest;
+            _byId = byId;
+            _db.OnReloaded += HandleDbReloaded;
         }
 
         /// <summary>
@@ -31,20 +49,53 @@ namespace MidManStudio.Questly.Core
         /// </summary>
         public static MdixResult<MdixQuestTable> Load(MdixDatabase db)
         {
+            var loaded = LoadAll(db);
+            if (loaded.IsFailure)
+                return MdixResult<MdixQuestTable>.Err(loaded.Error);
+
+            var (all, byId) = loaded.SuccessResult;
+            return MdixResult<MdixQuestTable>.Ok(new MdixQuestTable(db, all, byId));
+        }
+
+        /// <summary>
+        /// Handles <c>MdixDatabase.OnReloaded</c> — <paramref name="db"/> is
+        /// the same instance already held in <see cref="_db"/> (reload
+        /// mutates the native handle in place rather than handing back a
+        /// new object), so this just re-runs the load logic against it and
+        /// swaps <see cref="_all"/>/<see cref="_byId"/> in place.
+        /// </summary>
+        private void HandleDbReloaded(MdixDatabase db)
+        {
+            var loaded = LoadAll(db);
+            if (loaded.IsFailure)
+            {
+                RefreshFailed?.Invoke(loaded.Error);
+                return;
+            }
+
+            (_all, _byId) = loaded.SuccessResult;
+            DefinitionsChanged?.Invoke();
+        }
+
+        private static MdixResult<(List<QuestDefinition> All, Dictionary<string, QuestDefinition> ById)> LoadAll(MdixDatabase db)
+        {
             var idsResult = db.GetKeys("quests");
             if (idsResult.IsFailure)
-                return MdixResult<MdixQuestTable>.Err(idsResult.Error);
+                return MdixResult<(List<QuestDefinition>, Dictionary<string, QuestDefinition>)>.Err(idsResult.Error);
 
             var all = new List<QuestDefinition>();
+            var byId = new Dictionary<string, QuestDefinition>();
             foreach (var id in idsResult.SuccessResult)
             {
                 var loaded = LoadOne(db, id);
                 if (loaded.IsFailure)
-                    return MdixResult<MdixQuestTable>.Err(loaded.Error);
+                    return MdixResult<(List<QuestDefinition>, Dictionary<string, QuestDefinition>)>.Err(loaded.Error);
+
                 all.Add(loaded.SuccessResult);
+                byId[id] = loaded.SuccessResult;
             }
 
-            return MdixResult<MdixQuestTable>.Ok(new MdixQuestTable(all));
+            return MdixResult<(List<QuestDefinition>, Dictionary<string, QuestDefinition>)>.Ok((all, byId));
         }
 
         private static MdixResult<QuestDefinition> LoadOne(MdixDatabase db, string id)
