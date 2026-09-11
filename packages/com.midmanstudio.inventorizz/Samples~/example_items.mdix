@@ -1,0 +1,48 @@
+// com.midmanstudio.inventorizz/Samples~/example_items.mdix
+// Fully generic example content -- no GTG-specific text or logic.
+// Demonstrates the schema shape a consuming game's own item database
+// should follow.
+
+@CONFIG(
+  version  -> "1.0.0"
+  author   -> "MidMan Studio"
+  features -> "advanced"
+)
+
+@IMPORTS(
+  enums    from "core/enums.mdix"
+  builders from "core/builders.mdix"
+)
+
+@DATA(
+  database_name    = "Inventorizz Example Item Database"
+  database_version = "1.0.0"
+
+  // ── Items ──────────────────────────────────────────────────────────────
+
+  items.rope.identity:
+    core = builders.createItemDefinition("rope", builders.locKey("rope", "display"), 1.0, 5, enums.StackPolicy.STACKABLE, ["tool"])
+
+  items.lockpick.identity:
+    core = builders.createItemDefinition("lockpick", builders.locKey("lockpick", "display"), 0.1, 20, enums.StackPolicy.STACKABLE, ["tool"])
+
+  items.waterskin.identity:
+    core = builders.createItemDefinition("waterskin", builders.locKey("waterskin", "display"), 1.5, 1, enums.StackPolicy.UNIQUE, ["consumable_container"])
+
+  items.ancient_relic.identity:
+    core = builders.createItemDefinition("ancient_relic", builders.locKey("ancient_relic", "display"), 3.0, 1, enums.StackPolicy.UNIQUE, ["quest_item"])
+
+  // ── Container types ───────────────────────────────────────────────────
+
+  container_types.backpack.identity:
+    core = builders.createContainerType("backpack", builders.locKey("backpack", "display"), enums.CapacityKind.WEIGHT, 40.0, 0, [])
+
+  container_types.mount_storage.identity:
+    core = builders.createContainerType("mount_storage", builders.locKey("mount_storage", "display"), enums.CapacityKind.WEIGHT, 80.0, 0, [])
+
+  container_types.hidden_compartment.identity:
+    core = builders.createContainerType("hidden_compartment", builders.locKey("hidden_compartment", "display"), enums.CapacityKind.WEIGHT, 15.0, 0, ["concealed"])
+
+  container_types.quest_slot.identity:
+    core = builders.createContainerType("quest_slot", builders.locKey("quest_slot", "display"), enums.CapacityKind.SLOT_COUNT, 0.0, 8, [])
+)
