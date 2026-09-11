@@ -1,0 +1,18 @@
+{
+    "name": "com.midmanstudio.dragndrop",
+    "version": "0.1.0",
+    "displayName": "drag_n_drop \u2014 Generic Drag & Drop",
+    "description": "Framework-agnostic drag-and-drop core: a single DragDropController state machine that a uGUI adapter or a UI Toolkit adapter feeds identically, so unrelated systems (inventory slots, the chemistry bench's reagent tray, anything else) can share one drag interaction layer without depending on each other. Zero game-specific logic, and deliberately zero .mdix dependency -- there's no static catalog to drive here, just runtime interaction state.",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {},
+    "keywords": [ "drag", "drop", "ui", "interaction" ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}
