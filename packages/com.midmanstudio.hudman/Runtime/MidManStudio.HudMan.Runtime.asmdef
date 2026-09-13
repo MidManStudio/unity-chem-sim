@@ -1,0 +1,20 @@
+{
+    "name": "MidManStudio.HudMan.Runtime",
+    "rootNamespace": "MidManStudio.HudMan",
+    "references": [
+        "MidManStudio.Mdix.Runtime",
+        "MidManStudio.DragDrop.Runtime",
+        "MidManStudio.DragDrop.UGUI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "MidManStudio.Mdix.Core.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

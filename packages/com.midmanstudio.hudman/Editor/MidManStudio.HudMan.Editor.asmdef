@@ -1,0 +1,18 @@
+{
+    "name": "MidManStudio.HudMan.Editor",
+    "rootNamespace": "MidManStudio.HudMan.Editor",
+    "references": [
+        "MidManStudio.HudMan.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

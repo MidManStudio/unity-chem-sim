@@ -1,0 +1,39 @@
+// com.midmanstudio.hudman/Samples~/example_layout_save.mdix
+// Illustrates the optional package-owned save format (the "package owns
+// save/load" half of the hybrid persistence model). A host using the
+// "host owns save/load" half never needs a file shaped like this at all
+// -- it just calls HudLayoutRuntime.CaptureState() and stores the result
+// however it already stores everything else.
+//
+// In the real runtime this file's content is produced by MdixSerializer
+// writing a HudLayoutSaveFile POCO directly -- it is not hand-authored
+// DixScript. This sample exists purely to document the resulting shape.
+// The @ENUMS(HudItemType ...) block below is also not hand-written: it's
+// auto-registered by MdixSerializer from whatever HudItemType looks like
+// in the project that produced this file, the same mechanism that lets a
+// ScriptableObject-provider-generated enum round-trip through mdix with
+// no special-casing anywhere in this package.
+
+@CONFIG(
+  version -> "1.0.0",
+  author  -> "MidMan Studio"
+)
+
+@ENUMS(
+  HudItemType {
+    Unassigned = 0,
+    HealthBar = 100,
+    MiniMap = 101,
+    AmmoCounter = 102
+  }
+)
+
+@DATA(
+  layout_name = "Combat Preset",
+  saved_at    = 2026-09-12T12:00:00Z,
+
+  layout.items::
+    { item_type -> HudItemType.HealthBar,   position_x -> -760.0, position_y -> 420.0, scale_x -> 1.0, scale_y -> 1.0, opacity -> 1.0, is_visible -> true },
+    { item_type -> HudItemType.MiniMap,     position_x -> 760.0,  position_y -> 420.0, scale_x -> 1.2, scale_y -> 1.2, opacity -> 0.9, is_visible -> true },
+    { item_type -> HudItemType.AmmoCounter, position_x -> 700.0,  position_y -> -420.0, scale_x -> 1.0, scale_y -> 1.0, opacity -> 1.0, is_visible -> true }
+)

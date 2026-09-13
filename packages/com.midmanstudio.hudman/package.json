@@ -1,0 +1,21 @@
+{
+    "name": "com.midmanstudio.hudman",
+    "version": "0.1.0",
+    "displayName": "hudman — Generic HUD Catalog & Layout",
+    "description": "Game-agnostic HUD item catalog and layout persistence. HudItemType is a code-generated enum (ScriptableObject-provider + block/priority/lock-file pattern, same shape as com.midmanstudio.utilities' EffectType) so each game contributes its own HUD item catalog without the package ever hardcoding one. HudLayoutRuntime tracks per-item position/scale/opacity/visibility and named layouts with Questly's hybrid persistence split: CaptureState/RestoreState for a host-owned snapshot, SaveToMdix/LoadFromMdix for a package-owned .mdix file. The actual dragging is not reimplemented here -- HudItemDraggableAdapter plugs a HUD item into com.midmanstudio.dragndrop's DragDropController via its uGUI adapter. Deliberately excludes anything about how a game stages its HUD-editing UI (separate scene, overlay, additive load, etc.) -- that's host-specific staging, not package concern.",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {
+        "com.midmanstudio.mdix": "https://github.com/Mid-D-Man/DixScript-Rust.git?path=com.midmanstudio.mdix",
+        "com.midmanstudio.dragndrop": "https://github.com/MidManStudio/unity-chem-sim.git?path=packages/com.midmanstudio.dragndrop"
+    },
+    "keywords": [ "hud", "layout", "ui", "mdix", "dixscript" ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}
