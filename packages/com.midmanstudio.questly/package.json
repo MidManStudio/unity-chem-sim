@@ -1,8 +1,8 @@
 {
     "name": "com.midmanstudio.questly",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "displayName": "Questly \u2014 Generic Quest System",
-    "description": "Game-agnostic quest engine on top of the DixScript (.mdix) database: declarative objectives/prereqs/rewards, an automatic unlock watcher plus manual override, push-based progress reporting, and a pluggable evaluator hook for game-specific objective/prereq types. Zero game-specific logic \u2014 a consuming game layers its own interpretation on top, the same relationship it has with com.midmanstudio.alembic.",
+    "description": "Game-agnostic quest engine on top of the DixScript (.mdix) database: declarative objectives/prereqs/rewards, an automatic unlock watcher plus manual override, push-based progress reporting, and a pluggable evaluator hook for game-specific objective/prereq types. Zero game-specific logic \u2014 a consuming game layers its own interpretation on top, the same relationship it has with com.midmanstudio.alembic. Still deliberately headless: no UI, no dialogue/proximity triggers, no missions-tab rendering -- a diegetic GTA-style quest-giver flow needs no package changes at all (AVAILABLE state + the existing StartQuest() convenience method already are 'accept'; not calling it is 'reject'; a host's own trigger script calling it directly is 'auto-accept on arrival'). 0.2.0 adds the one piece that flow genuinely lacked: reward-claim tracking (IsRewardClaimed/CanClaimReward/TryClaimReward/AllRewardsClaimed/GetNextClaimableReward, a RewardClaimed event, and claim rows in the hybrid persistence model), for a COD-style missions-tab where completing a quest and collecting its reward(s) are two separate, UI-driven steps -- claim order follows a quest's existing Rewards list order, so a multi-reward 'track' claims one at a time with no new schema concept required.",
     "unity": "2022.3",
     "unityRelease": "0f1",
     "documentationUrl": "",

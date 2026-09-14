@@ -20,6 +20,17 @@ namespace MidManStudio.Questly.Core
     }
 
     /// <summary>
+    /// Mirrors <c>builders.questRewardClaim(...)</c>. Presence of a row
+    /// means that reward has been claimed -- there's no "claimed: false"
+    /// row, an unclaimed reward simply has no entry here at all.
+    /// </summary>
+    public sealed class QuestRewardClaimRow
+    {
+        public string QuestId { get; set; } = string.Empty;
+        public string RewardId { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// Host-owned persistence payload. <see cref="QuestRuntime.CaptureState"/>
     /// returns this, <see cref="QuestRuntime.RestoreState"/> takes one back.
     /// A plain POCO, not a file — the host folds it into whatever save blob
@@ -29,6 +40,7 @@ namespace MidManStudio.Questly.Core
     {
         public List<QuestProgressRow> Quests { get; set; } = new();
         public List<QuestObjectiveProgressRow> Objectives { get; set; } = new();
+        public List<QuestRewardClaimRow> RewardClaims { get; set; } = new();
     }
 
     /// <summary>
@@ -41,6 +53,7 @@ namespace MidManStudio.Questly.Core
     {
         public List<QuestProgressRow> Quests { get; set; } = new();
         public List<QuestObjectiveProgressRow> Objectives { get; set; } = new();
+        public List<QuestRewardClaimRow> RewardClaims { get; set; } = new();
     }
 
     /// <summary>

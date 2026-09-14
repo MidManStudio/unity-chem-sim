@@ -38,9 +38,15 @@ namespace MidManStudio.Questly.Core
         private readonly Dictionary<string, IQuestObjectiveEvaluator> _objectiveEvaluators = new();
         private readonly Dictionary<string, IQuestPrereqEvaluator> _prereqEvaluators = new();
 
+        // questId -> ids of rewards already claimed. Never touched by InitializeQuest/Reconcile -- unlike
+        // objective states, claim state has no shape to reconcile against a hot-reloaded definition, it's
+        // purely "has this specific reward id been claimed for this specific quest id, yes or no".
+        private readonly Dictionary<string, HashSet<string>> _claimedRewards = new();
+
         public event EventHandler<QuestStateChangedEventArgs>? QuestStateChanged;
         public event EventHandler<QuestObjectiveProgressEventArgs>? ObjectiveProgress;
         public event EventHandler<QuestCompletedEventArgs>? QuestCompleted;
+        public event EventHandler<RewardClaimedEventArgs>? RewardClaimed;
 
         public QuestRuntime(IQuestTable table)
         {
@@ -181,6 +187,97 @@ namespace MidManStudio.Questly.Core
             RunWatcher(new[] { questId });
         }
 
+        // ── Reward claiming ──────────────────────────────────────────────────
+
+        public bool IsRewardClaimed(string questId, string rewardId) =>
+            _claimedRewards.TryGetValue(questId, out var claimed) && claimed.Contains(rewardId);
+
+        /// <summary>
+        /// A reward can be claimed once its quest is COMPLETED, it hasn't
+        /// already been claimed, and every reward listed before it on
+        /// <see cref="QuestDefinition.Rewards"/> has already been claimed
+        /// -- list order IS claim order. A quest with a single reward
+        /// therefore always has exactly one, immediately-claimable entry;
+        /// a quest with several has to be claimed one at a time in
+        /// authored order, covering a battle-pass-style reward track
+        /// without needing any new schema concept for "tiers".
+        /// </summary>
+        public bool CanClaimReward(string questId, string rewardId)
+        {
+            if (GetQuestState(questId) != QuestState.COMPLETED) return false;
+
+            var quest = _table.Find(questId);
+            if (quest == null) return false;
+
+            foreach (var reward in quest.Rewards)
+            {
+                if (reward.RewardId == rewardId)
+                    return !IsRewardClaimed(questId, rewardId);
+                if (!IsRewardClaimed(questId, reward.RewardId))
+                    return false; // an earlier reward in the sequence is still unclaimed
+            }
+            return false; // rewardId isn't one of this quest's rewards at all
+        }
+
+        /// <summary>
+        /// Claims a reward if <see cref="CanClaimReward"/> allows it,
+        /// firing <see cref="RewardClaimed"/> and returning true.
+        /// Returns false with no exception otherwise, so a UI can wire a
+        /// Claim button straight to this without needing to guard every
+        /// call with its own CanClaimReward check first.
+        /// </summary>
+        public bool TryClaimReward(string questId, string rewardId)
+        {
+            if (!CanClaimReward(questId, rewardId)) return false;
+
+            var quest = _table.Find(questId)!;
+            RewardDefinition? reward = null;
+            foreach (var r in quest.Rewards)
+                if (r.RewardId == rewardId) { reward = r; break; }
+            if (reward == null) return false;
+
+            if (!_claimedRewards.TryGetValue(questId, out var claimed))
+            {
+                claimed = new HashSet<string>();
+                _claimedRewards[questId] = claimed;
+            }
+            claimed.Add(rewardId);
+
+            RewardClaimed?.Invoke(this, new RewardClaimedEventArgs(questId, reward));
+            return true;
+        }
+
+        /// <summary>True once every reward on the quest has been claimed -- distinct from QuestState.COMPLETED, which only means the objectives are done, not that the player has collected everything from it yet.</summary>
+        public bool AllRewardsClaimed(string questId)
+        {
+            var quest = _table.Find(questId);
+            if (quest == null || quest.Rewards.Count == 0) return false;
+
+            foreach (var reward in quest.Rewards)
+                if (!IsRewardClaimed(questId, reward.RewardId))
+                    return false;
+            return true;
+        }
+
+        /// <summary>
+        /// The single reward a missions-tab-style UI should currently
+        /// highlight as claimable for this quest, or null if there isn't
+        /// one (not completed yet, no rewards defined, or everything's
+        /// already been claimed). Covers the common "just show me the
+        /// next thing to claim" UI case without the caller needing to
+        /// walk the whole Rewards list itself.
+        /// </summary>
+        public RewardDefinition? GetNextClaimableReward(string questId)
+        {
+            var quest = _table.Find(questId);
+            if (quest == null) return null;
+
+            foreach (var reward in quest.Rewards)
+                if (!IsRewardClaimed(questId, reward.RewardId))
+                    return CanClaimReward(questId, reward.RewardId) ? reward : null;
+            return null;
+        }
+
         // ── Persistence: host-owned ──────────────────────────────────────────
 
         public QuestProgressSnapshot CaptureState()
@@ -198,6 +295,10 @@ namespace MidManStudio.Questly.Core
                         State = runtime.State,
                         Value = runtime.Value,
                     });
+
+            foreach (var (questId, rewardIds) in _claimedRewards)
+                foreach (var rewardId in rewardIds)
+                    snapshot.RewardClaims.Add(new QuestRewardClaimRow { QuestId = questId, RewardId = rewardId });
 
             return snapshot;
         }
@@ -229,6 +330,16 @@ namespace MidManStudio.Questly.Core
                 }
             }
 
+            foreach (var row in snapshot.RewardClaims)
+            {
+                if (!_claimedRewards.TryGetValue(row.QuestId, out var claimed))
+                {
+                    claimed = new HashSet<string>();
+                    _claimedRewards[row.QuestId] = claimed;
+                }
+                claimed.Add(row.RewardId);
+            }
+
             var unmentioned = new List<string>();
             foreach (var questId in _questStates.Keys)
                 if (!mentioned.Contains(questId))
@@ -256,6 +367,7 @@ namespace MidManStudio.Questly.Core
             var snapshot = CaptureState();
             saveFile.Progress.Quests = snapshot.Quests;
             saveFile.Progress.Objectives = snapshot.Objectives;
+            saveFile.Progress.RewardClaims = snapshot.RewardClaims;
 
             using var builder = MdixBuilder.Create();
             var serializeResult = builder.Serialize(saveFile);
@@ -281,6 +393,7 @@ namespace MidManStudio.Questly.Core
             {
                 Quests = saveFile.Progress.Quests,
                 Objectives = saveFile.Progress.Objectives,
+                RewardClaims = saveFile.Progress.RewardClaims,
             });
 
             return MdixResult<Unit>.Ok(Unit.Value);

@@ -45,4 +45,17 @@ namespace MidManStudio.Questly.Core
             Rewards = rewards;
         }
     }
+
+    /// <summary>Fired by <see cref="QuestRuntime.TryClaimReward"/> the moment a reward is marked claimed -- this is the hook a host's economy/inventory system reacts to when claiming is UI-driven rather than automatic on completion.</summary>
+    public sealed class RewardClaimedEventArgs : EventArgs
+    {
+        public string QuestId { get; }
+        public RewardDefinition Reward { get; }
+
+        public RewardClaimedEventArgs(string questId, RewardDefinition reward)
+        {
+            QuestId = questId;
+            Reward = reward;
+        }
+    }
 }

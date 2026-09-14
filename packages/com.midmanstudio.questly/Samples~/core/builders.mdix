@@ -118,4 +118,11 @@
       value        = _value
     }
   }
+
+  ~questRewardClaim<object>(_quest_id<string>, _reward_id<string>) {
+    return {
+      quest_id  = _quest_id
+      reward_id = _reward_id
+    }
+  }
 )

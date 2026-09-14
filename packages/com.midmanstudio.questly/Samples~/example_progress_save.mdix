@@ -31,4 +31,13 @@
   progress.objectives::
     builders.questObjectiveProgress("collect_wood", "obj_counter", enums.ObjectiveState.INCOMPLETE, 3.0),
     builders.questObjectiveProgress("deliver_package", "obj_flag", enums.ObjectiveState.COMPLETE, 1.0)
+
+  // deliver_package defines two rewards, in this order: "currency" then
+  // "reputation" (see example_quests.mdix). Only "currency" has been
+  // claimed so far -- CanClaimReward("deliver_package", "reputation")
+  // is true because it's next in sequence; claiming "currency" a second
+  // time, or claiming "reputation" before this row existed, would both
+  // be rejected by QuestRuntime.TryClaimReward.
+  progress.rewards::
+    builders.questRewardClaim("deliver_package", "currency")
 )
