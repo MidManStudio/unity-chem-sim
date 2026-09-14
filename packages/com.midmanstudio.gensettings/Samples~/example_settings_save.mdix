@@ -1,0 +1,27 @@
+// com.midmanstudio.gensettings/Samples~/example_settings_save.mdix
+// Illustrates the optional package-owned save format. A host using the
+// "host owns save/load" half of the hybrid persistence model never needs
+// a file shaped like this -- it just calls SettingsRuntime.CaptureState()
+// and stores the result however it already stores everything else.
+//
+// As with HudMan's example, this file's content is produced by
+// MdixSerializer writing a SettingsSaveFile POCO directly, not
+// hand-authored DixScript -- this sample exists purely to document the
+// resulting shape. Only bool_value/float_value/int_value/string_value is
+// meaningful per row; the other three sit at their neutral defaults,
+// same "one fixed shape per family" rule SettingDefinition itself uses.
+
+@CONFIG(
+  version -> "1.0.0",
+  author  -> "MidMan Studio"
+)
+
+@DATA(
+  saved_at = 2026-09-13T09:00:00Z,
+
+  settings.values::
+    { setting_id -> "vSyncEnabled",     bool_value -> true,  float_value -> 0.0,  int_value -> 0, string_value -> "" },
+    { setting_id -> "masterVolume",     bool_value -> false, float_value -> 0.8,  int_value -> 0, string_value -> "" },
+    { setting_id -> "graphicsQuality",  bool_value -> false, float_value -> 0.0,  int_value -> 2, string_value -> "" },
+    { setting_id -> "playerDisplayName",bool_value -> false, float_value -> 0.0,  int_value -> 0, string_value -> "Arthur" }
+)

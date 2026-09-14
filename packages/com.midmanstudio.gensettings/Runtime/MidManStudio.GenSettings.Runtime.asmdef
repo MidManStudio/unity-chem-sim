@@ -1,0 +1,19 @@
+{
+    "name": "MidManStudio.GenSettings.Runtime",
+    "rootNamespace": "MidManStudio.GenSettings",
+    "references": [
+        "MidManStudio.Mdix.Runtime",
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "MidManStudio.Mdix.Core.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

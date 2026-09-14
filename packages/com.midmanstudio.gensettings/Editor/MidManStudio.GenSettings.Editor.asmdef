@@ -1,0 +1,18 @@
+{
+    "name": "MidManStudio.GenSettings.Editor",
+    "rootNamespace": "MidManStudio.GenSettings.Editor",
+    "references": [
+        "MidManStudio.GenSettings.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
