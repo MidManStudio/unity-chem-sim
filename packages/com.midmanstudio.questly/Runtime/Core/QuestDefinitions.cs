@@ -70,7 +70,47 @@ namespace MidManStudio.Questly.Core
         public string PayloadJson { get; set; } = "{}";
     }
 
-    /// <summary>One fully-loaded quest: identity plus its objectives/prereqs/rewards.</summary>
+    /// <summary>
+    /// Mirrors <c>builders.schedule(...)</c>. Optional per quest -- a quest
+    /// with no <c>quests.{id}.schedule</c> path gets <see cref="Kind"/>
+    /// <see cref="ScheduleKind.NONE"/> by <see cref="MdixQuestTable"/>'s
+    /// missing-path convention, and behaves exactly as an unscheduled quest
+    /// always has. Time is an opaque host-fed number (see
+    /// <see cref="QuestRuntime.AdvanceTime"/>) -- Questly never assumes an
+    /// epoch or a unit, same as <see cref="ObjectiveDefinition.DurationSeconds"/>
+    /// already doesn't.
+    /// </summary>
+    public sealed class ScheduleDefinition
+    {
+        public ScheduleKind Kind { get; set; } = ScheduleKind.NONE;
+
+        /// <summary>
+        /// ONE_SHOT: absolute time the single window opens. RECURRING: the
+        /// first cycle's window-open time (an anchor); later cycles open at
+        /// <c>WindowStart + n * RecurrenceInterval</c>.
+        /// </summary>
+        public double WindowStart { get; set; }
+
+        /// <summary>How long a window stays open, from its own open time. Unused when Kind is NONE.</summary>
+        public double WindowDuration { get; set; }
+
+        /// <summary>Time between cycle starts. RECURRING only; neutral 0 otherwise.</summary>
+        public double RecurrenceInterval { get; set; }
+
+        /// <summary>
+        /// RECURRING only. True: the quest stops recurring for good the
+        /// first time it's ever COMPLETED (its window-based re-arming logic
+        /// goes permanently inert from then on). False: it keeps recurring
+        /// after every completion, each cycle counted independently via
+        /// <see cref="QuestRuntime.GetCyclesCompleted"/> -- the shape a
+        /// capped, cycle-indexed reward track (see
+        /// <see cref="QuestRuntime.CanClaimCycleReward"/>) is built on.
+        /// Neutral false when Kind isn't RECURRING.
+        /// </summary>
+        public bool StopAfterFirstCompletion { get; set; }
+    }
+
+    /// <summary>One fully-loaded quest: identity plus its objectives/prereqs/rewards/schedule.</summary>
     public sealed class QuestDefinition
     {
         public QuestIdentity Identity { get; }
@@ -78,16 +118,21 @@ namespace MidManStudio.Questly.Core
         public IReadOnlyList<PrereqDefinition> Prereqs { get; }
         public IReadOnlyList<RewardDefinition> Rewards { get; }
 
+        /// <summary>Never null -- an unscheduled quest gets a default instance with <see cref="ScheduleDefinition.Kind"/> NONE, same "always present, neutral default" rule as every other field family here.</summary>
+        public ScheduleDefinition Schedule { get; }
+
         public QuestDefinition(
             QuestIdentity identity,
             IReadOnlyList<ObjectiveDefinition> objectives,
             IReadOnlyList<PrereqDefinition> prereqs,
-            IReadOnlyList<RewardDefinition> rewards)
+            IReadOnlyList<RewardDefinition> rewards,
+            ScheduleDefinition? schedule = null)
         {
             Identity = identity;
             Objectives = objectives;
             Prereqs = prereqs;
             Rewards = rewards;
+            Schedule = schedule ?? new ScheduleDefinition();
         }
     }
 }

@@ -58,4 +58,25 @@ namespace MidManStudio.Questly.Core
             Reward = reward;
         }
     }
+
+    /// <summary>
+    /// Fired by <see cref="QuestRuntime.TryClaimCycleReward"/> -- the
+    /// per-cycle-track counterpart to <see cref="RewardClaimedEventArgs"/>,
+    /// used by a RECURRING quest with <c>StopAfterFirstCompletion</c> false
+    /// (e.g. a capped login-streak track). Never fired for the ordinary
+    /// whole-quest reward-claim path, and vice versa.
+    /// </summary>
+    public sealed class CycleRewardClaimedEventArgs : EventArgs
+    {
+        public string QuestId { get; }
+        public int CycleIndex { get; }
+        public RewardDefinition Reward { get; }
+
+        public CycleRewardClaimedEventArgs(string questId, int cycleIndex, RewardDefinition reward)
+        {
+            QuestId = questId;
+            CycleIndex = cycleIndex;
+            Reward = reward;
+        }
+    }
 }

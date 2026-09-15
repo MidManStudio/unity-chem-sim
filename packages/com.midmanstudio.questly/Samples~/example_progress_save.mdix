@@ -38,6 +38,34 @@
   // is true because it's next in sequence; claiming "currency" a second
   // time, or claiming "reputation" before this row existed, would both
   // be rejected by QuestRuntime.TryClaimReward.
-  progress.rewards::
+  //
+  // Path is `reward_claims`, not `rewards` -- QuestProgressGroup.RewardClaims
+  // under MdixSerializer's real ToSnakeCase (confirmed against the source:
+  // an uppercase mid-name letter always gets an underscore). An earlier
+  // version of this file used `progress.rewards::` here, which doesn't
+  // match the C# property at all -- caught while extending this same file
+  // for 0.3.0, fixed alongside it.
+  progress.reward_claims::
     builders.questRewardClaim("deliver_package", "currency")
+
+  // daily_checkin (see example_quests.mdix) is RECURRING with
+  // stop_after_first_completion = false, so its own QuestState cycles
+  // through LOCKED/AVAILABLE/ACTIVE/COMPLETED independently of this row --
+  // this row's cycles_completed is the only thing that actually tracks
+  // "how many times has the player ever checked in", and it never resets.
+  // last_granted_cycle_index = 1 means QuestRuntime last (re-)armed this
+  // quest for calendar cycle 1; AdvanceTime uses that purely to avoid
+  // re-resetting objective progress if it's called again while cycle 1's
+  // window is still open, not to gate reward claiming.
+  progress.schedule_states::
+    builders.questScheduleState("daily_checkin", 2, 1)
+
+  // Two cycles completed means cycle 0's reward ("currency", 10) AND cycle
+  // 1's reward ("currency", 20) are both currently claimable via
+  // QuestRuntime.TryClaimCycleReward -- only cycle 0's has actually been
+  // claimed here. Cycle 1's just sits there, still claimable, for exactly
+  // as long as the player takes to come back and grab it -- that's the
+  // "miss a day, come back later, still get it" behavior in a save file.
+  progress.cycle_reward_claims::
+    builders.questCycleRewardClaim("daily_checkin", 0)
 )

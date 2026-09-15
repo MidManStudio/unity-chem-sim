@@ -48,12 +48,23 @@ namespace MidManStudio.Questly.Core
     }
 
     [Serializable]
+    public sealed class BakedSchedule
+    {
+        public ScheduleKind kind;
+        public double windowStart;
+        public double windowDuration;
+        public double recurrenceInterval;
+        public bool stopAfterFirstCompletion;
+    }
+
+    [Serializable]
     public sealed class BakedQuest
     {
         public BakedQuestIdentity identity = new();
         public List<BakedObjective> objectives = new();
         public List<BakedPrereq> prereqs = new();
         public List<BakedReward> rewards = new();
+        public BakedSchedule schedule = new();
     }
 
     /// <summary>

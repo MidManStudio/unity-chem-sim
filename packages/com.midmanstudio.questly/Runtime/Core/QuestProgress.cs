@@ -31,6 +31,38 @@ namespace MidManStudio.Questly.Core
     }
 
     /// <summary>
+    /// Mirrors <c>builders.questScheduleState(...)</c>. Only ever populated
+    /// for a quest whose <see cref="ScheduleDefinition.Kind"/> isn't NONE.
+    /// <see cref="CyclesCompleted"/> only ever increases (see
+    /// <see cref="QuestRuntime.GetCyclesCompleted"/>); <see cref="LastGrantedCycleIndex"/>
+    /// is purely a load-time guard so restoring a save mid-window doesn't
+    /// wrongly look like "a new cycle just opened" and reset objective
+    /// progress that was already there before the save.
+    /// </summary>
+    public sealed class QuestScheduleStateRow
+    {
+        public string QuestId { get; set; } = string.Empty;
+        public int CyclesCompleted { get; set; }
+        public int LastGrantedCycleIndex { get; set; } = -1;
+    }
+
+    /// <summary>
+    /// Mirrors <c>builders.questCycleRewardClaim(...)</c>. Same
+    /// presence-means-claimed convention as <see cref="QuestRewardClaimRow"/>,
+    /// but keyed by cycle index rather than reward id -- this is the
+    /// separate per-cycle reward track (<see cref="QuestRuntime.CanClaimCycleReward"/>)
+    /// used by a RECURRING quest with <see cref="ScheduleDefinition.StopAfterFirstCompletion"/>
+    /// false, e.g. a capped day-1/day-2/day-3 login-streak track. It never
+    /// interacts with <see cref="QuestRewardClaimRow"/> -- a quest uses one
+    /// claim mechanism or the other, never both.
+    /// </summary>
+    public sealed class QuestCycleRewardClaimRow
+    {
+        public string QuestId { get; set; } = string.Empty;
+        public int CycleIndex { get; set; }
+    }
+
+    /// <summary>
     /// Host-owned persistence payload. <see cref="QuestRuntime.CaptureState"/>
     /// returns this, <see cref="QuestRuntime.RestoreState"/> takes one back.
     /// A plain POCO, not a file — the host folds it into whatever save blob
@@ -41,6 +73,8 @@ namespace MidManStudio.Questly.Core
         public List<QuestProgressRow> Quests { get; set; } = new();
         public List<QuestObjectiveProgressRow> Objectives { get; set; } = new();
         public List<QuestRewardClaimRow> RewardClaims { get; set; } = new();
+        public List<QuestScheduleStateRow> ScheduleStates { get; set; } = new();
+        public List<QuestCycleRewardClaimRow> CycleRewardClaims { get; set; } = new();
     }
 
     /// <summary>
@@ -54,6 +88,8 @@ namespace MidManStudio.Questly.Core
         public List<QuestProgressRow> Quests { get; set; } = new();
         public List<QuestObjectiveProgressRow> Objectives { get; set; } = new();
         public List<QuestRewardClaimRow> RewardClaims { get; set; } = new();
+        public List<QuestScheduleStateRow> ScheduleStates { get; set; } = new();
+        public List<QuestCycleRewardClaimRow> CycleRewardClaims { get; set; } = new();
     }
 
     /// <summary>
@@ -80,3 +116,4 @@ namespace MidManStudio.Questly.Core
         public QuestProgressGroup Progress { get; set; } = new();
     }
 }
+

@@ -98,6 +98,40 @@
     }
   }
 
+  // ── Schedule (0.3.0, optional) ─────────────────────────────────────────
+  // A quest with no `quests.{id}.schedule` path at all is unscheduled --
+  // don't call this and just omit the path, same "missing means neutral
+  // default" convention `prereqs::`/`rewards::` already use. _window_start /
+  // _window_duration / _recurrence_interval are opaque host-clock numbers
+  // (real seconds, an abstract day-count, whatever QuestRuntime.AdvanceTime
+  // gets fed at runtime) -- Questly never assumes a unit or an epoch here,
+  // same rule _duration_seconds on an objective() already follows.
+  //   ONE_SHOT:  window opens at _window_start, closes _window_duration
+  //              later, and never comes back -- miss it and the quest goes
+  //              EXPIRED for good.
+  //   RECURRING: _window_start is the first cycle's opening; every
+  //              following cycle opens _recurrence_interval after the last.
+  //              _stop_after_first_completion = true is "keeps reappearing
+  //              until you complete it once, then done forever" (a
+  //              time-limited main-path quest); false is "keeps reappearing
+  //              every cycle regardless" (a daily check-in / login-streak --
+  //              pair it with reward() entries in quest order for a capped
+  //              day-1/day-2/day-3 reward track, claimed via
+  //              QuestRuntime.TryClaimCycleReward, independent of the
+  //              quest's own quest_id-level rewards claiming).
+  ~schedule<object>(
+    _kind<enum>, _window_start<float>, _window_duration<float>,
+    _recurrence_interval<float>, _stop_after_first_completion<bool>
+  ) {
+    return {
+      kind                          = _kind
+      window_start                  = _window_start
+      window_duration               = _window_duration
+      recurrence_interval           = _recurrence_interval
+      stop_after_first_completion   = _stop_after_first_completion
+    }
+  }
+
   // ── Runtime progress (optional package-owned save path) ───────────────────
   // Flat, per-row shape (quest_id / objective_id carried on every row rather
   // than nested arrays-of-objects) — easy to append/update a single row
@@ -123,6 +157,30 @@
     return {
       quest_id  = _quest_id
       reward_id = _reward_id
+    }
+  }
+
+  // Only ever needed for a quest with a RECURRING schedule -- an
+  // unscheduled or ONE_SHOT quest never produces a row here.
+  // _last_granted_cycle_index defaults to -1 ("never granted a window
+  // yet") on a fresh row; pass whatever QuestRuntime.GetCyclesCompleted /
+  // the runtime's own bookkeeping reports when writing a save by hand.
+  ~questScheduleState<object>(_quest_id<string>, _cycles_completed<int>, _last_granted_cycle_index<int>) {
+    return {
+      quest_id                    = _quest_id
+      cycles_completed             = _cycles_completed
+      last_granted_cycle_index     = _last_granted_cycle_index
+    }
+  }
+
+  // The per-cycle-track counterpart to questRewardClaim -- presence of a
+  // row means cycle _cycle_index's reward has been claimed. Never mixed
+  // with questRewardClaim rows for the same quest_id; a quest's rewards
+  // are claimed one way or the other, never both.
+  ~questCycleRewardClaim<object>(_quest_id<string>, _cycle_index<int>) {
+    return {
+      quest_id    = _quest_id
+      cycle_index = _cycle_index
     }
   }
 )

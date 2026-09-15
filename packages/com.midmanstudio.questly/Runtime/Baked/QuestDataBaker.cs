@@ -70,6 +70,14 @@ namespace MidManStudio.Questly.Core
                 rewardId = r.RewardId,
                 payloadJson = r.PayloadJson,
             }),
+            schedule = new BakedSchedule
+            {
+                kind = quest.Schedule.Kind,
+                windowStart = quest.Schedule.WindowStart,
+                windowDuration = quest.Schedule.WindowDuration,
+                recurrenceInterval = quest.Schedule.RecurrenceInterval,
+                stopAfterFirstCompletion = quest.Schedule.StopAfterFirstCompletion,
+            },
         };
 
         public static QuestDefinition FromBaked(BakedQuest baked)
@@ -112,7 +120,16 @@ namespace MidManStudio.Questly.Core
                 PayloadJson = r.payloadJson,
             });
 
-            return new QuestDefinition(identity, objectives, prereqs, rewards);
+            var schedule = new ScheduleDefinition
+            {
+                Kind = baked.schedule.kind,
+                WindowStart = baked.schedule.windowStart,
+                WindowDuration = baked.schedule.windowDuration,
+                RecurrenceInterval = baked.schedule.recurrenceInterval,
+                StopAfterFirstCompletion = baked.schedule.stopAfterFirstCompletion,
+            };
+
+            return new QuestDefinition(identity, objectives, prereqs, rewards, schedule);
         }
 
         private static List<TOut> Map<TIn, TOut>(IReadOnlyList<TIn> source, Func<TIn, TOut> project)

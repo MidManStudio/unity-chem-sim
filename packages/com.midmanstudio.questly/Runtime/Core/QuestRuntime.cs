@@ -43,10 +43,26 @@ namespace MidManStudio.Questly.Core
         // purely "has this specific reward id been claimed for this specific quest id, yes or no".
         private readonly Dictionary<string, HashSet<string>> _claimedRewards = new();
 
+        // Scheduling (0.3.0). Only ever populated for a quest whose Schedule.Kind
+        // isn't NONE -- an unscheduled quest never touches any of these three.
+        // CyclesCompleted only ever increases and feeds the per-cycle reward
+        // track (CanClaimCycleReward) independently of QuestState, which for a
+        // RECURRING quest keeps cycling through LOCKED/AVAILABLE/ACTIVE/COMPLETED
+        // long after any individual cycle's own completion. LastGrantedCycle is
+        // a re-entrancy/reload guard: it's the cycle index EvaluateSchedule last
+        // granted AVAILABLE for, so (a) repeated AdvanceTime calls within one
+        // still-open window don't reset objective progress over and over, and
+        // (b) restoring a save mid-window doesn't misread "already in this
+        // cycle" as "a new cycle just opened" and wrongly reset it.
+        private readonly Dictionary<string, int> _cyclesCompleted = new();
+        private readonly Dictionary<string, int> _lastGrantedCycle = new();
+        private readonly Dictionary<string, HashSet<int>> _claimedCycleRewards = new();
+
         public event EventHandler<QuestStateChangedEventArgs>? QuestStateChanged;
         public event EventHandler<QuestObjectiveProgressEventArgs>? ObjectiveProgress;
         public event EventHandler<QuestCompletedEventArgs>? QuestCompleted;
         public event EventHandler<RewardClaimedEventArgs>? RewardClaimed;
+        public event EventHandler<CycleRewardClaimedEventArgs>? CycleRewardClaimed;
 
         public QuestRuntime(IQuestTable table)
         {
@@ -63,7 +79,9 @@ namespace MidManStudio.Questly.Core
             var questId = quest.Identity.Id;
 
             if (isNewQuest)
-                _questStates[questId] = quest.Prereqs.Count == 0 ? QuestState.AVAILABLE : QuestState.LOCKED;
+                _questStates[questId] = (quest.Schedule.Kind == ScheduleKind.NONE && quest.Prereqs.Count == 0)
+                    ? QuestState.AVAILABLE
+                    : QuestState.LOCKED;
 
             var oldObjectiveStates = _objectiveStates.TryGetValue(questId, out var existing)
                 ? existing
@@ -143,6 +161,13 @@ namespace MidManStudio.Questly.Core
         /// debug/cheat unlocks, or anything that doesn't map cleanly to the
         /// declarative prereq system. Also re-runs the watcher afterward,
         /// since forcing a quest to COMPLETED can unlock others.
+        ///
+        /// On a scheduled quest (<see cref="ScheduleDefinition.Kind"/> isn't
+        /// NONE), this is a one-time override, not a standing exemption --
+        /// the next <see cref="AdvanceTime"/> call still evaluates that
+        /// quest's window normally and can move it again (e.g. force it
+        /// AVAILABLE outside its window and a RECURRING schedule will
+        /// revert it to LOCKED on the very next tick).
         /// </summary>
         public void ForceState(string questId, QuestState newState)
         {
@@ -155,6 +180,129 @@ namespace MidManStudio.Questly.Core
         {
             if (GetQuestState(questId) == QuestState.AVAILABLE)
                 SetQuestState(questId, QuestState.ACTIVE);
+        }
+
+        // ── Scheduling ───────────────────────────────────────────────────────
+
+        /// <summary>
+        /// The clock pump for every quest with a <see cref="ScheduleDefinition"/>
+        /// (<see cref="ScheduleDefinition.Kind"/> other than NONE) -- a no-op
+        /// for anything else. Call as often or as rarely as fits your game:
+        /// every <c>Update()</c> with an accumulated float, a server's Unix
+        /// timestamp, an abstract day-counter you bump on sunrise, whatever
+        /// -- Questly never assumes an epoch or a unit, the same contract
+        /// <see cref="ObjectiveKind.TIMER"/>'s duration already uses. The
+        /// only requirement is that <paramref name="now"/> never decreases
+        /// between calls.
+        ///
+        /// Per scheduled quest, independently:
+        /// <list type="bullet">
+        /// <item>ACTIVE is never touched, regardless of the window -- an
+        /// attempt already under way always gets to finish or fail on its
+        /// own terms, it's never cut off mid-attempt by a closing window.</item>
+        /// <item>LOCKED/AVAILABLE (not yet started): entering an open window
+        /// promotes to AVAILABLE, still gated by this quest's own ordinary
+        /// prereqs if it has any; leaving one unstarted reverts a ONE_SHOT
+        /// to the terminal EXPIRED state, or a RECURRING quest back to
+        /// LOCKED to wait for its next window.</item>
+        /// <item>COMPLETED: a ONE_SHOT quest is left alone (already a
+        /// natural terminal state). A RECURRING quest re-arms for its next
+        /// cycle's window (objectives reset fresh -- see
+        /// <see cref="ResetObjectiveProgress"/>) unless
+        /// <see cref="ScheduleDefinition.StopAfterFirstCompletion"/> is
+        /// true, in which case it stays COMPLETED forever.</item>
+        /// <item>FAILED/ABANDONED: a RECURRING quest re-arms for the next
+        /// cycle exactly like COMPLETED-without-stop does -- failing or
+        /// abandoning one cycle doesn't lock you out of the next one. A
+        /// ONE_SHOT quest gets no free retry before its window closes, but
+        /// isn't left in a different terminal state either -- once the
+        /// window closes it becomes EXPIRED same as an untouched one would,
+        /// one consistent "this one-shot opportunity is entirely gone"
+        /// signal regardless of whether the player failed, abandoned, or
+        /// never engaged it at all.</item>
+        /// </list>
+        /// </summary>
+        public void AdvanceTime(double now)
+        {
+            foreach (var quest in _table.AllQuests)
+            {
+                if (quest.Schedule.Kind == ScheduleKind.NONE) continue;
+                EvaluateSchedule(quest, now);
+            }
+        }
+
+        private void EvaluateSchedule(QuestDefinition quest, double now)
+        {
+            var questId = quest.Identity.Id;
+            var schedule = quest.Schedule;
+            var state = GetQuestState(questId);
+
+            if (state == QuestState.ACTIVE) return;
+
+            if (schedule.Kind == ScheduleKind.ONE_SHOT)
+            {
+                if (state == QuestState.COMPLETED || state == QuestState.EXPIRED) return;
+
+                var windowClose = schedule.WindowStart + schedule.WindowDuration;
+                if (now >= windowClose)
+                {
+                    SetQuestState(questId, QuestState.EXPIRED);
+                    return;
+                }
+
+                if (now >= schedule.WindowStart && state == QuestState.LOCKED && EvaluateAllPrereqs(quest))
+                    SetQuestState(questId, QuestState.AVAILABLE);
+
+                return;
+            }
+
+            // RECURRING from here down.
+            if (state == QuestState.COMPLETED && schedule.StopAfterFirstCompletion) return;
+            if (schedule.RecurrenceInterval <= 0 || now < schedule.WindowStart) return;
+
+            var cycleIndex = (int)Math.Floor((now - schedule.WindowStart) / schedule.RecurrenceInterval);
+            var cycleOpen = schedule.WindowStart + cycleIndex * schedule.RecurrenceInterval;
+            var inWindow = now < cycleOpen + schedule.WindowDuration;
+
+            if (!inWindow)
+            {
+                if (state == QuestState.AVAILABLE)
+                    SetQuestState(questId, QuestState.LOCKED);
+                return;
+            }
+
+            if (GetLastGrantedCycle(questId) == cycleIndex) return; // already arm/checked for this exact cycle
+
+            var reArmable = state == QuestState.LOCKED || state == QuestState.COMPLETED ||
+                             state == QuestState.FAILED || state == QuestState.ABANDONED;
+            if (!reArmable || !EvaluateAllPrereqs(quest)) return;
+
+            ResetObjectiveProgress(questId, quest);
+            _lastGrantedCycle[questId] = cycleIndex;
+            SetQuestState(questId, QuestState.AVAILABLE);
+        }
+
+        private int GetLastGrantedCycle(string questId) =>
+            _lastGrantedCycle.TryGetValue(questId, out var cycle) ? cycle : -1;
+
+        /// <summary>
+        /// Fresh-start for a RECURRING quest's new cycle (locked-in default
+        /// per this feature's own design discussion: each cycle's objectives
+        /// reset rather than carrying progress over from the last one).
+        /// Fires <see cref="ObjectiveProgress"/> for every objective so a
+        /// UI bound to it sees the reset, same as any other progress change.
+        /// </summary>
+        private void ResetObjectiveProgress(string questId, QuestDefinition quest)
+        {
+            if (!_objectiveStates.TryGetValue(questId, out var states)) return;
+
+            foreach (var objective in quest.Objectives)
+            {
+                if (!states.TryGetValue(objective.Id, out var runtime)) continue;
+                runtime.State = ObjectiveState.INCOMPLETE;
+                runtime.Value = 0f;
+                ObjectiveProgress?.Invoke(this, new QuestObjectiveProgressEventArgs(questId, objective.Id, 0f, ObjectiveState.INCOMPLETE));
+            }
         }
 
         // ── Push-based progress ──────────────────────────────────────────────
@@ -278,6 +426,78 @@ namespace MidManStudio.Questly.Core
             return null;
         }
 
+        // ── Per-cycle reward claiming (RECURRING quests only) ──────────────────
+        // A completely separate mechanism from the whole-quest claim API just
+        // above -- a quest uses one or the other, never both. Where the API
+        // above gates on "is the quest currently COMPLETED", this one gates on
+        // "how many times has it EVER completed" (see GetCyclesCompleted),
+        // since a RECURRING quest's QuestState keeps moving on to the next
+        // cycle's LOCKED/AVAILABLE/ACTIVE long after any one cycle's own
+        // completion. Rewards[i] is cycle i's reward -- a capped day-1/day-2/
+        // day-3 login-streak track needs nothing more than that list order,
+        // no new schema concept for "which day".
+
+        /// <summary>Number of times this quest has ever reached COMPLETED while RECURRING-scheduled. Always 0 for anything else (unscheduled, ONE_SHOT, or a RECURRING quest that hasn't completed a cycle yet).</summary>
+        public int GetCyclesCompleted(string questId) =>
+            _cyclesCompleted.TryGetValue(questId, out var count) ? count : 0;
+
+        public bool IsCycleRewardClaimed(string questId, int cycleIndex) =>
+            _claimedCycleRewards.TryGetValue(questId, out var claimed) && claimed.Contains(cycleIndex);
+
+        /// <summary>
+        /// True once cycle <paramref name="cycleIndex"/> has actually
+        /// completed, the quest's <see cref="QuestDefinition.Rewards"/> list
+        /// has an entry at that index, and it hasn't been claimed yet. Once
+        /// true this never becomes false again except by claiming it --
+        /// there's no time limit on claiming, so missing a cycle's window
+        /// never costs you that cycle's reward.
+        /// </summary>
+        public bool CanClaimCycleReward(string questId, int cycleIndex)
+        {
+            if (cycleIndex < 0 || cycleIndex >= GetCyclesCompleted(questId)) return false;
+            if (IsCycleRewardClaimed(questId, cycleIndex)) return false;
+
+            var quest = _table.Find(questId);
+            return quest != null && cycleIndex < quest.Rewards.Count;
+        }
+
+        /// <summary>
+        /// Claims cycle <paramref name="cycleIndex"/>'s reward if
+        /// <see cref="CanClaimCycleReward"/> allows it, firing
+        /// <see cref="CycleRewardClaimed"/> and returning the claimed
+        /// reward. Returns null with no exception otherwise, so a UI can
+        /// wire a Claim button straight to this.
+        /// </summary>
+        public RewardDefinition? TryClaimCycleReward(string questId, int cycleIndex)
+        {
+            if (!CanClaimCycleReward(questId, cycleIndex)) return null;
+
+            var quest = _table.Find(questId)!;
+            var reward = quest.Rewards[cycleIndex];
+
+            if (!_claimedCycleRewards.TryGetValue(questId, out var claimed))
+            {
+                claimed = new HashSet<int>();
+                _claimedCycleRewards[questId] = claimed;
+            }
+            claimed.Add(cycleIndex);
+
+            CycleRewardClaimed?.Invoke(this, new CycleRewardClaimedEventArgs(questId, cycleIndex, reward));
+            return reward;
+        }
+
+        /// <summary>Every cycle index that's completed, has a defined reward, and isn't claimed yet -- what a missions-tab-style UI should currently show as claimable on this quest's track.</summary>
+        public IEnumerable<int> GetClaimableCycleIndices(string questId)
+        {
+            var quest = _table.Find(questId);
+            if (quest == null) yield break;
+
+            var cap = Math.Min(GetCyclesCompleted(questId), quest.Rewards.Count);
+            for (var i = 0; i < cap; i++)
+                if (!IsCycleRewardClaimed(questId, i))
+                    yield return i;
+        }
+
         // ── Persistence: host-owned ──────────────────────────────────────────
 
         public QuestProgressSnapshot CaptureState()
@@ -300,6 +520,20 @@ namespace MidManStudio.Questly.Core
                 foreach (var rewardId in rewardIds)
                     snapshot.RewardClaims.Add(new QuestRewardClaimRow { QuestId = questId, RewardId = rewardId });
 
+            var scheduledQuestIds = new HashSet<string>(_cyclesCompleted.Keys);
+            scheduledQuestIds.UnionWith(_lastGrantedCycle.Keys);
+            foreach (var questId in scheduledQuestIds)
+                snapshot.ScheduleStates.Add(new QuestScheduleStateRow
+                {
+                    QuestId = questId,
+                    CyclesCompleted = GetCyclesCompleted(questId),
+                    LastGrantedCycleIndex = GetLastGrantedCycle(questId),
+                });
+
+            foreach (var (questId, cycles) in _claimedCycleRewards)
+                foreach (var cycleIndex in cycles)
+                    snapshot.CycleRewardClaims.Add(new QuestCycleRewardClaimRow { QuestId = questId, CycleIndex = cycleIndex });
+
             return snapshot;
         }
 
@@ -308,6 +542,13 @@ namespace MidManStudio.Questly.Core
         /// once over any quest the snapshot doesn't mention at all — quests
         /// added by a game update since the save was made get a fair
         /// initial evaluation instead of silently staying LOCKED forever.
+        ///
+        /// Doesn't touch scheduling on its own: call <see cref="AdvanceTime"/>
+        /// with the current <c>now</c> right after this, same as you would
+        /// during normal play -- Questly never persists "now" itself (the
+        /// host owns the clock), only the schedule bookkeeping (cycles
+        /// completed, which cycle was last granted) that <see cref="AdvanceTime"/>
+        /// needs to pick back up correctly once you do.
         /// </summary>
         public void RestoreState(QuestProgressSnapshot snapshot)
         {
@@ -340,6 +581,22 @@ namespace MidManStudio.Questly.Core
                 claimed.Add(row.RewardId);
             }
 
+            foreach (var row in snapshot.ScheduleStates)
+            {
+                _cyclesCompleted[row.QuestId] = row.CyclesCompleted;
+                _lastGrantedCycle[row.QuestId] = row.LastGrantedCycleIndex;
+            }
+
+            foreach (var row in snapshot.CycleRewardClaims)
+            {
+                if (!_claimedCycleRewards.TryGetValue(row.QuestId, out var claimed))
+                {
+                    claimed = new HashSet<int>();
+                    _claimedCycleRewards[row.QuestId] = claimed;
+                }
+                claimed.Add(row.CycleIndex);
+            }
+
             var unmentioned = new List<string>();
             foreach (var questId in _questStates.Keys)
                 if (!mentioned.Contains(questId))
@@ -368,6 +625,8 @@ namespace MidManStudio.Questly.Core
             saveFile.Progress.Quests = snapshot.Quests;
             saveFile.Progress.Objectives = snapshot.Objectives;
             saveFile.Progress.RewardClaims = snapshot.RewardClaims;
+            saveFile.Progress.ScheduleStates = snapshot.ScheduleStates;
+            saveFile.Progress.CycleRewardClaims = snapshot.CycleRewardClaims;
 
             using var builder = MdixBuilder.Create();
             var serializeResult = builder.Serialize(saveFile);
@@ -394,6 +653,8 @@ namespace MidManStudio.Questly.Core
                 Quests = saveFile.Progress.Quests,
                 Objectives = saveFile.Progress.Objectives,
                 RewardClaims = saveFile.Progress.RewardClaims,
+                ScheduleStates = saveFile.Progress.ScheduleStates,
+                CycleRewardClaims = saveFile.Progress.CycleRewardClaims,
             });
 
             return MdixResult<Unit>.Ok(Unit.Value);
@@ -413,7 +674,12 @@ namespace MidManStudio.Questly.Core
             {
                 var quest = _table.Find(questId);
                 if (quest != null)
+                {
+                    if (quest.Schedule.Kind == ScheduleKind.RECURRING)
+                        _cyclesCompleted[questId] = GetCyclesCompleted(questId) + 1;
+
                     QuestCompleted?.Invoke(this, new QuestCompletedEventArgs(questId, quest.Rewards));
+                }
             }
         }
 
@@ -586,7 +852,16 @@ namespace MidManStudio.Questly.Core
         /// LOCKED -&gt; AVAILABLE only, never the reverse — if a satisfied
         /// prereq's condition later goes false again, an already-available
         /// quest stays available. Re-locking is a <see cref="ForceState"/>
-        /// call, not something the watcher ever does on its own.
+        /// call, not something this watcher ever does on its own.
+        ///
+        /// One disclosed exception: a scheduled quest (<see cref="ScheduleDefinition.Kind"/>
+        /// isn't NONE) is skipped here entirely, in both directions --
+        /// <see cref="AdvanceTime"/> is the only thing allowed to move it
+        /// LOCKED/AVAILABLE/EXPIRED, driven by the clock rather than by
+        /// prereq/objective events. Without this exception a scheduled quest
+        /// with no *other* prereqs would be promoted to AVAILABLE the moment
+        /// this watcher ran over it for any unrelated reason, regardless of
+        /// whether its window was even open.
         /// </summary>
         private void RunWatcher(IEnumerable<string> candidateQuestIds)
         {
@@ -596,6 +871,8 @@ namespace MidManStudio.Questly.Core
 
                 var quest = _table.Find(questId);
                 if (quest == null) continue;
+
+                if (quest.Schedule.Kind != ScheduleKind.NONE) continue;
 
                 if (EvaluateAllPrereqs(quest))
                     SetQuestState(questId, QuestState.AVAILABLE);

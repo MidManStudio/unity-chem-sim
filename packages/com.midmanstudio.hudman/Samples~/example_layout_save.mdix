@@ -13,6 +13,12 @@
 // in the project that produced this file, the same mechanism that lets a
 // ScriptableObject-provider-generated enum round-trip through mdix with
 // no special-casing anywhere in this package.
+//
+// Object-literal fields below use `=`, not `->` -- confirmed against
+// DixScript-Rust's real parser (parse_object_property in
+// data_section_parser.rs hard-errors on anything but `=` inside `{...}`;
+// `->` is @CONFIG-only, via a completely separate handler). An earlier
+// version of this file used `->` here, which would never have parsed.
 
 @CONFIG(
   version -> "1.0.0",
@@ -33,7 +39,7 @@
   saved_at    = 2026-09-12T12:00:00Z,
 
   layout.items::
-    { item_type -> HudItemType.HealthBar,   position_x -> -760.0, position_y -> 420.0, scale_x -> 1.0, scale_y -> 1.0, opacity -> 1.0, is_visible -> true },
-    { item_type -> HudItemType.MiniMap,     position_x -> 760.0,  position_y -> 420.0, scale_x -> 1.2, scale_y -> 1.2, opacity -> 0.9, is_visible -> true },
-    { item_type -> HudItemType.AmmoCounter, position_x -> 700.0,  position_y -> -420.0, scale_x -> 1.0, scale_y -> 1.0, opacity -> 1.0, is_visible -> true }
+    { item_type = HudItemType.HealthBar,   position_x = -760.0, position_y = 420.0, scale_x = 1.0, scale_y = 1.0, opacity = 1.0, is_visible = true },
+    { item_type = HudItemType.MiniMap,     position_x = 760.0,  position_y = 420.0, scale_x = 1.2, scale_y = 1.2, opacity = 0.9, is_visible = true },
+    { item_type = HudItemType.AmmoCounter, position_x = 700.0,  position_y = -420.0, scale_x = 1.0, scale_y = 1.0, opacity = 1.0, is_visible = true }
 )

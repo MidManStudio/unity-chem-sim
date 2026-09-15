@@ -45,7 +45,10 @@ namespace MidManStudio.Questly.Core
         /// Loads every quest under the <c>quests.*</c> prefix. A quest with
         /// no <c>prereqs::</c>/<c>rewards::</c> path is valid, not an
         /// error — Questly's schema convention treats a missing path as
-        /// "empty", per <c>core/builders.mdix</c>'s own documented rule.
+        /// "empty", per <c>core/builders.mdix</c>'s own documented rule. A
+        /// missing <c>schedule</c> path (singular, not an array) follows the
+        /// same spirit: it's valid, not an error, and downgrades to an
+        /// unscheduled <see cref="ScheduleDefinition"/> rather than "empty".
         /// </summary>
         public static MdixResult<MdixQuestTable> Load(MdixDatabase db)
         {
@@ -122,11 +125,16 @@ namespace MidManStudio.Questly.Core
             FillOpaqueJson(db, $"quests.{id}.rewards", rewardsResult.SuccessResult, "payload",
                 (r, json) => r.PayloadJson = json);
 
+            var scheduleResult = GetObjectOrDefault(db, $"quests.{id}.schedule", new ScheduleDefinition());
+            if (scheduleResult.IsFailure)
+                return MdixResult<QuestDefinition>.Err(scheduleResult.Error);
+
             return MdixResult<QuestDefinition>.Ok(new QuestDefinition(
                 identity.SuccessResult,
                 objectivesResult.SuccessResult,
                 prereqsResult.SuccessResult,
-                rewardsResult.SuccessResult));
+                rewardsResult.SuccessResult,
+                scheduleResult.SuccessResult));
         }
 
         /// <summary>
@@ -140,6 +148,21 @@ namespace MidManStudio.Questly.Core
             var result = db.GetArray<T>(path);
             if (result.IsFailure && result.Error.Kind == MdixErrorKind.NotFound)
                 return MdixResult<List<T>>.Ok(new List<T>());
+            return result;
+        }
+
+        /// <summary>
+        /// Same missing-path convention as <see cref="GetArrayOrEmpty{T}"/>,
+        /// for a single optional object rather than an array -- a quest with
+        /// no <c>quests.{id}.schedule</c> path gets <paramref name="defaultValue"/>
+        /// (an unscheduled <see cref="ScheduleDefinition"/>) rather than a
+        /// load failure.
+        /// </summary>
+        private static MdixResult<T> GetObjectOrDefault<T>(MdixDatabase db, string path, T defaultValue)
+        {
+            var result = db.Deserialize<T>(path);
+            if (result.IsFailure && result.Error.Kind == MdixErrorKind.NotFound)
+                return MdixResult<T>.Ok(defaultValue);
             return result;
         }
 

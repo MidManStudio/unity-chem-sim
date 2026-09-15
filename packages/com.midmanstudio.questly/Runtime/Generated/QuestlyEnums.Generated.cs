@@ -8,9 +8,11 @@
 //     mdix-ffi's native comment stripper -- and building that native lib means
 //     compiling DixScript-Rust's Rust code, out of scope for this sandbox. The
 //     parse/render algorithm itself is simple, deterministic source-text
-//     scanning (confirmed by reading MdixEnumCodeGenerator.cs in full) with no
-//     comments inside core/enums.mdix's @ENUMS block to strip in the first
-//     place, so this output is traced by hand rather than invented. Run
+//     scanning (confirmed by reading MdixEnumCodeGenerator.cs in full).
+//     0.3.0 update: core/enums.mdix's @ENUMS block now has inline `//`
+//     comments (documenting EXPIRED and ScheduleKind) that a real run would
+//     strip via MdixConverter.StripComments before scanning -- stripped by
+//     hand here for the same reason the whole file is hand-traced. Run
 //     `MdixEnumCodeGenerator.GenerateFromFile("core/enums.mdix",
 //     "MidManStudio.Questly.Generated")` for real once mdix-ffi is built in
 //     your own environment to regenerate this file for real, byte for byte.
@@ -33,7 +35,8 @@ namespace MidManStudio.Questly.Generated
         ACTIVE,
         COMPLETED,
         FAILED,
-        ABANDONED
+        ABANDONED,
+        EXPIRED
     }
 
     public enum ObjectiveKind
@@ -60,5 +63,12 @@ namespace MidManStudio.Questly.Generated
         FLAG_VALUE,
         COUNTER_AT_LEAST,
         EXTERNAL
+    }
+
+    public enum ScheduleKind
+    {
+        NONE,
+        ONE_SHOT,
+        RECURRING
     }
 }

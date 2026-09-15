@@ -24,27 +24,37 @@ namespace MidManStudio.Questly.Core
     /// in here to avoid re-touching already-landed loader code for a
     /// separate concern.
     /// </summary>
-    public sealed class QuestlySchema : IMdixSchemaSource
+    public sealed class QuestlySchema
     {
-        public MdixValidationReport Validate(MdixDatabase db)
+        /// <summary>
+        /// Combines the structural pass (<see cref="BuildStructuralSchema"/>)
+        /// with the referential-integrity pass (<see cref="ValidateQuestGraph"/>)
+        /// into one list. Returns <see cref="MdixValidationError"/> directly
+        /// rather than a <see cref="MdixValidationReport"/> -- the real
+        /// report type's constructor is internal to Mdix.Core and its
+        /// <c>Errors</c> list is read-only, so a caller outside that
+        /// assembly (Questly included) genuinely cannot build one up
+        /// incrementally the way this method needs to across two separate
+        /// validation passes. Nothing is lost: <see cref="MdixValidationError"/>
+        /// itself is fully public, an empty list still means "valid".
+        /// </summary>
+        public List<MdixValidationError> Validate(MdixDatabase db)
         {
-            var report = new MdixValidationReport();
-            report.Errors.AddRange(BuildStructuralSchema().Validate(db).Errors);
+            var errors = new List<MdixValidationError>(BuildStructuralSchema().Validate(db).Errors);
 
             var loaded = MdixQuestTable.Load(db);
             if (loaded.IsFailure)
             {
-                report.Errors.Add(new MdixValidationError
-                {
-                    Path = "quests",
-                    Kind = MdixValidationErrorKind.Missing,
-                    Message = $"Failed to load quest definitions: {loaded.Error.Message}",
-                });
-                return report;
+                errors.Add(new MdixValidationError(
+                    path: "quests",
+                    expected: "no error",
+                    actual: $"Failed to load quest definitions: {loaded.Error.Message}",
+                    kind: MdixValidationErrorKind.Missing));
+                return errors;
             }
 
-            report.Errors.AddRange(ValidateQuestGraph(loaded.SuccessResult.AllQuests));
-            return report;
+            errors.AddRange(ValidateQuestGraph(loaded.SuccessResult.AllQuests));
+            return errors;
         }
 
         private static MdixSchemaBuilder BuildStructuralSchema() =>
@@ -150,6 +160,33 @@ namespace MidManStudio.Questly.Core
                     }
                 }
             }
+
+            ValidateSchedule(quest, errors);
+        }
+
+        /// <summary>
+        /// Catches the two schedule footguns that would silently produce a
+        /// quest that can never open: a zero/negative window, and (for
+        /// RECURRING) a zero/negative recurrence interval.
+        /// </summary>
+        private static void ValidateSchedule(QuestDefinition quest, List<MdixValidationError> errors)
+        {
+            var schedule = quest.Schedule;
+            if (schedule.Kind == ScheduleKind.NONE) return;
+
+            var questId = quest.Identity.Id;
+
+            if (schedule.WindowDuration <= 0)
+            {
+                errors.Add(Error($"quests.{questId}.schedule",
+                    $"Quest \"{questId}\" has a {schedule.Kind} schedule with window_duration <= 0 -- its window can never actually be open."));
+            }
+
+            if (schedule.Kind == ScheduleKind.RECURRING && schedule.RecurrenceInterval <= 0)
+            {
+                errors.Add(Error($"quests.{questId}.schedule",
+                    $"Quest \"{questId}\" is RECURRING but recurrence_interval <= 0 -- it would never advance to a second cycle."));
+            }
         }
 
         /// <summary>DFS cycle detection over QUEST_COMPLETED prereq edges only — the only prereq kind that creates a quest-to-quest dependency graph.</summary>
@@ -189,11 +226,16 @@ namespace MidManStudio.Questly.Core
                 Visit(questId, new List<string>());
         }
 
-        private static MdixValidationError Error(string path, string message) => new()
-        {
-            Path = path,
-            Kind = MdixValidationErrorKind.InvalidValue,
-            Message = message,
-        };
+        /// <summary>
+        /// Real <see cref="MdixValidationError"/> is a structured
+        /// expected/actual/kind type, not a free-text-message type -- for
+        /// a single free-form diagnostic string (referential integrity,
+        /// schedule sanity) rather than a literal "expected X got Y"
+        /// mismatch, "no error" / the message itself is the closest honest
+        /// fit, so <c>ToString()</c> still reads as a complete sentence:
+        /// "[InvalidValue] 'path': expected no error, got &lt;message&gt;".
+        /// </summary>
+        private static MdixValidationError Error(string path, string message) =>
+            new(path, expected: "no error", actual: message, kind: MdixValidationErrorKind.InvalidValue);
     }
 }

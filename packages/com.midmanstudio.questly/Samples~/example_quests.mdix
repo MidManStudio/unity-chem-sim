@@ -80,4 +80,63 @@
 
   quests.bounty_board.rewards::
     builders.reward("currency", { amount = 40 })
+
+  // ── Quest 6: ONE_SHOT schedule — a limited-time event, gone for good if missed ──
+  // Window opens at host-time 1000.0 and stays open for 500.0 (closes at
+  // 1500.0). Miss it -- i.e. AdvanceTime ever reports now >= 1500.0 while
+  // this is still LOCKED/AVAILABLE -- and QuestRuntime moves it to the
+  // terminal EXPIRED state on its own, no host code required.
+  quests.meteor_shower_event.identity:
+    core = builders.createIdentity("meteor_shower_event", enums.QuestType.SIDE, builders.locKey("meteor_shower_event", "title"), "", ["event"])
+
+  quests.meteor_shower_event.objectives::
+    builders.objective("obj_collect_shards", enums.ObjectiveKind.COUNTER, builders.locKey("meteor_shower_event", "obj_collect_shards"), 8.0, 0.0, [], "", {})
+
+  quests.meteor_shower_event.rewards::
+    builders.reward("currency", { amount = 150 })
+
+  quests.meteor_shower_event.schedule =
+    builders.schedule(enums.ScheduleKind.ONE_SHOT, 1000.0, 500.0, 0.0, false)
+
+  // ── Quest 7: RECURRING, stops after first completion — reappears every ──
+  // cycle until you finally finish it once, then never again. First window
+  // opens at 0.0, each cycle is 2000.0 apart, window stays open 300.0 each
+  // time. Objectives reset fresh every time a new cycle opens (locked
+  // behavior for this feature), so a partial attempt from a missed window
+  // doesn't carry over into the next one.
+  quests.wandering_merchant.identity:
+    core = builders.createIdentity("wandering_merchant", enums.QuestType.SIDE, builders.locKey("wandering_merchant", "title"), "npc_wandering_merchant", [])
+
+  quests.wandering_merchant.objectives::
+    builders.objective("obj_trade", enums.ObjectiveKind.FLAG, builders.locKey("wandering_merchant", "obj_trade"), 0.0, 0.0, [], "", {})
+
+  quests.wandering_merchant.rewards::
+    builders.reward("currency", { amount = 80 })
+
+  quests.wandering_merchant.schedule =
+    builders.schedule(enums.ScheduleKind.RECURRING, 0.0, 300.0, 2000.0, true)
+
+  // ── Quest 8: RECURRING, never stops — a capped login-streak track ────────
+  // Cycles every 1000.0 (think "once a day"), window open 500.0 each time,
+  // and keeps reappearing indefinitely (_stop_after_first_completion =
+  // false) -- this is the "appears at a certain time, has multiple
+  // rewards, miss one and come back later" pattern. The three rewards
+  // below map 1:1 to cycle index (0, 1, 2) via QuestRuntime.CyclesCompleted
+  // -- claimed through TryClaimCycleReward, NOT the ordinary quest_id-level
+  // reward claiming, and never expire once earned even if the player skips
+  // a cycle's window entirely. A 4th+ completion simply has no reward left
+  // to claim (the list is capped at 3) but the quest itself keeps recurring.
+  quests.daily_checkin.identity:
+    core = builders.createIdentity("daily_checkin", enums.QuestType.SIDE, builders.locKey("daily_checkin", "title"), "", ["checkin"])
+
+  quests.daily_checkin.objectives::
+    builders.objective("obj_checkin", enums.ObjectiveKind.FLAG, builders.locKey("daily_checkin", "obj_checkin"), 0.0, 0.0, [], "", {})
+
+  quests.daily_checkin.rewards::
+    builders.reward("currency", { amount = 10 }),
+    builders.reward("currency", { amount = 20 }),
+    builders.reward("premium_currency", { amount = 5 })
+
+  quests.daily_checkin.schedule =
+    builders.schedule(enums.ScheduleKind.RECURRING, 0.0, 500.0, 1000.0, false)
 )
