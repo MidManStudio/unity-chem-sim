@@ -62,4 +62,30 @@
       tags          = _tags
     }
   }
+
+  // ── Runtime progress (optional package-owned save path) ────────────────
+  // Container INSTANCES are never mdix-authored content -- they're created
+  // at runtime via InventorizzRuntime.CreateContainer. These two builders
+  // exist purely to hand-author example/test save files that look like
+  // what InventorizzRuntime.SaveToMdix actually produces, same reason
+  // Questly's questProgress()-family builders exist.
+
+  ~createContainerInstance<object>(_instance_id<string>, _container_type_id<string>, _owner_id<string>) {
+    return {
+      instance_id       = _instance_id
+      container_type_id = _container_type_id
+      owner_id          = _owner_id
+    }
+  }
+
+  // Only non-empty slots get a row -- an empty slot is "no row for that
+  // slot_index", not a row with item_id = "".
+  ~createContainerSlot<object>(_instance_id<string>, _slot_index<int>, _item_id<string>, _count<int>) {
+    return {
+      instance_id = _instance_id
+      slot_index  = _slot_index
+      item_id     = _item_id
+      count       = _count
+    }
+  }
 )

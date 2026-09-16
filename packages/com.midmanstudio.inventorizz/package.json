@@ -1,0 +1,21 @@
+{
+    "name": "com.midmanstudio.inventorizz",
+    "version": "0.1.0",
+    "displayName": "Inventorizz \u2014 Generic Inventory System",
+    "description": "Game-agnostic container/inventory runtime on top of the DixScript (.mdix) database. Item and container-type definitions are mdix-authored content (Samples~/core/{enums,builders}.mdix, example_items.mdix); container INSTANCES are created at runtime by a host (InventorizzRuntime.CreateContainer), never derived automatically from the catalog -- a player can own several backpacks of the same type, the way Questly's quests or HudMan's HUD items never could. Zero game-specific logic: item taxonomy is entirely free-form tags (ItemDefinition.Tags), never a closed enum, unlike the two genuinely structural/mechanical enums this package does declare (StackPolicy, CapacityKind) via plain @ENUMS -- neither is a per-game catalog a consuming game needs to extend, so the ScriptableObject-provider pattern HudMan/GenSettings use for their catalogs doesn't apply here. Every container is internally a positionally-addressable slot list; SLOT_COUNT/WEIGHT_AND_SLOTS types pre-allocate a fixed, never-resized array (real empty slots, stable indices -- what a grid-style drag-and-drop UI needs), UNLIMITED/WEIGHT types start empty and grow on add (no fixed cells, capacity is a pure aggregate check). TryAddItem is deliberately best-effort (fills as much as actually fits, reports how much via an out param) since a loot-and-carry game generally wants 'grab what you can carry' rather than an all-or-nothing failure; TryTransferItem is its atomic sibling (snapshot-and-rollback, all-or-nothing) for when a partial result would be the wrong call. Ships with a real dragndrop (com.midmanstudio.dragndrop) integration from 0.1.0: plain-C# IDraggable/IDropTarget logic classes (zero UnityEngine dependency, directly testable against the real DragDropController) plus thin MonoBehaviour wrappers pairing with dragndrop's own UGUI adapter components -- an exact-slot target for grid UIs, a whole-container target for flat-bag UIs or as a fixed-grid catch-all. Same hybrid persistence model as Questly/HudMan: CaptureState/RestoreState (host-owned POCO) and SaveToMdix/LoadFromMdix (package-owned file), with a shrunk fixed-grid container's out-of-range saved slots dropped gracefully on restore rather than crashing. Does not subscribe to the catalog's DefinitionsChanged itself -- there's no well-defined 'reconcile all instances' operation the way Questly has for quests, since instances aren't derived from the definition set in the first place; a host hot-reloading content alongside live instances needs its own reconciliation policy. No enum-generator Editor tooling in 0.1.0 (StackPolicy/CapacityKind are plain closed enums, not provider-generated, so none is needed).",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {
+        "com.midmanstudio.mdix": "https://github.com/Mid-D-Man/DixScript-Rust.git?path=com.midmanstudio.mdix",
+        "com.midmanstudio.dragndrop": "https://github.com/MidManStudio/unity-chem-sim.git?path=packages/com.midmanstudio.dragndrop"
+    },
+    "keywords": [ "inventory", "items", "container", "mdix", "dixscript" ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}

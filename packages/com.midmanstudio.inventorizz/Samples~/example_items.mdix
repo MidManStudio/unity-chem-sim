@@ -45,4 +45,10 @@
 
   container_types.quest_slot.identity:
     core = builders.createContainerType("quest_slot", builders.locKey("quest_slot", "display"), enums.CapacityKind.SLOT_COUNT, 0.0, 8, [])
+
+  container_types.corpse_loot_bag.identity:
+    core = builders.createContainerType("corpse_loot_bag", builders.locKey("corpse_loot_bag", "display"), enums.CapacityKind.UNLIMITED, 0.0, 0, ["temporary"])
+
+  container_types.belt_pouch.identity:
+    core = builders.createContainerType("belt_pouch", builders.locKey("belt_pouch", "display"), enums.CapacityKind.WEIGHT_AND_SLOTS, 5.0, 4, [])
 )

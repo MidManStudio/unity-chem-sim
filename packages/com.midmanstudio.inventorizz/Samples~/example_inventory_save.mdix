@@ -1,0 +1,38 @@
+// com.midmanstudio.inventorizz/Samples~/example_inventory_save.mdix
+// In the real runtime this file's content is produced by MdixSerializer
+// writing an InventoryProgressSaveFile POCO directly -- it is not
+// hand-authored DixScript. This sample exists purely to document the
+// resulting shape, same convention as Questly's own example_progress_save.mdix.
+//
+// Path is `progress.instances`/`progress.slots`, matching
+// InventoryProgressGroup's real C# property names (Instances/Slots) under
+// MdixSerializer's ToSnakeCase -- checked directly against the real
+// serializer source this session after finding a stale path name in
+// Questly's own equivalent file, rather than assumed.
+
+@CONFIG(
+  version -> "1.0.0"
+  author  -> "MidMan Studio"
+)
+
+@IMPORTS(
+  builders from "core/builders.mdix"
+)
+
+@DATA(
+  save_slot = "slot_1",
+  saved_at  = 2026-09-16T10:00:00Z,
+
+  // player1 owns two containers: a fixed-grid quest_slot (4 slots) and an
+  // unlimited flat-bag sack. Only non-empty slots get a row -- quest_slot's
+  // slot 2 is implicitly empty (no row for it), not a row with an empty item_id.
+  progress.instances::
+    builders.createContainerInstance("player1_quest_slot", "quest_slot", "player1"),
+    builders.createContainerInstance("player1_sack", "corpse_loot_bag", "player1")
+
+  progress.slots::
+    builders.createContainerSlot("player1_quest_slot", 0, "waterskin", 1),
+    builders.createContainerSlot("player1_quest_slot", 1, "ancient_relic", 1),
+    builders.createContainerSlot("player1_sack", 0, "rope", 5),
+    builders.createContainerSlot("player1_sack", 1, "rope", 3)
+)
