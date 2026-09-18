@@ -5,7 +5,7 @@ on:
     paths:
       - 'rust_lib/**'
       - 'Cargo.toml'
-      - '.github/workflows/rust-ci.yml'
+      - '.github/workflows/rust-rust-ci.yml'
   pull_request:
     paths:
       - 'rust_lib/**'
