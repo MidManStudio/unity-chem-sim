@@ -49,7 +49,16 @@ namespace MidManStudio.DragDrop.UGUI
             if (_draggable == null) return;
 
             _controller.BeginDrag(_draggable);
-            if (_controller.Phase != DragPhase.Dragging) return; // re-entrant BeginDrag calls are a no-op on the controller
+
+            // _controller.Phase is already Dragging immediately after ANY BeginDrag
+            // call, regardless of which source owns it -- checking Phase here can
+            // never actually detect "another source's drag is already active".
+            // CurrentSource is the real check: it only updates when THIS call's
+            // source actually wins the drag, so a second source's OnBeginDrag while
+            // someone else's drag is active is correctly ignored instead of
+            // hijacking alpha/raycast state that belongs to the drag already in
+            // progress. (Found via the UI Toolkit adapter's equivalent guard.)
+            if (!ReferenceEquals(_controller.CurrentSource, _draggable)) return;
 
             _preDragAlpha = _canvasGroup.alpha;
             _preDragBlocksRaycasts = _canvasGroup.blocksRaycasts;
