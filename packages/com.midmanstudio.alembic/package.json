@@ -1,6 +1,6 @@
 {
     "name": "com.midmanstudio.alembic",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "displayName": "Alembic \u2014 Chemistry Simulation",
     "description": "Real-time particle chemistry simulation. Rust core (spatial hash, Lennard-Jones forces, velocity Verlet integration) via FFI, mid-math SIMD lane types, Burst-batched marshaling, no-GameObject rendering. Standalone and game-agnostic \u2014 visuals plug in per project.",
     "unity": "2022.3",

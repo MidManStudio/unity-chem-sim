@@ -1,6 +1,6 @@
 {
     "name": "com.midmanstudio.gensettings",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "displayName": "gensettings — Generic Settings System",
     "description": "Game-agnostic settings engine extracted from AA_AllScripts' AL_MainMenuScripts. SettingsCategory/SettingsSubCategory are code-generated enums (ScriptableObject-provider + block/priority/lock-file pattern, same shape as com.midmanstudio.hudman's HudItemType) so each game contributes its own category list instead of the package hardcoding Graphics/Audio/HUDControls/etc. Every per-settingId 'switch (settingData.settingId)' block the original ApplyValue()/OnButtonClicked() methods hardcoded is replaced by one ISettingApplier hook, host-registered per settingId -- same shape as com.midmanstudio.questly's IQuestObjectiveEvaluator. SettingsRuntime tracks live values and follows Questly's hybrid persistence split: CaptureState/RestoreState for a host-owned snapshot, SaveToMdix/LoadFromMdix for a package-owned .mdix file, replacing MID_SaveSystem's one-file-per-value scheme entirely. SettingsContext/SettingControlType/SettingFlags stay as fixed enums (not code-generated) -- they describe mechanics intrinsic to this package's own control-binding layer, not per-game catalog content, the same distinction Questly draws between QuestType/QuestState (fixed) and category_tags (free-form).",
     "unity": "2022.3",
