@@ -1,6 +1,7 @@
 using UnityEngine;
 using MidManStudio.HudMan.Core;
 using MidManStudio.HudMan.Generated;
+using System;
 
 namespace MidManStudio.HudMan.UnityBinding
 {
@@ -29,6 +30,18 @@ namespace MidManStudio.HudMan.UnityBinding
 
         public HudItemType ItemType => itemType;
 
+        /// <summary>
+        /// Null until <see cref="Bind"/> has actually been called. A
+        /// sibling component (e.g. <see cref="HudItemDraggableAdapter"/>)
+        /// whose own Awake() may run before or after Bind() should
+        /// subscribe to <see cref="Bound"/> rather than read this directly
+        /// in its own Awake().
+        /// </summary>
+        public HudLayoutRuntime Runtime => _runtime;
+
+        /// <summary>Fired once, at the end of <see cref="Bind"/>, once <see cref="Runtime"/> is safe to read.</summary>
+        public event EventHandler? Bound;
+
         public void Bind(HudLayoutRuntime runtime)
         {
             _rectTransform = GetComponent<RectTransform>();
@@ -38,6 +51,7 @@ namespace MidManStudio.HudMan.UnityBinding
             _runtime = runtime;
             _runtime.Register(itemType, Capture());
             _runtime.ItemDataChanged += OnRuntimeItemDataChanged;
+            Bound?.Invoke(this, EventArgs.Empty);
         }
 
         private void OnDestroy()

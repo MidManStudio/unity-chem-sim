@@ -27,6 +27,12 @@ namespace MidManStudio.HudMan.Core
         }
     }
 
+    public sealed class HudEditModeChangedEventArgs : EventArgs
+    {
+        public bool IsEditMode { get; }
+        public HudEditModeChangedEventArgs(bool isEditMode) => IsEditMode = isEditMode;
+    }
+
     /// <summary>
     /// Zero game-specific logic and zero UnityEngine dependency -- a
     /// consuming game's own HudItemType catalog (generated per
@@ -47,8 +53,21 @@ namespace MidManStudio.HudMan.Core
         public string CurrentLayoutName { get; set; } = "Default";
         public HudItemType? SelectedItem { get; private set; }
 
+        /// <summary>
+        /// Whether the host is currently in HUD-editing mode. Off by
+        /// default -- dragging a HUD item (see
+        /// <see cref="MidManStudio.HudMan.UnityBinding.HudItemDraggableAdapter"/>)
+        /// is only enabled while this is true, so a normal player never
+        /// repositions their HUD by accident during ordinary play. A host
+        /// flips this from wherever it wants to expose the toggle -- a
+        /// settings menu button (<c>gensettings</c>' "editHUD" example),
+        /// a debug hotkey, whatever fits the game.
+        /// </summary>
+        public bool IsEditMode { get; private set; }
+
         public event EventHandler<HudItemChangedEventArgs>? ItemDataChanged;
         public event EventHandler<HudSelectionChangedEventArgs>? SelectionChanged;
+        public event EventHandler<HudEditModeChangedEventArgs>? EditModeChanged;
 
         public IReadOnlyCollection<HudItemType> RegisteredItems => _current.Keys;
 
@@ -108,6 +127,24 @@ namespace MidManStudio.HudMan.Core
             SelectedItem = itemType;
             SelectionChanged?.Invoke(this, new HudSelectionChangedEventArgs(previous, itemType));
         }
+
+        // ── Edit mode (gates whether HudItemDraggableAdapter allows dragging) ──
+
+        /// <summary>
+        /// No-op if already in the requested state. Turning edit mode off
+        /// also clears the current selection -- selection only means
+        /// anything while editing, so leaving one behind would just be
+        /// stale state a UI has to remember to clear itself.
+        /// </summary>
+        public void SetEditMode(bool enabled)
+        {
+            if (IsEditMode == enabled) return;
+            IsEditMode = enabled;
+            if (!enabled) Select(null);
+            EditModeChanged?.Invoke(this, new HudEditModeChangedEventArgs(enabled));
+        }
+
+        public void ToggleEditMode() => SetEditMode(!IsEditMode);
 
         // ── Reset ─────────────────────────────────────────────────────────────
 
