@@ -98,7 +98,7 @@
     }
   }
 
-  // ── Schedule (0.3.0, optional) ─────────────────────────────────────────
+  // ── Schedule (optional) ──────────────────────────────────────────────
   // A quest with no `quests.{id}.schedule` path at all is unscheduled --
   // don't call this and just omit the path, same "missing means neutral
   // default" convention `prereqs::`/`rewards::` already use. _window_start /

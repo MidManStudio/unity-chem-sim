@@ -38,4 +38,17 @@ namespace MidManStudio.Inventorizz.Core
             Count = count;
         }
     }
+
+    /// <summary>Fired whenever a container instance's lock state changes via <see cref="InventorizzRuntime.SetLocked"/>.</summary>
+    public sealed class ContainerLockChangedEventArgs : EventArgs
+    {
+        public string InstanceId { get; }
+        public bool IsLocked { get; }
+
+        public ContainerLockChangedEventArgs(string instanceId, bool isLocked)
+        {
+            InstanceId = instanceId;
+            IsLocked = isLocked;
+        }
+    }
 }

@@ -43,7 +43,7 @@ namespace MidManStudio.Questly.Core
         // purely "has this specific reward id been claimed for this specific quest id, yes or no".
         private readonly Dictionary<string, HashSet<string>> _claimedRewards = new();
 
-        // Scheduling (0.3.0). Only ever populated for a quest whose Schedule.Kind
+        // Scheduling. Only ever populated for a quest whose Schedule.Kind
         // isn't NONE -- an unscheduled quest never touches any of these three.
         // CyclesCompleted only ever increases and feeds the per-cycle reward
         // track (CanClaimCycleReward) independently of QuestState, which for a

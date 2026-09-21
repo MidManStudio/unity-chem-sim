@@ -25,7 +25,7 @@
     HIDDEN
   }
 
-  // EXPIRED added in 0.3.0: terminal, reached only by a ONE_SHOT-scheduled
+  // EXPIRED: terminal, reached only by a ONE_SHOT-scheduled
   // quest whose window closes without ever reaching COMPLETED. Every other
   // transition into/out of the existing six states is unchanged.
   QuestState {
@@ -61,7 +61,7 @@
     EXTERNAL
   }
 
-  // Added in 0.3.0 for native scheduling. NONE is the neutral default --
+  // For native scheduling. NONE is the neutral default --
   // an unscheduled quest behaves exactly as it always has. Time itself is
   // an opaque host-fed double (see QuestRuntime.AdvanceTime); Questly never
   // assumes an epoch or a unit, the same "host defines the number's

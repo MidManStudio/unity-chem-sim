@@ -9,7 +9,7 @@
 //     compiling DixScript-Rust's Rust code, out of scope for this sandbox. The
 //     parse/render algorithm itself is simple, deterministic source-text
 //     scanning (confirmed by reading MdixEnumCodeGenerator.cs in full).
-//     0.3.0 update: core/enums.mdix's @ENUMS block now has inline `//`
+//     A later update: core/enums.mdix's @ENUMS block now has inline `//`
 //     comments (documenting EXPIRED and ScheduleKind) that a real run would
 //     strip via MdixConverter.StripComments before scanning -- stripped by
 //     hand here for the same reason the whole file is hand-traced. Run

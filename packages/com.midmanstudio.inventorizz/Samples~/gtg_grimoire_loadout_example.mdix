@@ -1,0 +1,52 @@
+// com.midmanstudio.inventorizz/Samples~/gtg_grimoire_loadout_example.mdix
+//
+// Unlike every other file in this Samples~ folder, this one is deliberately
+// GTG-specific -- it demonstrates the design doc's locked Grimoire loadout
+// rule (up to 3 equipped at once, swap only at base) using Inventorizz's
+// generic container-lock primitive (InventorizzRuntime.IsLocked/SetLocked/
+// ContainerLockChanged). Nothing about locking itself is GTG-specific; only
+// this file's content is. item ids below are deliberately generic
+// placeholders (example_recipe_grimoire / example_magic_grimoire /
+// example_hybrid_grimoire) tagged with the three real Grimoire categories
+// the gameplay doc already locks in (Recipe/Magic/Hybrid) -- no specific
+// named Grimoire (title, lore, etc.) is invented here; that's Tukuruku's
+// call to make, not this example's.
+
+@CONFIG(
+  version  -> "1.0.0"
+  author   -> "MidMan Studio - GTG Example Content"
+  features -> "advanced"
+)
+
+@IMPORTS(
+  enums    from "core/enums.mdix"
+  builders from "core/builders.mdix"
+)
+
+@DATA(
+  database_name    = "GTG Grimoire Loadout Example"
+  database_version = "1.0.0"
+
+  // ── Example Grimoire items ────────────────────────────────────────────
+  // UNIQUE, not STACKABLE -- you don't carry five of the same Grimoire.
+  // Tags carry the category (gameplay doc SS3: Recipe / Magic / Hybrid),
+  // not a specific title -- a real game replaces these three rows with
+  // its actual named Grimoires, keeping the tag each uses.
+
+  items.example_recipe_grimoire.identity:
+    core = builders.createItemDefinition("example_recipe_grimoire", builders.locKey("example_recipe_grimoire", "display"), 0.5, 1, enums.StackPolicy.UNIQUE, ["grimoire", "recipe_grimoire"])
+
+  items.example_magic_grimoire.identity:
+    core = builders.createItemDefinition("example_magic_grimoire", builders.locKey("example_magic_grimoire", "display"), 0.5, 1, enums.StackPolicy.UNIQUE, ["grimoire", "magic_grimoire"])
+
+  items.example_hybrid_grimoire.identity:
+    core = builders.createItemDefinition("example_hybrid_grimoire", builders.locKey("example_hybrid_grimoire", "display"), 0.5, 1, enums.StackPolicy.UNIQUE, ["grimoire", "hybrid_grimoire"])
+
+  // ── The loadout container type ────────────────────────────────────────
+  // SLOT_COUNT, 3 -- design doc SS10: "up to 3 Grimoires at once", no
+  // weight check (a design doc doesn't mention Grimoires having weight,
+  // and it's not the constraint that matters here -- slot count is).
+
+  container_types.grimoire_loadout.identity:
+    core = builders.createContainerType("grimoire_loadout", builders.locKey("grimoire_loadout", "display"), enums.CapacityKind.SLOT_COUNT, 0.0, 3, ["grimoire_loadout"])
+)

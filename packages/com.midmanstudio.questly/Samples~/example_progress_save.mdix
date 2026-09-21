@@ -44,7 +44,7 @@
   // an uppercase mid-name letter always gets an underscore). An earlier
   // version of this file used `progress.rewards::` here, which doesn't
   // match the C# property at all -- caught while extending this same file
-  // for 0.3.0, fixed alongside it.
+  // for the scheduling work, fixed alongside it.
   progress.reward_claims::
     builders.questRewardClaim("deliver_package", "currency")
 

@@ -17,7 +17,7 @@ namespace MidManStudio.Inventorizz.Core
         ItemDefinition? FindItem(string itemId);
         ContainerTypeDefinition? FindContainerType(string containerTypeId);
 
-        /// <summary>Fired after a hot-reload finishes swapping in new definitions. Matches IQuestTable's DefinitionsChanged -- InventorizzRuntime doesn't subscribe to this itself in 0.1.0 (see InventorizzRuntime's class doc for why), but a future version or a host's own code can.</summary>
+        /// <summary>Fired after a hot-reload finishes swapping in new definitions. Matches IQuestTable's DefinitionsChanged -- InventorizzRuntime doesn't subscribe to this itself (see InventorizzRuntime's class doc for why), but a future version or a host's own code can.</summary>
         event Action? DefinitionsChanged;
     }
 }

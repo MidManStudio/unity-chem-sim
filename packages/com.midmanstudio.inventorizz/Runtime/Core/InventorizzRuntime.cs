@@ -47,10 +47,12 @@ namespace MidManStudio.Inventorizz.Core
         private readonly IInventoryCatalog _catalog;
         private readonly Dictionary<string, ContainerInstanceRow> _instances = new();
         private readonly Dictionary<string, List<ContainerSlotRow>> _slots = new();
+        private readonly Dictionary<string, bool> _locked = new();
 
         public event EventHandler<ContainerCreatedEventArgs>? ContainerCreated;
         public event EventHandler<ContainerDestroyedEventArgs>? ContainerDestroyed;
         public event EventHandler<ContainerSlotChangedEventArgs>? SlotChanged;
+        public event EventHandler<ContainerLockChangedEventArgs>? ContainerLockChanged;
 
         public InventorizzRuntime(IInventoryCatalog catalog) => _catalog = catalog;
 
@@ -74,6 +76,7 @@ namespace MidManStudio.Inventorizz.Core
         {
             if (!_instances.Remove(instanceId)) return;
             _slots.Remove(instanceId);
+            _locked.Remove(instanceId);
             ContainerDestroyed?.Invoke(this, new ContainerDestroyedEventArgs(instanceId));
         }
 
@@ -81,6 +84,30 @@ namespace MidManStudio.Inventorizz.Core
 
         public ContainerInstanceRow? GetInstance(string instanceId) =>
             _instances.TryGetValue(instanceId, out var row) ? row : null;
+
+        // ── Locking (gates TryAddItem/TryRemoveItem/TryRemoveFromSlot/TryMoveStack) ──
+
+        /// <summary>False for a container instance that doesn't exist or was never locked -- unlocked is the default, matching every other container instance's starting state.</summary>
+        public bool IsLocked(string instanceId) => _locked.TryGetValue(instanceId, out var locked) && locked;
+
+        /// <summary>
+        /// No-op for a container instance that doesn't exist, and a no-op
+        /// (no event fired) if already in the requested state -- mirrors
+        /// HudLayoutRuntime.SetEditMode's idempotency exactly. While locked,
+        /// TryAddItem/TryRemoveItem/TryRemoveFromSlot/TryMoveStack all fail
+        /// (return false, mutate nothing) against this instance -- CreateContainer
+        /// and DestroyContainer are unaffected, since locking is about blocking
+        /// player-initiated content changes, not administrative lifecycle.
+        /// A host decides what "locked" corresponds to (e.g. "away from base");
+        /// this class only tracks and enforces the flag.
+        /// </summary>
+        public void SetLocked(string instanceId, bool locked)
+        {
+            if (!_instances.ContainsKey(instanceId)) return;
+            if (IsLocked(instanceId) == locked) return;
+            _locked[instanceId] = locked;
+            ContainerLockChanged?.Invoke(this, new ContainerLockChangedEventArgs(instanceId, locked));
+        }
 
         public IReadOnlyList<string> GetContainersForOwner(string ownerId)
         {
@@ -169,6 +196,7 @@ namespace MidManStudio.Inventorizz.Core
             added = 0;
             if (count <= 0) return false;
             if (!_instances.TryGetValue(instanceId, out var instance)) return false;
+            if (IsLocked(instanceId)) return false;
             var type = _catalog.FindContainerType(instance.ContainerTypeId);
             var item = _catalog.FindItem(itemId);
             if (type == null || item == null) return false;
@@ -243,6 +271,7 @@ namespace MidManStudio.Inventorizz.Core
         {
             if (count <= 0) return false;
             if (!_slots.TryGetValue(instanceId, out var slots)) return false;
+            if (IsLocked(instanceId)) return false;
 
             var available = 0;
             foreach (var slot in slots)
@@ -269,6 +298,7 @@ namespace MidManStudio.Inventorizz.Core
         {
             if (count <= 0) return false;
             if (!_slots.TryGetValue(instanceId, out var slots)) return false;
+            if (IsLocked(instanceId)) return false;
             if (slotIndex < 0 || slotIndex >= slots.Count) return false;
 
             var slot = slots[slotIndex];
@@ -299,6 +329,7 @@ namespace MidManStudio.Inventorizz.Core
                 return false;
             if (!_slots.TryGetValue(toInstanceId, out var toSlots))
                 return false;
+            if (IsLocked(fromInstanceId) || IsLocked(toInstanceId)) return false; // either endpoint locked blocks the move -- pulling FROM a locked container counts as modifying it too
 
             var source = fromSlots[fromSlotIndex];
             if (IsEmpty(source)) return false;
@@ -345,7 +376,9 @@ namespace MidManStudio.Inventorizz.Core
         /// <paramref name="toInstanceId"/>, or neither container is
         /// touched. Snapshot-and-rollback rather than a separate dry-run
         /// calculator, so there's exactly one code path that decides "does
-        /// it fit" -- <see cref="TryAddItem"/> itself.
+        /// it fit" -- <see cref="TryAddItem"/> itself. Inherits lock
+        /// enforcement for free through those two calls -- no separate
+        /// <see cref="IsLocked"/> check needed here.
         /// </summary>
         public bool TryTransferItem(string fromInstanceId, string toInstanceId, string itemId, int count)
         {
