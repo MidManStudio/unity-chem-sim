@@ -26,6 +26,23 @@ tracking a branch head is fine for now, not for a shipped build.
 
 ## Status
 
-Scaffold only. `Runtime/Core` and `Runtime/Adapters` are empty pending the
-Rust simulation core (`rust_lib/chemistry_core`) and its FFI surface.
-See `Documentation~/index.md` for the architecture this is built toward.
+`Runtime/Core` (the full `ChemistryLib` FFI layer), `Runtime/Adapters`
+(Burst-batched bond marshaling), and `Runtime/Rendering` (atom/bond/angle
+renderers, dual instanced/combined-mesh paths, the shared
+`InstancedPrimitive_URP` shader) are all implemented against
+`chemistry_core`'s current FFI surface — this is no longer scaffold-only,
+that note is stale relative to what's actually in this folder now. Native
+plugin binaries for Windows/macOS/Linux/Android/iOS/WebGL are committed
+under `Runtime/Plugins/Native/`.
+
+What's still open: `Runtime/Core` doesn't yet load chemistry data from
+`.mdix` through `com.midmanstudio.mdix` at runtime the way
+`Documentation~/index.md`'s own pipeline diagram describes —
+`chemistry_core`'s element table is still a hand-synced Rust-side copy
+(see `element_data.rs`'s own doc for why), so that diagram is closer to
+the target architecture than to what ships today.
+
+See `Documentation~/index.md` for the architecture this is built toward,
+and `Samples~/Playground/README.md` for a drop-in Play Mode test scene
+that exercises the full spawn/step/render loop end-to-end — the fastest
+way to see whether any of the above actually works.

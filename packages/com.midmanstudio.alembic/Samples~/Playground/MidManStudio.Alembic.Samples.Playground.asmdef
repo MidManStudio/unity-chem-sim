@@ -1,0 +1,16 @@
+{
+    "name": "MidManStudio.Alembic.Samples.Playground",
+    "rootNamespace": "MidManStudio.Alembic.Samples.Playground",
+    "references": [
+        "MidManStudio.Alembic"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
