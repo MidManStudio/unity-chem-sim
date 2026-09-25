@@ -18,5 +18,12 @@
         "name": "MidMan Studio",
         "email": "midmanstudio@proton.me",
         "url": "https://github.com/MidManStudio/unity-chem-sim"
-    }
+    },
+    "samples": [
+        {
+            "displayName": "Playground",
+            "description": "Drop-in Play Mode test scene \u2014 watch atoms spawn, move, and bond, tweak sim parameters live, spawn your own atoms at will. Answers \"does this actually look right,\" not a shipping-game reference implementation.",
+            "path": "Samples~/Playground"
+        }
+    ]
 }
