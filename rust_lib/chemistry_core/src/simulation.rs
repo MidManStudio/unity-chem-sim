@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/chemistry_core.md, section "simulation.rs"
+// ============================================================================
 // crates/chemistry_core/src/simulation.rs
 //! Core physics: Lennard-Jones pairwise forces (neighbor-limited via
 //! `spatial_hash`) + velocity Verlet integration + pairwise bonding.
@@ -87,6 +91,14 @@ pub struct BondParams {
     /// own equilibrium separation for that pair — reuses already-
     /// computed sigma rather than introducing a new arbitrary distance.
     pub range_factor: f32,
+    /// Lower bound on the same window: a pair closer than
+    /// `min_range_factor * r_min` is never proposed for a new bond,
+    /// regardless of reactivity. `r_min` is where the LJ force itself
+    /// changes sign — below it, a pair is still being pushed apart by
+    /// LJ repulsion, not settling into the well. Default `1.0` sets the
+    /// floor at `r_min` itself: only the attractive/settling side of
+    /// the pair's own LJ curve counts as "approaching to bond".
+    pub min_range_factor: f32,
     /// Minimum `sqrt(reactivity_i * reactivity_j)` required to bond.
     /// Geometric mean, same combining shape as LJ epsilon — if either
     /// side has zero reactivity (noble gases), the pair never bonds,
@@ -104,6 +116,7 @@ impl Default for BondParams {
     fn default() -> Self {
         Self {
             range_factor: 1.15,
+            min_range_factor: 1.0,
             // Comfortably below every nonzero reactivity_index in the
             // current 5-element table (0.0035-0.0053 for H/Li/Be/B,
             // checked in element_data.rs's own test) and above He's
@@ -1164,8 +1177,9 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
                 }
                 let r_min = sigma * 2f32.powf(1.0 / 6.0);
                 let bond_range = r_min * params.range_factor;
+                let bond_floor = r_min * params.min_range_factor;
                 let r = r2.sqrt();
-                if r > bond_range {
+                if r > bond_range || r < bond_floor {
                     return;
                 }
                 let react_j = element_data::reactivity_index(pj_params);

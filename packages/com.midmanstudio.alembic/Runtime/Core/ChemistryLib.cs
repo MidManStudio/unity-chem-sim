@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/com.midmanstudio.alembic.md, section "Runtime/Core/ChemistryLib.cs"
+// ============================================================================
 // Complete FFI layer for chemistry_core Rust native library.
 // ALL P/Invoke bindings live here. Nothing else uses DllImport.
 //
@@ -425,6 +429,19 @@ namespace MidManStudio.Alembic.Core
         /// </summary>
         public static bool TryGetAngleGeometry(IntPtr ctx, AtomHandle handle, int index, out AngleGeometry geometry) =>
             chem_angle_geometry_at(ctx, handle, index, out geometry) != 0;
+
+        // ── Bond-distance queries (pure, no context) ────────────────────────
+
+        /// <summary>
+        /// The LJ equilibrium separation (r_min = sigma * 2^(1/6)) chemistry_core's
+        /// own bonding math uses for this element pair -- the same value a
+        /// fresh bond's rest length would be set to. Takes no context: safe
+        /// to call before either atom is spawned, e.g. to keep a spawn-time
+        /// placement outside the LJ repulsive core (see
+        /// <c>AlembicPlaygroundController.SpawnRandomCloud</c> for the
+        /// motivating use).
+        /// </summary>
+        [DllImport(DLL)] public static extern float chem_bond_r_min(int atomicNumberA, int atomicNumberB);
 
         // ── Custom elements ──────────────────────────────────────────────────
         //

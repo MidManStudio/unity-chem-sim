@@ -1,3 +1,8 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/com.midmanstudio.alembic.md, section
+// "Samples~/Playground/AlembicPlaygroundConfig.cs"
+// ============================================================================
 // AlembicPlaygroundConfig.cs
 //
 // Data-driven scenario for AlembicPlaygroundController — everything about
@@ -75,6 +80,15 @@ namespace MidManStudio.Alembic.Samples.Playground
                  "on this GameObject's position. Keep it within CutoffAngstrom-ish range of " +
                  "itself or most pairs will start out of interaction range.")]
         public float CloudRadius = 6f;
+
+        [Tooltip("Multiplies chemistry_core's own chem_bond_r_min(a, b) for a candidate pair " +
+                 "to get the minimum enforced spacing between any two cloud-spawned atoms. " +
+                 "1x (default) means no pair starts closer than the LJ potential's own " +
+                 "equilibrium separation — see AlembicPlaygroundController.SpawnRandomCloud's " +
+                 "own doc for why that specific floor. Only affects the random cloud, not " +
+                 "ExplicitAtoms (you place those by hand already).")]
+        [Range(0.1f, 3f)]
+        public float CloudMinSpacingFactor = 1f;
 
         [Header("Custom elements (optional — registered before anything spawns)")]
         [Tooltip("Fictional/custom reagents (atomic number >= 1000 — see " +

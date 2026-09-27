@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/chemistry_core.md, section "lib.rs"
+// ============================================================================
 //! chemistry_core — Unity FFI simulation library.
 //!
 //! ## Rust owns the atom array
@@ -514,6 +518,24 @@ pub extern "C" fn chem_unregister_element(atomic_number: i32) -> bool {
 #[no_mangle]
 pub extern "C" fn chem_clear_custom_elements() {
     element_data::clear_custom_elements();
+}
+
+// ── Bond-distance queries (pure, no context) ────────────────────────────────
+
+/// The LJ equilibrium separation (`sigma * 2^(1/6)`) for a pair of atomic
+/// numbers — same value `simulation::compute_bonds`' own Pass 2 uses as a
+/// fresh bond's `equilibrium_length`. Takes no `SimContext`: safe to call
+/// before either atom is spawned, e.g. to keep a spawn-time placement
+/// outside the LJ repulsive core. An unregistered atomic number uses
+/// `element_data::params`'s own zero-defaulted `ElementParams`, same as
+/// everywhere else in this crate — check `chem_is_element_registered`
+/// first if that distinction matters to the caller.
+#[no_mangle]
+pub extern "C" fn chem_bond_r_min(atomic_number_a: i32, atomic_number_b: i32) -> f32 {
+    let pa = element_data::params(atomic_number_a);
+    let pb = element_data::params(atomic_number_b);
+    let (sigma, _eps) = element_data::combine(pa, pb);
+    sigma * 2f32.powf(1.0 / 6.0)
 }
 
 /// `AtomState` size validation. Call from C# `ValidateStructSizes()`.

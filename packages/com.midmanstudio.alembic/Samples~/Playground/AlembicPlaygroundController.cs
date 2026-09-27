@@ -1,3 +1,8 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/com.midmanstudio.alembic.md, section
+// "Samples~/Playground/AlembicPlaygroundController.cs"
+// ============================================================================
 // AlembicPlaygroundController.cs
 //
 // The missing piece between "the FFI layer and renderers all compile" and
@@ -16,6 +21,7 @@
 // Play Mode only, on purpose.
 
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using MidManStudio.Alembic.Core;
 using MidManStudio.Alembic.Rendering;
@@ -125,21 +131,136 @@ namespace MidManStudio.Alembic.Samples.Playground
                 return;
             }
 
-            // Random-cloud fallback — also what runs with no _config assigned
-            // at all (built-in default: a 2:1 H:O cloud, small enough to be
-            // an instant, obvious "yes, something is happening" first run).
+            SpawnRandomCloud();
+        }
+
+        /// <summary>
+        /// Random-cloud fallback — also what runs with no _config assigned
+        /// at all (built-in default: a 2:1 H:O cloud, small enough to be an
+        /// instant, obvious "yes, something is happening" first run).
+        ///
+        /// Deterministic and non-overlapping: a candidate position is only
+        /// accepted once it clears chemistry_core's own LJ equilibrium
+        /// separation (ChemistryLib.chem_bond_r_min) from every atom already
+        /// placed this pass, scaled by CloudMinSpacingFactor. Placing a pair
+        /// closer than that starts them deep inside the LJ potential's
+        /// repulsive core — reads as a violent explosion the instant
+        /// stepping begins, not a molecule assembling, since the default
+        /// CloudAtomCount/CloudRadius pack atoms closer on average than a
+        /// typical r_min. See docs/com.midmanstudio.alembic.md, this file's
+        /// section, for the full diagnosis this replaced.
+        ///
+        /// Previously plain UnityEngine.Random.insideUnitSphere with no
+        /// spacing check and no seed tie — positions came from Unity's
+        /// global RNG regardless of AlembicPlaygroundConfig.Seed (only
+        /// chem_init's velocity draw was ever seeded). Reset (R) now
+        /// reproduces the exact same layout for the same Seed.
+        /// </summary>
+        private void SpawnRandomCloud()
+        {
             int[] pool = (_config != null && _config.CloudElementPool != null && _config.CloudElementPool.Length > 0)
                 ? _config.CloudElementPool
                 : new[] { 1, 1, 8 };
-            int   count  = _config != null ? _config.CloudAtomCount : 40;
-            float radius = _config != null ? _config.CloudRadius    : 6f;
+            int   count            = _config != null ? _config.CloudAtomCount        : 40;
+            float radius           = _config != null ? _config.CloudRadius           : 6f;
+            float minSpacingFactor = _config != null ? _config.CloudMinSpacingFactor : 1f;
+            uint  seed             = _config != null ? _config.Seed                  : 42u;
+
+            // r_min doesn't depend on any spawned atom or context state —
+            // precompute it once per distinct pair the pool can produce
+            // instead of a P/Invoke call per rejection-sampling attempt
+            // below (this loop can retry many times per atom under a
+            // dense/small-radius config).
+            var distinctZ = new List<int>();
+            foreach (int z in pool)
+                if (!distinctZ.Contains(z)) distinctZ.Add(z);
+
+            var minSpacing = new Dictionary<(int, int), float>();
+            foreach (int a in distinctZ)
+            {
+                foreach (int b in distinctZ)
+                {
+                    if (a > b) continue; // symmetric — store one ordering only
+                    minSpacing[(a, b)] = ChemistryLib.chem_bond_r_min(a, b) * minSpacingFactor;
+                }
+            }
+
+            float MinSpacingFor(int a, int b) => a <= b ? minSpacing[(a, b)] : minSpacing[(b, a)];
+
+            // Local, seeded RNG — not UnityEngine.Random — so this method
+            // depends only on Seed, never on whatever else in the scene
+            // happened to draw from Unity's global RNG this frame.
+            var rng              = new System.Random(unchecked((int)seed)); // wraps for seed > int.MaxValue, still deterministic
+            var placedPositions  = new List<Vector3>(count);
+            var placedElements   = new List<int>(count);
+
+            const int kMaxAttemptsPerAtom = 64;
+            int skipped = 0;
 
             for (int i = 0; i < count; i++)
             {
-                int z = pool[UnityEngine.Random.Range(0, pool.Length)];
-                Vector3 p = transform.position + UnityEngine.Random.insideUnitSphere * radius;
-                TrySpawn(z, p);
+                int  z      = pool[rng.Next(pool.Length)];
+                bool placed = false;
+
+                for (int attempt = 0; attempt < kMaxAttemptsPerAtom; attempt++)
+                {
+                    Vector3 candidate = RandomPointInSphere(rng, radius);
+
+                    bool tooClose = false;
+                    for (int j = 0; j < placedPositions.Count; j++)
+                    {
+                        float need = MinSpacingFor(z, placedElements[j]);
+                        if ((candidate - placedPositions[j]).sqrMagnitude < need * need)
+                        {
+                            tooClose = true;
+                            break;
+                        }
+                    }
+
+                    if (tooClose) continue;
+
+                    placedPositions.Add(candidate);
+                    placedElements.Add(z);
+                    TrySpawn(z, transform.position + candidate);
+                    placed = true;
+                    break;
+                }
+
+                if (!placed) skipped++;
             }
+
+            if (skipped > 0)
+            {
+                Debug.LogWarning(
+                    $"[AlembicPlaygroundController] Cloud spawn: {skipped}/{count} atoms skipped — " +
+                    $"couldn't find a slot clearing CloudMinSpacingFactor ({minSpacingFactor:0.##}x r_min) " +
+                    $"from every already-placed atom within {kMaxAttemptsPerAtom} attempts. Raise " +
+                    "CloudRadius, lower CloudAtomCount, or lower CloudMinSpacingFactor if this scenario " +
+                    "genuinely needs a tighter starting pack.");
+            }
+        }
+
+        /// <summary>
+        /// Uniform-in-sphere sampling via cube rejection — reject and retry
+        /// until a cube sample also lands inside the sphere. Same
+        /// distribution UnityEngine.Random.insideUnitSphere produces, just
+        /// driven by a local seeded System.Random instead of Unity's global
+        /// RNG, so SpawnRandomCloud stays fully deterministic per Seed.
+        /// Acceptance rate is sphere-volume-over-cube (~52%), so this
+        /// practically always exits in a handful of iterations — the 32
+        /// cap only guards the theoretical non-terminating case.
+        /// </summary>
+        private static Vector3 RandomPointInSphere(System.Random rng, float radius)
+        {
+            for (int i = 0; i < 32; i++)
+            {
+                float x = (float)(rng.NextDouble() * 2.0 - 1.0);
+                float y = (float)(rng.NextDouble() * 2.0 - 1.0);
+                float z = (float)(rng.NextDouble() * 2.0 - 1.0);
+                if (x * x + y * y + z * z <= 1f)
+                    return new Vector3(x, y, z) * radius;
+            }
+            return Vector3.zero;
         }
 
         /// <summary>
