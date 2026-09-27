@@ -181,6 +181,28 @@ namespace MidManStudio.Alembic.Core
     }
 
     /// <summary>
+    /// One bond-topology change a step produced -- formed, broke, or had
+    /// its order change (single to double, say). See
+    /// <see cref="ChemistryLib.TakeBondEvents"/>. <see cref="AtomAIndex"/>/
+    /// <see cref="AtomBIndex"/> are dense-array positions, same contract
+    /// <see cref="BondRecord"/> already carries. 12 bytes -- must match
+    /// Rust BondEvent repr(C) exactly.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 12)]
+    public struct BondEvent
+    {
+        [FieldOffset(0)] public uint AtomAIndex;
+        [FieldOffset(4)] public uint AtomBIndex;
+        [FieldOffset(8)] public byte Kind;
+        [FieldOffset(9)] public byte Order;
+
+        /// <summary>0 = Formed, 1 = Broken, 2 = OrderChanged -- see the Rust struct's own doc.</summary>
+        public enum EventKind : byte { Formed = 0, Broken = 1, OrderChanged = 2 }
+
+        public EventKind Type => (EventKind)Kind;
+    }
+
+    /// <summary>
     /// Plain data container for authoring a custom element — a
     /// ScriptableObject field, a JSON entry, whatever your own tooling
     /// wants to build one from. Not FFI-facing itself (no explicit layout
@@ -380,6 +402,47 @@ namespace MidManStudio.Alembic.Core
         /// </summary>
         [DllImport(DLL)] public static extern IntPtr chem_bonds_ptr(IntPtr ctx, out int count);
 
+        /// <summary>
+        /// Pointer + count into every <see cref="BondEvent"/> (formed/
+        /// broken/order-changed) produced since the last call to *this
+        /// specific function* -- unlike <see cref="chem_bonds_ptr"/> above
+        /// (a fresh rebuild of current state, safe to call as often as
+        /// you like), this one <b>consumes</b> what it returns: call it
+        /// once per Unity frame, after every <c>chem_step</c> sub-step
+        /// that frame (see <c>AlembicPlaygroundController.stepsPerFrame</c>),
+        /// not once per sub-step, or you'll only ever see the last
+        /// sub-step's events. See the Rust-side doc on
+        /// <c>simulation::take_bond_events</c> for why reading this late
+        /// or not at all is harmless (events just keep accumulating) but
+        /// reading it more than once a frame silently splits one frame's
+        /// events across two reads rather than losing anything.
+        /// </summary>
+        [DllImport(DLL)] public static extern IntPtr chem_take_bond_events(IntPtr ctx, out int count);
+
+        // ── Containment bubble / multi-order bonding ────────────────────────
+        //
+        // "Electromagnetic stabilizing bubble": suppress a reactant from
+        // forming (or upgrading) any bond until a designed trigger --
+        // a collision, a timer, an explicit game event -- says otherwise.
+        // Physical contact (LJ repulsion/attraction) is never affected,
+        // only *new* chemistry. See chem_suppress_atom's own Rust-side doc.
+
+        /// <summary>Suppress this atom from Pass 2 consideration for <paramref name="durationFs"/> femtoseconds (<see cref="float.PositiveInfinity"/> for "until explicitly cleared"). Returns false for a stale handle.</summary>
+        [DllImport(DLL)] private static extern byte chem_suppress_atom(IntPtr ctx, AtomHandle handle, float durationFs);
+        public static bool SuppressAtom(IntPtr ctx, AtomHandle handle, float durationFs) => chem_suppress_atom(ctx, handle, durationFs) != 0;
+
+        /// <summary>Lift suppression on one specific atom early. Returns whether it was actually suppressed.</summary>
+        [DllImport(DLL)] private static extern byte chem_clear_suppression(IntPtr ctx, AtomHandle handle);
+        public static bool ClearSuppression(IntPtr ctx, AtomHandle handle) => chem_clear_suppression(ctx, handle) != 0;
+
+        /// <summary>Lift suppression on every currently-suppressed atom within <paramref name="radius"/> of <paramref name="center"/> -- "the bubble collapses here". Returns how many were cleared.</summary>
+        public static int ClearSuppressionInRadius(IntPtr ctx, Vector3 center, float radius) =>
+            chem_clear_suppression_in_radius(ctx, center.x, center.y, center.z, radius);
+        [DllImport(DLL)] private static extern int chem_clear_suppression_in_radius(IntPtr ctx, float x, float y, float z, float radius);
+
+        /// <summary>Raise or lower the ceiling Pass 2 can upgrade an already-bonded pair's order to (1-3, clamped; default 1 -- upgrades off). See <c>BondParams.max_bond_order</c>'s own Rust-side doc.</summary>
+        [DllImport(DLL)] public static extern void chem_set_max_bond_order(IntPtr ctx, byte maxOrder);
+
         // ── Angles ───────────────────────────────────────────────────────────
         //
         // An angle triple is a property of its VERTEX atom specifically —
@@ -510,6 +573,7 @@ namespace MidManStudio.Alembic.Core
         [DllImport(DLL)] private static extern int chem_bond_geometry_size();
         [DllImport(DLL)] private static extern int chem_angle_geometry_size();
         [DllImport(DLL)] private static extern int chem_bond_record_size();
+        [DllImport(DLL)] private static extern int chem_bond_event_size();
 
         private static bool? _isAvailable;
 
@@ -571,6 +635,7 @@ namespace MidManStudio.Alembic.Core
             ok &= Check("BondGeometry", Marshal.SizeOf<BondGeometry>(), chem_bond_geometry_size(), 8);
             ok &= Check("AngleGeometry", Marshal.SizeOf<AngleGeometry>(), chem_angle_geometry_size(), 8);
             ok &= Check("BondRecord", Marshal.SizeOf<BondRecord>(), chem_bond_record_size(), 16);
+            ok &= Check("BondEvent", Marshal.SizeOf<BondEvent>(), chem_bond_event_size(), 12);
 
             if (!ok)
                 throw new InvalidOperationException(

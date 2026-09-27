@@ -55,7 +55,7 @@
 //! popping into existence — total bonds held is still unbounded, only
 //! the *growth rate* is capped.
 
-use crate::{AtomState, AtomHandle, BondGeometry, AngleGeometry, BondRecord, element_data};
+use crate::{AtomState, AtomHandle, BondGeometry, AngleGeometry, BondRecord, BondEvent, element_data};
 use crate::spatial_hash::SpatialHash;
 use mid_math::{Vec3, Vec3x4, f32x4, Xorshift64, MidVec};
 use mid_collections::{GenerationalIndex, GenerationalIndexAllocator, SparseSet};
@@ -110,6 +110,32 @@ pub struct BondParams {
     /// not derived from `bond_strength()` — kept separate on purpose so
     /// tuning one doesn't silently retune the other.
     pub spring_k: f32,
+    /// Ceiling an already-bonded pair's `BondInfo.order` can be upgraded
+    /// to by Pass 2 (single -> double -> triple), 1-3. Default `1`: the
+    /// upgrade path is opt-in, off by default, so every existing
+    /// scenario/test keeps forming single bonds only unless a caller
+    /// explicitly raises this via `chem_set_max_bond_order` — same
+    /// backward-compatible-default reasoning `min_range_factor` above
+    /// already uses.
+    pub max_bond_order: u8,
+    /// `r_min` multiplier for a bond resting at order 1/2/3
+    /// (`order_length_factor[order - 1]`). Default `[1.0, 0.87, 0.78]`
+    /// mirrors real carbon-carbon bond length ratios (single/double/
+    /// triple approximately 1.54/1.34/1.20 Angstrom) — the one pair this
+    /// sim has an actual reference point for, since it's the motivating
+    /// case (acetylene's C-C triple bond). Applied to every element
+    /// pair's own `r_min`, not just carbon's, in the absence of any
+    /// per-pair data to do better — a tuning knob like everything else
+    /// here, not asserted as universally accurate.
+    pub order_length_factor: [f32; 3],
+    /// Spring-constant multiplier for order 1/2/3
+    /// (`order_stiffness_factor[order - 1]`). Default `[1.0, 1.89,
+    /// 3.21]` derived from real C-C stretching-vibration frequency
+    /// ratios (approximately 1200/1650/2150 cm^-1 for single/double/
+    /// triple) via force-constant-proportional-to-frequency-squared, for
+    /// equal reduced mass — same "one real reference point, applied
+    /// everywhere" caveat as `order_length_factor`.
+    pub order_stiffness_factor: [f32; 3],
 }
 
 impl Default for BondParams {
@@ -124,6 +150,9 @@ impl Default for BondParams {
             min_reactivity: 0.001,
             break_factor: 1.8,
             spring_k: 50.0,
+            max_bond_order: 1,
+            order_length_factor: [1.0, 0.87, 0.78],
+            order_stiffness_factor: [1.0, 1.89, 3.21],
         }
     }
 }
@@ -134,13 +163,23 @@ impl Default for BondParams {
 /// "what is this atom bonded to" is O(1) lookup + O(bonds held) scan from
 /// either side, never a search over every other atom.
 ///
-/// 12 bytes (`GenerationalIndex` is 8, `f32` is 4, no padding — both
-/// fields are already 4-byte aligned) — the number `MAX_INLINE_BONDS`
-/// below is sized against.
+/// Was a clean 12 bytes (`GenerationalIndex` is 8, `f32` is 4, no
+/// padding); `order` below grows this by a byte plus whatever alignment
+/// padding the compiler inserts. Not `#[repr(C)]` — purely internal, so
+/// the exact compiled size isn't asserted anywhere the way the FFI-facing
+/// structs in `lib.rs` are, and one extra byte doesn't change
+/// `MAX_INLINE_BONDS`'s own reasoning either way.
 #[derive(Clone, Copy, Debug)]
 pub struct BondInfo {
     pub partner: GenerationalIndex,
     pub equilibrium_length: f32,
+    /// 1 = single, 2 = double, 3 = triple. Every bond starts at 1
+    /// (`form_bond` always creates a fresh single bond); Pass 2 of
+    /// `compute_bonds` can upgrade an already-bonded pair to a higher
+    /// order in place (see `BondParams.max_bond_order`) — there's no
+    /// downgrade path today, only break-entirely or hold at current
+    /// order.
+    pub order: u8,
 }
 
 /// Inline capacity for `MidVec<BondInfo, N>` before an atom's bond list
@@ -375,6 +414,43 @@ pub struct SimContext {
     /// `chem_bond_geometry_at`, once per edge, every frame) with one bulk
     /// fetch.
     bonds_ffi_scratch: Vec<BondRecord>,
+    /// Per-context bond-formation tuning, `step()`'s own
+    /// `compute_bonds` call reads this instead of a fresh
+    /// `BondParams::default()` every call — the one field here that's
+    /// externally mutable post-creation, via `chem_set_max_bond_order`
+    /// (nothing else in `BondParams` has a setter yet — see that
+    /// struct's own doc on why exposing the rest wasn't done today).
+    bond_params: BondParams,
+    /// The "electromagnetic stabilizing bubble" mechanic: an atom present
+    /// here is excluded from Pass 2 consideration entirely (neither a
+    /// fresh bond nor an order upgrade), keyed by real `GenerationalIndex`
+    /// same as `bonds`/`angles`. Value is femtoseconds remaining —
+    /// `f32::INFINITY` for "until `chem_clear_suppression`/
+    /// `chem_clear_suppression_in_radius` explicitly lifts it", ticked
+    /// down once per `step()` call otherwise (see `step()`'s own decay
+    /// block). Only gates *new* bonding — LJ repulsion/attraction and any
+    /// bond a suppressed atom already holds are completely unaffected, so
+    /// a suppressed pair can still visibly repel each other; they just
+    /// can't newly react.
+    suppressed: SparseSet<GenerationalIndex, f32>,
+    /// Same role `bonded_this_pass` plays for fresh-bond formation, for
+    /// order upgrades instead — caps each atom to at most one order
+    /// upgrade per `compute_bonds` call, independent of whether it also
+    /// picked up a brand new edge this same call (the two aren't mutually
+    /// exclusive).
+    order_upgraded_this_pass: Vec<bool>,
+    /// Same reasoning and reused-buffer pattern as `new_bonds_scratch`,
+    /// for Pass 2's per-call list of order-upgrade candidates instead of
+    /// fresh-bond candidates. `(i_pos, j_pos, handle_i, handle_j,
+    /// target_order, target_eq_len)`.
+    order_upgrades_scratch: Vec<(usize, usize, GenerationalIndex, GenerationalIndex, u8, f32)>,
+    /// Every bond-topology change (`BondEvent`) `compute_bonds` has
+    /// produced since the last `chem_take_bond_events` call — accumulates
+    /// across every `step()` call in between rather than being cleared
+    /// per-step, since a single Unity frame can call `chem_step` several
+    /// times (`AlembicPlaygroundController.stepsPerFrame`) before
+    /// anything reads this. See `take_bond_events`'s own doc.
+    bond_events_scratch: Vec<BondEvent>,
 }
 
 impl SimContext {
@@ -401,6 +477,11 @@ impl SimContext {
             broken_scratch: Vec::new(),
             new_bonds_scratch: Vec::new(),
             bonds_ffi_scratch: Vec::new(),
+            bond_params: BondParams::default(),
+            suppressed: SparseSet::new(),
+            order_upgraded_this_pass: Vec::new(),
+            order_upgrades_scratch: Vec::new(),
+            bond_events_scratch: Vec::new(),
         }
     }
 }
@@ -498,10 +579,36 @@ fn break_all_bonds(ctx: &mut SimContext, owner: GenerationalIndex) {
 /// calls this twice, once per direction, to keep the symmetric-storage
 /// invariant (see `BondInfo` docs). Appends to an existing list or starts
 /// a new one; either way `owner` keeps every bond it already held.
-fn push_bond_edge(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex, equilibrium_length: f32) {
+fn push_bond_edge(ctx: &mut SimContext, owner: GenerationalIndex, partner: GenerationalIndex, equilibrium_length: f32, order: u8) {
     match ctx.bonds.get_mut(owner) {
-        Some(list) => list.push(BondInfo { partner, equilibrium_length }),
-        None => { ctx.bonds.insert(owner, MidVec::from([BondInfo { partner, equilibrium_length }])); }
+        Some(list) => list.push(BondInfo { partner, equilibrium_length, order }),
+        None => { ctx.bonds.insert(owner, MidVec::from([BondInfo { partner, equilibrium_length, order }])); }
+    }
+}
+
+/// Change an existing edge's `order` (and the `equilibrium_length` that
+/// comes with it) in place — an upgrade from single to double bond, say,
+/// rather than forming a fresh edge. Mutates both sides' entries, same
+/// symmetric-storage invariant `push_bond_edge` keeps. Doesn't touch
+/// `ctx.angles` at all: the bond *topology* hasn't changed (still the
+/// same two atoms linked), only how stiff/short this one edge rests at —
+/// nothing in `AngleInfo` depends on order.
+fn set_bond_order(ctx: &mut SimContext, a: GenerationalIndex, b: GenerationalIndex, new_order: u8, new_eq_len: f32) {
+    if let Some(list) = ctx.bonds.get_mut(a) {
+        for info in list.iter_mut() {
+            if info.partner == b {
+                info.order = new_order;
+                info.equilibrium_length = new_eq_len;
+            }
+        }
+    }
+    if let Some(list) = ctx.bonds.get_mut(b) {
+        for info in list.iter_mut() {
+            if info.partner == a {
+                info.order = new_order;
+                info.equilibrium_length = new_eq_len;
+            }
+        }
     }
 }
 
@@ -548,8 +655,8 @@ fn form_bond(ctx: &mut SimContext, a: GenerationalIndex, b: GenerationalIndex, e
     let a_neighbors = neighbors_of(ctx, a);
     let b_neighbors = neighbors_of(ctx, b);
 
-    push_bond_edge(ctx, a, b, eq_len);
-    push_bond_edge(ctx, b, a, eq_len);
+    push_bond_edge(ctx, a, b, eq_len, 1);
+    push_bond_edge(ctx, b, a, eq_len, 1);
 
     for i in a_neighbors {
         push_angle_triple(ctx, a, i, b, angle_params.equilibrium_angle);
@@ -557,6 +664,92 @@ fn form_bond(ctx: &mut SimContext, a: GenerationalIndex, b: GenerationalIndex, e
     for k in b_neighbors {
         push_angle_triple(ctx, b, k, a, angle_params.equilibrium_angle);
     }
+}
+
+/// Suppress Pass 2 bond-formation/order-upgrade consideration for this
+/// atom for `duration_fs` femtoseconds — pass `f32::INFINITY` for "until
+/// `clear_suppression`/`clear_suppression_in_radius` explicitly lifts
+/// it". The "electromagnetic stabilizing bubble" mechanic: keep two
+/// reactants from bonding until a designed trigger (a collision, a
+/// timer, an explicit game event) says otherwise. LJ repulsion/
+/// attraction still applies in full — this only ever gates *new*
+/// chemistry, never physical contact — and a bond this atom already
+/// holds is completely unaffected. A stale handle is a no-op, returns
+/// `false`.
+pub fn suppress_atom(ctx: &mut SimContext, handle: AtomHandle, duration_fs: f32) -> bool {
+    let Some(pos) = resolve(ctx, handle) else { return false; };
+    let real = ctx.handles[pos];
+    ctx.suppressed.insert(real, duration_fs);
+    true
+}
+
+/// Lift suppression on one specific atom early — the "a designed trigger
+/// fired for this exact atom" case. Returns whether it was actually
+/// suppressed (`false` for a stale handle or one that was never
+/// suppressed to begin with).
+pub fn clear_suppression(ctx: &mut SimContext, handle: AtomHandle) -> bool {
+    let Some(pos) = resolve(ctx, handle) else { return false; };
+    let real = ctx.handles[pos];
+    ctx.suppressed.remove(real).is_some()
+}
+
+/// Lift suppression on every currently-suppressed atom within `radius`
+/// of `center` — "the bubble collapses here", the spatial/bulk case
+/// `clear_suppression` doesn't cover. Returns how many were actually
+/// cleared. A linear scan over live atoms, not spatial-hash-accelerated:
+/// this is a rare, discrete, game-triggered event, not a per-step hot
+/// path the way Pass 2's own candidate search is — simplicity is worth
+/// more here than the query speedup would be.
+pub fn clear_suppression_in_radius(ctx: &mut SimContext, center: [f32; 3], radius: f32) -> i32 {
+    let center = Vec3::new(center[0], center[1], center[2]);
+    let radius_sq = radius * radius;
+    let mut cleared = 0;
+    for pos in 0..ctx.atoms.len() {
+        let h = ctx.handles[pos];
+        if !ctx.suppressed.contains(h) {
+            continue;
+        }
+        let p = ctx.atoms[pos].position;
+        let d = Vec3::new(p[0], p[1], p[2]) - center;
+        if d.length_sq() <= radius_sq {
+            ctx.suppressed.remove(h);
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
+/// Raise or lower the ceiling Pass 2 can upgrade an already-bonded pair's
+/// order to (1-3, clamped). See `BondParams.max_bond_order`'s own doc for
+/// why the default is `1` (upgrades off) and what raising it actually
+/// changes.
+pub fn set_max_bond_order(ctx: &mut SimContext, max_order: u8) {
+    ctx.bond_params.max_bond_order = max_order.clamp(1, 3);
+}
+
+/// Drains every `BondEvent` accumulated since the last call to *this*
+/// function — ptr + count for however many landed, then clears the
+/// buffer for next time. Unlike `refresh_bonds_scratch` (a full rebuild
+/// of current state, re-derivable at any moment), these are delta
+/// events: something a `compute_bonds` call produced since the buffer
+/// was last drained, gone once consumed. Intended call cadence: once per
+/// Unity frame, after every `chem_step` sub-step that frame — several
+/// sub-steps' worth accumulate here rather than only the last one
+/// surviving, so a bond that formed and broke again within one rendered
+/// frame still shows up as two events, not zero.
+///
+/// Safe even though this clears the same `Vec` it just returned a
+/// pointer into: `BondEvent` is a plain, `Copy`, non-`Drop` type, so
+/// `Vec::clear` here is only a length reset (`len = 0`), not a
+/// deallocation or a per-element drop — the bytes at `ptr` are
+/// unchanged and remain valid to read for however many the returned
+/// count says, right up until the next call that pushes into this same
+/// buffer overwrites them.
+pub fn take_bond_events(ctx: &mut SimContext, out_count: &mut i32) -> *const BondEvent {
+    *out_count = ctx.bond_events_scratch.len() as i32;
+    let ptr = ctx.bond_events_scratch.as_ptr();
+    ctx.bond_events_scratch.clear();
+    ptr
 }
 
 /// Spawn one atom of element `atomic_number` at `position`. Mass and
@@ -796,6 +989,29 @@ pub fn step(ctx: &mut SimContext, dt: f32, cutoff: f32) {
     }
     let cutoff = if cutoff > 0.0 { cutoff } else { 10.0 };
 
+    // Suppression timers tick down once per step() call, pruning any
+    // that expire — see `suppress_atom`'s own doc. `f32::INFINITY`
+    // entries (an "until explicitly cleared" bubble) never reach <= 0.0
+    // on their own, so they're untouched here; only
+    // `clear_suppression`/`clear_suppression_in_radius` removes those.
+    // A local `Vec`, not a reused `SimContext` scratch field: this list
+    // is normally empty or tiny (however many atoms are actually inside
+    // an active bubble right now), nowhere near the every-atom/every-
+    // bond scale `broken_scratch`/`new_bonds_scratch` were benched
+    // against.
+    if !ctx.suppressed.is_empty() {
+        let mut expired: Vec<GenerationalIndex> = Vec::new();
+        for (handle, remaining) in ctx.suppressed.iter_mut() {
+            *remaining -= dt;
+            if *remaining <= 0.0 {
+                expired.push(handle);
+            }
+        }
+        for handle in expired {
+            ctx.suppressed.remove(handle);
+        }
+    }
+
     ctx.old_accel.resize(n, Vec3::ZERO);
 
     {
@@ -819,7 +1035,12 @@ pub fn step(ctx: &mut SimContext, dt: f32, cutoff: f32) {
     #[cfg(not(feature = "scalar-math"))]
     compute_forces_simd(ctx, cutoff);
 
-    compute_bonds(ctx, &BondParams::default(), &AngleParams::default());
+    // Copied out, not borrowed — compute_bonds takes `&mut SimContext`
+    // as a whole, which can't coexist with a live `&ctx.bond_params`
+    // borrow at the same call site. `BondParams` is `Copy`, so this is a
+    // cheap stack copy, not a clone of anything heap-owned.
+    let bond_params = ctx.bond_params;
+    compute_bonds(ctx, &bond_params, &AngleParams::default());
     compute_angles(ctx, &AngleParams::default());
 
     {
@@ -1057,6 +1278,7 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         let positions = &ctx.positions;
         let atoms = &mut ctx.atoms;
         let broken = &mut ctx.broken_scratch;
+        let events = &mut ctx.bond_events_scratch;
 
         for (owner, list) in bonds.iter() {
             let Some(&owner_pos) = slot_of.get(owner.index()) else { continue; };
@@ -1081,11 +1303,19 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
 
                 if r > info.equilibrium_length * params.break_factor {
                     broken.push((owner, info.partner));
+                    events.push(BondEvent {
+                        atom_a_index: owner_pos,
+                        atom_b_index: partner_pos,
+                        kind: 1, // Broken
+                        order: info.order,
+                    });
                     continue;
                 }
 
+                let order_idx = (info.order.max(1) - 1) as usize;
+                let k = params.spring_k * params.order_stiffness_factor[order_idx.min(2)];
                 let stretch = r - info.equilibrium_length;
-                let f_mag = -params.spring_k * stretch;
+                let f_mag = -k * stretch;
                 let dir = d * (1.0 / r);
                 let contrib = dir * f_mag;
 
@@ -1121,21 +1351,31 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
     // No longer skips atoms that already have a bond (that was the
     // one-bond-per-atom restriction) — every atom gets to seek its best
     // candidate every call, whether or not it's already bonded to
-    // something else. Two things still guard against nonsense:
+    // something else. Several things still guard against nonsense:
+    //  - either side sitting in `ctx.suppressed` (the containment-bubble
+    //    mechanic) excludes the whole atom from Pass 2 this call, fresh
+    //    bond and order upgrade alike — see `suppress_atom`'s own doc;
     //  - a candidate this atom is *already* bonded to specifically is
-    //    excluded, so this can't propose a duplicate edge;
-    //  - `bonded_this_pass` (keyed by array position, not handle — cheap
-    //    to index, no hashing) caps each atom to at most one *new* edge
-    //    per call, so two simultaneous proposals both touching the same
-    //    atom don't both land in one pass. See module docs for why that
-    //    cap exists.
+    //    never proposed as a fresh duplicate edge — but if there's order
+    //    headroom left (`BondParams.max_bond_order`), it's considered as
+    //    an *upgrade* candidate instead, gated by its own tighter
+    //    distance window (see `order_length_factor`);
+    //  - `bonded_this_pass`/`order_upgraded_this_pass` (keyed by array
+    //    position, not handle — cheap to index, no hashing) each cap an
+    //    atom to at most one *new* edge and one order upgrade per call,
+    //    so two simultaneous proposals touching the same atom don't both
+    //    land in one pass. See module docs for why that cap exists.
     let n = ctx.atoms.len();
     // Reused, not `Vec::new()`'d fresh — see `ctx.new_bonds_scratch`'s
     // own field doc for the bench that justifies this.
     ctx.new_bonds_scratch.clear();
+    ctx.order_upgrades_scratch.clear();
 
     for i in 0..n {
         let handle_i = ctx.handles[i];
+        if ctx.suppressed.contains(handle_i) {
+            continue;
+        }
         let pi = ctx.positions[i];
         let pi_params = element_data::params(ctx.atoms[i].atomic_number);
         let react_i = element_data::reactivity_index(pi_params);
@@ -1144,25 +1384,64 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         }
 
         let mut best: Option<(usize, f32, f32)> = None; // (j, r, r_min)
+        let mut best_upgrade: Option<(usize, u8, f32, f32)> = None; // (j, target_order, target_eq_len, r)
         {
             let grid = &ctx.grid;
             let positions = &ctx.positions;
             let atoms = &ctx.atoms;
             let handles = &ctx.handles;
             let bonds = &ctx.bonds;
+            let suppressed = &ctx.suppressed;
 
             grid.for_each_candidate(pi, |j| {
                 let j = j as usize;
                 if j == i {
                     return;
                 }
-                // Already bonded to this specific candidate? Skip it —
-                // being bonded to *other* atoms is fine now, only an
-                // exact duplicate edge is excluded.
+                if suppressed.contains(handles[j]) {
+                    return;
+                }
+                // Already bonded to this specific candidate? Not a fresh
+                // edge then — but if there's order headroom left, it's
+                // an upgrade candidate instead of just being skipped.
                 if let Some(list) = bonds.get(handles[j]) {
-                    if list.iter().any(|b| b.partner == handle_i) {
-                        return;
+                    if let Some(existing) = list.iter().find(|b| b.partner == handle_i) {
+                        if existing.order < params.max_bond_order {
+                            let pj = positions[j];
+                            let d = pj - pi;
+                            let r2 = d.length_sq();
+                            if r2 < 1e-8 {
+                                return;
+                            }
+                            let pj_params = element_data::params(atoms[j].atomic_number);
+                            let (sigma, eps) = element_data::combine(pi_params, pj_params);
+                            if sigma <= 0.0 || eps <= 0.0 {
+                                return;
+                            }
+                            let r_min = sigma * 2f32.powf(1.0 / 6.0);
+                            let target_order = existing.order + 1;
+                            let target_factor = params.order_length_factor[(target_order - 1) as usize];
+                            let target_eq_len = r_min * target_factor;
+                            let r = r2.sqrt();
+                            // Same shape as a fresh bond's own range/floor
+                            // check, just centered on the *target* order's
+                            // tighter equilibrium length — an upgrade is
+                            // "already sitting where a fresh bond at this
+                            // order would form", not a separately-tuned rule.
+                            if r > target_eq_len * params.range_factor || r < target_eq_len * params.min_range_factor {
+                                return;
+                            }
+                            let react_j = element_data::reactivity_index(pj_params);
+                            let combined = (react_i * react_j).max(0.0).sqrt();
+                            if combined < params.min_reactivity {
+                                return;
+                            }
+                            if best_upgrade.map_or(true, |(_, _, _, best_r)| r < best_r) {
+                                best_upgrade = Some((j, target_order, target_eq_len, r));
+                            }
+                        }
                     }
+                    return;
                 }
                 let pj = positions[j];
                 let d = pj - pi;
@@ -1193,6 +1472,9 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
             });
         }
 
+        if let Some((j, target_order, target_eq_len, _r)) = best_upgrade {
+            ctx.order_upgrades_scratch.push((i, j, handle_i, ctx.handles[j], target_order, target_eq_len));
+        }
         if let Some((j, _r, r_min)) = best {
             ctx.new_bonds_scratch.push((i, j, handle_i, ctx.handles[j], r_min));
         }
@@ -1210,8 +1492,33 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         ctx.bonded_this_pass[i_pos] = true;
         ctx.bonded_this_pass[j_pos] = true;
         form_bond(ctx, a, b, eq_len, angle_params);
+        ctx.bond_events_scratch.push(BondEvent {
+            atom_a_index: i_pos as u32,
+            atom_b_index: j_pos as u32,
+            kind: 0, // Formed
+            order: 1,
+        });
     }
     ctx.new_bonds_scratch = new_bonds;
+
+    ctx.order_upgraded_this_pass.clear();
+    ctx.order_upgraded_this_pass.resize(n, false);
+    let mut order_upgrades = core::mem::take(&mut ctx.order_upgrades_scratch);
+    for (i_pos, j_pos, a, b, new_order, new_eq_len) in order_upgrades.drain(..) {
+        if ctx.order_upgraded_this_pass[i_pos] || ctx.order_upgraded_this_pass[j_pos] {
+            continue;
+        }
+        ctx.order_upgraded_this_pass[i_pos] = true;
+        ctx.order_upgraded_this_pass[j_pos] = true;
+        set_bond_order(ctx, a, b, new_order, new_eq_len);
+        ctx.bond_events_scratch.push(BondEvent {
+            atom_a_index: i_pos as u32,
+            atom_b_index: j_pos as u32,
+            kind: 2, // OrderChanged
+            order: new_order,
+        });
+    }
+    ctx.order_upgrades_scratch = order_upgrades;
 }
 
 /// Harmonic angle-bend force for every currently-tracked angle triple —

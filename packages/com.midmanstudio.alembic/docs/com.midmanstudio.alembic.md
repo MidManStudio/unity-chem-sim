@@ -18,6 +18,21 @@ in the package uses DllImport directly.
   unlike most of the rest of this file). Lets a caller ask chemistry_core
   what its own bonding math considers the equilibrium separation for a
   pair, before either atom is spawned.
+- Added `BondEvent` (12-byte explicit-layout struct mirroring Rust's
+  `repr(C)`, plus an `EventKind` enum for the `Kind` byte) and
+  `chem_take_bond_events`, registered in `ValidateStructSizes()` the same
+  way every other FFI struct already is. Raw `IntPtr` + count, same as
+  `chem_bonds_ptr` -- marshaling the array into managed data is left to
+  the caller (`Adapters.BondBatchAdapter` is the existing precedent for
+  that; no consumer built for `BondEvent` yet, this batch only adds the
+  binding itself).
+- Added the containment-bubble bindings: `SuppressAtom`,
+  `ClearSuppression`, `ClearSuppressionInRadius` (the last one takes a
+  `Vector3` for convenience -- not FFI-facing itself, unpacked into three
+  floats before the actual `DllImport` call, consistent with this file's
+  own stated reasons for keeping `Vector3`/`float3` out of the
+  explicit-layout structs themselves).
+- Added `chem_set_max_bond_order`.
 
 ### `Samples~/Playground/AlembicPlaygroundConfig.cs`
 **What it does:** ScriptableObject scenario data for the Playground sample

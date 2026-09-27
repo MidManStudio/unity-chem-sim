@@ -158,6 +158,34 @@ pub struct BondRecord {
 
 const _: () = assert!(core::mem::size_of::<BondRecord>() == 16);
 
+/// One bond-topology change a `chem_step` call produced — a bond that
+/// formed, broke, or had its `order` change (an upgrade from single to
+/// double, say). See `chem_take_bond_events`.
+///
+/// `atom_a_index`/`atom_b_index` are dense-array positions, same
+/// "re-fetch every frame" contract `BondRecord` already carries — safe
+/// here because nothing inside `chem_step` despawns an atom (only an
+/// explicit `chem_despawn_atom` call does), so positions stay stable
+/// across everything one `chem_step` call (or several, before the next
+/// `chem_take_bond_events`) can produce.
+///
+/// `kind`: `0` = Formed, `1` = Broken, `2` = OrderChanged. `order` is
+/// the bond's order after the change for Formed/OrderChanged (always
+/// `1` for a fresh Formed — see `BondParams.max_bond_order`'s own doc
+/// on why upgrades are opt-in), and the order it held right before
+/// breaking for Broken (not "meaningless" — a snapped triple bond is a
+/// different visual/gameplay beat than a snapped single one).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BondEvent {
+    pub atom_a_index: u32, //  0
+    pub atom_b_index: u32, //  4
+    pub kind:         u8,  //  8
+    pub order:        u8,  //  9
+}
+
+const _: () = assert!(core::mem::size_of::<BondEvent>() == 12);
+
 // ── FFI surface ───────────────────────────────────────────────────────────────
 
 /// Create a persistent simulation context: owns the atom array, the
@@ -401,6 +429,26 @@ pub unsafe extern "C" fn chem_bonds_ptr(ctx: *mut SimContext, out_count: *mut i3
     ptr
 }
 
+/// Read-only pointer into every `BondEvent` (formed/broken/order-changed)
+/// produced since the last call to *this specific function* — `*out_count`
+/// entries starting here, then the underlying buffer is cleared for next
+/// time (see `simulation::take_bond_events`'s own doc). Unlike
+/// `chem_bonds_ptr` above (a fresh rebuild of current state, safe to call
+/// as often as you like), this one **consumes** what it returns: call it
+/// once per Unity frame, after every `chem_step` sub-step that frame, not
+/// once per sub-step — calling it more than once per frame silently
+/// splits one frame's events across two reads instead of losing anything,
+/// but calling it zero times just lets events accumulate (harmlessly)
+/// until the next call that does.
+#[no_mangle]
+pub unsafe extern "C" fn chem_take_bond_events(ctx: *mut SimContext, out_count: *mut i32) -> *const BondEvent {
+    let ctx = &mut *ctx;
+    let mut count = 0i32;
+    let ptr = simulation::take_bond_events(ctx, &mut count);
+    *out_count = count;
+    ptr
+}
+
 /// How many angle triples this atom is currently the **vertex** of — an
 /// atom needs >= 2 simultaneous bonds to be one (every *pair* of its
 /// bonds forms one triple). 0 for a stale handle or an atom that isn't a
@@ -538,6 +586,47 @@ pub extern "C" fn chem_bond_r_min(atomic_number_a: i32, atomic_number_b: i32) ->
     sigma * 2f32.powf(1.0 / 6.0)
 }
 
+// ── Containment bubble / multi-order bonding ────────────────────────────────
+
+/// Suppress Pass 2 bond-formation/order-upgrade consideration for this
+/// atom for `duration_fs` femtoseconds — pass `f32::INFINITY` for "until
+/// `chem_clear_suppression`/`chem_clear_suppression_in_radius` explicitly
+/// lifts it". The "electromagnetic stabilizing bubble" mechanic: keep two
+/// reactants apart chemically (LJ repulsion/attraction is completely
+/// unaffected — this only ever gates *new* bonding) until a designed
+/// trigger fires. Returns `false` for a stale handle, `true` otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn chem_suppress_atom(ctx: *mut SimContext, handle: AtomHandle, duration_fs: f32) -> bool {
+    let ctx = &mut *ctx;
+    simulation::suppress_atom(ctx, handle, duration_fs)
+}
+
+/// Lift suppression on one specific atom early — the "a trigger fired for
+/// exactly this atom" case. Returns whether it was actually suppressed.
+#[no_mangle]
+pub unsafe extern "C" fn chem_clear_suppression(ctx: *mut SimContext, handle: AtomHandle) -> bool {
+    let ctx = &mut *ctx;
+    simulation::clear_suppression(ctx, handle)
+}
+
+/// Lift suppression on every currently-suppressed atom within `radius` of
+/// `(x, y, z)` — "the bubble collapses here". Returns how many were
+/// cleared.
+#[no_mangle]
+pub unsafe extern "C" fn chem_clear_suppression_in_radius(ctx: *mut SimContext, x: f32, y: f32, z: f32, radius: f32) -> i32 {
+    let ctx = &mut *ctx;
+    simulation::clear_suppression_in_radius(ctx, [x, y, z], radius)
+}
+
+/// Raise or lower the ceiling Pass 2 can upgrade an already-bonded pair's
+/// order to (1-3, clamped; default `1` — upgrades off). See
+/// `BondParams.max_bond_order`'s own doc for what this actually changes.
+#[no_mangle]
+pub unsafe extern "C" fn chem_set_max_bond_order(ctx: *mut SimContext, max_order: u8) {
+    let ctx = &mut *ctx;
+    simulation::set_max_bond_order(ctx, max_order);
+}
+
 /// `AtomState` size validation. Call from C# `ValidateStructSizes()`.
 /// If this returns != 48, the struct layout is mismatched — fix before proceeding.
 #[no_mangle]
@@ -571,4 +660,11 @@ pub extern "C" fn chem_angle_geometry_size() -> i32 {
 #[no_mangle]
 pub extern "C" fn chem_bond_record_size() -> i32 {
     core::mem::size_of::<BondRecord>() as i32
+}
+
+/// `BondEvent` size validation, same idea as `chem_struct_size`. Should
+/// always return 12.
+#[no_mangle]
+pub extern "C" fn chem_bond_event_size() -> i32 {
+    core::mem::size_of::<BondEvent>() as i32
 }
