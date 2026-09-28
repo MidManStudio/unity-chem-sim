@@ -72,10 +72,22 @@ integration, bond formation and breaking, angle-bend forces.
   own tighter distance window centered on the target order's shorter
   `equilibrium_length` -- capped to one upgrade per atom per call
   (`order_upgraded_this_pass`), independent of the existing one-new-edge
-  cap. No downgrade path: an over-stretched multi-order bond either holds
-  at its current order or breaks entirely (Pass 1 unchanged beyond reading
-  `order_stiffness_factor` for the spring constant instead of a flat
-  `spring_k`).
+  cap. Pass 1 gained the matching downgrade path: an over-stretched
+  multi-order bond now cascades down one order at a time (checked from one
+  order below current, downward, taking the first that fits) before
+  actually breaking, only snapping entirely once even a bare single bond's
+  own break tolerance is exceeded. `r_min` for the cascade is back-derived
+  from the current `equilibrium_length`/`order` rather than stored
+  separately (`equilibrium_length == r_min * order_length_factor[order -
+  1]` always, by construction). At `order == 1` the downgrade range is
+  empty, falling straight through to the original break behavior
+  unchanged -- same backward-compatible-default property everything else
+  here already has. New `SimContext.order_downgrades_scratch` queues these
+  the same way `broken_scratch` queues breaks, drained via
+  `set_bond_order` right after `break_one_bond`'s own drain.
+  `BondEvent.kind == 2` (OrderChanged) now covers both directions -- the
+  event doesn't say which way on its own, a consumer that cares compares
+  against a previously-seen order.
 - Containment bubble (`suppressed` field on `SimContext`, keyed by
   `GenerationalIndex` -> remaining suppression femtoseconds,
   `f32::INFINITY` for "until explicitly cleared"). Either side of a

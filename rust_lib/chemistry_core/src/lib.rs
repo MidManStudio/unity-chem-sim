@@ -169,12 +169,16 @@ const _: () = assert!(core::mem::size_of::<BondRecord>() == 16);
 /// across everything one `chem_step` call (or several, before the next
 /// `chem_take_bond_events`) can produce.
 ///
-/// `kind`: `0` = Formed, `1` = Broken, `2` = OrderChanged. `order` is
-/// the bond's order after the change for Formed/OrderChanged (always
-/// `1` for a fresh Formed — see `BondParams.max_bond_order`'s own doc
-/// on why upgrades are opt-in), and the order it held right before
-/// breaking for Broken (not "meaningless" — a snapped triple bond is a
-/// different visual/gameplay beat than a snapped single one).
+/// `kind`: `0` = Formed, `1` = Broken, `2` = OrderChanged (either
+/// direction — Pass 2 upgrading a pair, or Pass 1 relaxing an
+/// overstretched bond down a level before it actually breaks; `order`
+/// doesn't say which way, so compare against a previously-seen value if
+/// that distinction matters to the consumer). `order` is the bond's
+/// order after the change for Formed/OrderChanged (always `1` for a
+/// fresh Formed — see `BondParams.max_bond_order`'s own doc on why
+/// upgrades are opt-in), and the order it held right before breaking
+/// for Broken (not "meaningless" — a snapped triple bond is a different
+/// visual/gameplay beat than a snapped single one).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BondEvent {

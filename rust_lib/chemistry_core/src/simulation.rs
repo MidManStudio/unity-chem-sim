@@ -398,6 +398,11 @@ pub struct SimContext {
     /// rarely break most steps), where the arena's eager first-region
     /// allocation made it the *worst* of the three, not just not-the-best.
     broken_scratch: Vec<(GenerationalIndex, GenerationalIndex)>,
+    /// Pass 1's queued order-downgrades this call — `(owner, partner,
+    /// new_order, new_eq_len)`, applied via `set_bond_order` in the same
+    /// deferred-mutation drain `broken_scratch` already needs, right
+    /// after it. See Pass 1's own downgrade-cascade comment.
+    order_downgrades_scratch: Vec<(GenerationalIndex, GenerationalIndex, u8, f32)>,
     /// Same reasoning and same bench result as `broken_scratch`, for
     /// Pass 2's per-call list of candidate new bonds.
     new_bonds_scratch: Vec<(usize, usize, GenerationalIndex, GenerationalIndex, f32)>,
@@ -475,6 +480,7 @@ impl SimContext {
             bonded_this_pass: Vec::new(),
             handles_ffi_scratch: Vec::new(),
             broken_scratch: Vec::new(),
+            order_downgrades_scratch: Vec::new(),
             new_bonds_scratch: Vec::new(),
             bonds_ffi_scratch: Vec::new(),
             bond_params: BondParams::default(),
@@ -1278,6 +1284,7 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         let positions = &ctx.positions;
         let atoms = &mut ctx.atoms;
         let broken = &mut ctx.broken_scratch;
+        let downgrades = &mut ctx.order_downgrades_scratch;
         let events = &mut ctx.bond_events_scratch;
 
         for (owner, list) in bonds.iter() {
@@ -1302,13 +1309,54 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
                 let r = d.length_sq().sqrt().max(1e-6);
 
                 if r > info.equilibrium_length * params.break_factor {
-                    broken.push((owner, info.partner));
-                    events.push(BondEvent {
-                        atom_a_index: owner_pos,
-                        atom_b_index: partner_pos,
-                        kind: 1, // Broken
-                        order: info.order,
-                    });
+                    // Order > 1 gets a chance to relax to a lower order
+                    // before snapping outright — a stretched triple bond
+                    // eases toward double, then single, only actually
+                    // breaking once even a bare single bond's own
+                    // tolerance is exceeded. `r_min` is back-derived from
+                    // the *current* equilibrium_length and order rather
+                    // than stored separately (equilibrium_length ==
+                    // r_min * order_length_factor[order - 1] always, by
+                    // construction — form_bond/set_bond_order never set
+                    // it any other way). Checks from one order down and
+                    // downward, taking the first (i.e. highest, smallest
+                    // downgrade) that fits, so a moderate overstretch
+                    // costs one order, not a plunge straight to single.
+                    //
+                    // At order 1 this range is empty — `settled` stays
+                    // `None`, falls straight through to the original
+                    // break behavior, unchanged bit-for-bit. Same
+                    // backward-compatible-default property everything
+                    // else in this order system already has.
+                    let mut settled: Option<(u8, f32)> = None;
+                    if info.order > 1 {
+                        let r_min = info.equilibrium_length / params.order_length_factor[(info.order - 1) as usize];
+                        for candidate_order in (1..info.order).rev() {
+                            let candidate_eq_len = r_min * params.order_length_factor[(candidate_order - 1) as usize];
+                            if r <= candidate_eq_len * params.break_factor {
+                                settled = Some((candidate_order, candidate_eq_len));
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some((new_order, new_eq_len)) = settled {
+                        downgrades.push((owner, info.partner, new_order, new_eq_len));
+                        events.push(BondEvent {
+                            atom_a_index: owner_pos,
+                            atom_b_index: partner_pos,
+                            kind: 2, // OrderChanged (down, this time)
+                            order: new_order,
+                        });
+                    } else {
+                        broken.push((owner, info.partner));
+                        events.push(BondEvent {
+                            atom_a_index: owner_pos,
+                            atom_b_index: partner_pos,
+                            kind: 1, // Broken
+                            order: info.order,
+                        });
+                    }
                     continue;
                 }
 
@@ -1346,6 +1394,14 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
         break_one_bond(ctx, owner, partner);
     }
     ctx.broken_scratch = broken;
+
+    // Same `mem::take`/`drain`/restore reasoning as `broken` immediately
+    // above — `set_bond_order` also needs `&mut SimContext` as a whole.
+    let mut downgrades = core::mem::take(&mut ctx.order_downgrades_scratch);
+    for (owner, partner, new_order, new_eq_len) in downgrades.drain(..) {
+        set_bond_order(ctx, owner, partner, new_order, new_eq_len);
+    }
+    ctx.order_downgrades_scratch = downgrades;
 
     // --- Pass 2: form new bonds among in-range, reactive pairs ---
     // No longer skips atoms that already have a bond (that was the

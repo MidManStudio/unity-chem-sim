@@ -196,7 +196,7 @@ namespace MidManStudio.Alembic.Core
         [FieldOffset(8)] public byte Kind;
         [FieldOffset(9)] public byte Order;
 
-        /// <summary>0 = Formed, 1 = Broken, 2 = OrderChanged -- see the Rust struct's own doc.</summary>
+        /// <summary>0 = Formed, 1 = Broken, 2 = OrderChanged (either direction -- Order alone doesn't say which way; compare against a previously-seen value if that matters) -- see the Rust struct's own doc.</summary>
         public enum EventKind : byte { Formed = 0, Broken = 1, OrderChanged = 2 }
 
         public EventKind Type => (EventKind)Kind;
