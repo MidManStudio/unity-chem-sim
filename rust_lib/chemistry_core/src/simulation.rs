@@ -128,6 +128,18 @@ pub struct BondParams {
     /// per-pair data to do better — a tuning knob like everything else
     /// here, not asserted as universally accurate.
     pub order_length_factor: [f32; 3],
+    /// Upper edge of an order upgrade's window, as a multiple of the
+    /// *target* order's rest length. Deliberately much tighter than
+    /// `range_factor`: a fresh bond forms while two atoms approach from
+    /// afar, but an upgrade applies to a pair already sitting at its
+    /// current rest length. With `range_factor`'s 1.15 the double-bond
+    /// window's upper edge lands at 0.87 * 1.15 = 1.0005 * `r_min`, which
+    /// is where an ordinary bond already rests, so every thermal wobble
+    /// inward would upgrade it. At the default `1.05` the window tops out
+    /// near 0.91 * `r_min`, about 8.6% compression, roughly twelve times
+    /// the vibration amplitude of an H-H bond at 300 K, so an upgrade
+    /// takes a real collision.
+    pub order_upgrade_tolerance: f32,
     /// Spring-constant multiplier for order 1/2/3
     /// (`order_stiffness_factor[order - 1]`). Default `[1.0, 1.89,
     /// 3.21]` derived from real C-C stretching-vibration frequency
@@ -152,6 +164,7 @@ impl Default for BondParams {
             spring_k: 50.0,
             max_bond_order: 1,
             order_length_factor: [1.0, 0.87, 0.78],
+            order_upgrade_tolerance: 1.05,
             order_stiffness_factor: [1.0, 1.89, 3.21],
         }
     }
@@ -163,12 +176,12 @@ impl Default for BondParams {
 /// "what is this atom bonded to" is O(1) lookup + O(bonds held) scan from
 /// either side, never a search over every other atom.
 ///
-/// Was a clean 12 bytes (`GenerationalIndex` is 8, `f32` is 4, no
-/// padding); `order` below grows this by a byte plus whatever alignment
-/// padding the compiler inserts. Not `#[repr(C)]` — purely internal, so
-/// the exact compiled size isn't asserted anywhere the way the FFI-facing
-/// structs in `lib.rs` are, and one extra byte doesn't change
-/// `MAX_INLINE_BONDS`'s own reasoning either way.
+/// 16 bytes: `GenerationalIndex` is 8, `f32` is 4, `order` is 1, and the
+/// struct's 4-byte alignment pads the 13 bytes of fields up to 16. It was
+/// a clean 12 before `order` existed, so every edge is a third larger,
+/// which matters for how many fit in `MAX_INLINE_BONDS` slots' worth of
+/// cache. Not `#[repr(C)]` — purely internal, so nothing asserts the size
+/// the way the FFI-facing structs in `lib.rs` are asserted.
 #[derive(Clone, Copy, Debug)]
 pub struct BondInfo {
     pub partner: GenerationalIndex,
@@ -176,11 +189,13 @@ pub struct BondInfo {
     /// 1 = single, 2 = double, 3 = triple. Every bond starts at 1
     /// (`form_bond` always creates a fresh single bond); Pass 2 of
     /// `compute_bonds` can upgrade an already-bonded pair to a higher
-    /// order in place (see `BondParams.max_bond_order`) — there's no
-    /// downgrade path today, only break-entirely or hold at current
-    /// order.
+    /// order in place (see `BondParams.max_bond_order`), and Pass 1 can
+    /// relax an overstretched one back down a level at a time before it
+    /// actually breaks.
     pub order: u8,
 }
+
+const _: () = assert!(core::mem::size_of::<BondInfo>() == 16);
 
 /// Inline capacity for `MidVec<BondInfo, N>` before an atom's bond list
 /// spills to the heap. Not a hard cap — `MidVec` grows past this exactly
@@ -1479,12 +1494,12 @@ pub fn compute_bonds(ctx: &mut SimContext, params: &BondParams, angle_params: &A
                             let target_factor = params.order_length_factor[(target_order - 1) as usize];
                             let target_eq_len = r_min * target_factor;
                             let r = r2.sqrt();
-                            // Same shape as a fresh bond's own range/floor
-                            // check, just centered on the *target* order's
-                            // tighter equilibrium length — an upgrade is
-                            // "already sitting where a fresh bond at this
-                            // order would form", not a separately-tuned rule.
-                            if r > target_eq_len * params.range_factor || r < target_eq_len * params.min_range_factor {
+                            // Floor is a fresh bond's own (never mid-collision);
+                            // the upper edge is `order_upgrade_tolerance`, not
+                            // `range_factor` — see that field's doc for why
+                            // reusing the wider fresh-bond window would upgrade
+                            // every thermally vibrating bond.
+                            if r > target_eq_len * params.order_upgrade_tolerance || r < target_eq_len * params.min_range_factor {
                                 return;
                             }
                             let react_j = element_data::reactivity_index(pj_params);
@@ -2515,5 +2530,253 @@ mod tests {
             assert_ne!(arm_a, arm_b, "a triple's two arms must be distinct atoms");
         }
     }
-}
 
+    // ── Multi-order bonds, downgrade path, containment bubble, bond events ──
+
+    fn h_r_min() -> f32 {
+        2.928_f32 * 2f32.powf(1.0 / 6.0)
+    }
+
+    /// Two hydrogens at exactly `r_min`, already bonded at order 1, with
+    /// multi-order bonding enabled up to `max_order` afterwards.
+    fn bonded_h_pair(max_order: u8) -> (SimContext, AtomHandle, AtomHandle) {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [h_r_min(), 0.0, 0.0]);
+        compute_forces_scalar(&mut ctx, 10.0);
+        compute_bonds(&mut ctx, &BondParams::default(), &AngleParams::default());
+        assert!(is_bonded(&ctx, a), "test setup: the pair should have bonded");
+        set_max_bond_order(&mut ctx, max_order);
+        ctx.bond_events_scratch.clear();
+        (ctx, a, b)
+    }
+
+    /// Current order of the a-b edge, read straight off `ctx.bonds`.
+    fn order_of(ctx: &SimContext, a: AtomHandle, b: AtomHandle) -> Option<u8> {
+        let pa = resolve(ctx, a)?;
+        let pb = resolve(ctx, b)?;
+        let hb = ctx.handles[pb];
+        ctx.bonds.get(ctx.handles[pa])?.iter().find(|e| e.partner == hb).map(|e| e.order)
+    }
+
+    /// Move atom `i` along x. Spawn order equals array order while nothing
+    /// has been despawned, same assumption the older tests here make.
+    fn place(ctx: &mut SimContext, i: usize, x: f32) {
+        ctx.atoms[i].position = [x, 0.0, 0.0];
+    }
+
+    fn run_bonds(ctx: &mut SimContext) {
+        compute_forces_scalar(ctx, 10.0);
+        let bp = ctx.bond_params;
+        compute_bonds(ctx, &bp, &AngleParams::default());
+    }
+
+    fn drain_events(ctx: &mut SimContext) -> Vec<(u8, u8)> {
+        let mut n = 0i32;
+        let p = take_bond_events(ctx, &mut n);
+        if n == 0 {
+            return Vec::new();
+        }
+        unsafe { core::slice::from_raw_parts(p, n as usize) }
+            .iter()
+            .map(|e| (e.kind, e.order))
+            .collect()
+    }
+
+    #[test]
+    fn order_upgrade_is_off_by_default() {
+        let (mut ctx, a, b) = bonded_h_pair(1);
+        place(&mut ctx, 1, h_r_min() * 0.88);
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(1));
+    }
+
+    #[test]
+    fn thermal_scale_compression_does_not_upgrade_a_bond() {
+        // 1% compression is about what an ordinary bond does at room
+        // temperature. It must not count as the violent close approach an
+        // upgrade is meant to need.
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        place(&mut ctx, 1, h_r_min() * 0.99);
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(1));
+    }
+
+    #[test]
+    fn real_dynamics_at_300k_never_upgrade_a_bond() {
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        init(&mut ctx, 300.0, 42);
+        for _ in 0..3000 {
+            step(&mut ctx, 1.0, 10.0);
+            assert_eq!(
+                order_of(&ctx, a, b),
+                Some(1),
+                "a bond just vibrating at 300 K should never climb to a higher order"
+            );
+        }
+    }
+
+    #[test]
+    fn violent_compression_upgrades_one_order_at_a_time() {
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        let r = h_r_min();
+        place(&mut ctx, 1, r * 0.88); // just outside where a double bond rests
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(2));
+
+        place(&mut ctx, 1, r * 0.79); // just outside where a triple bond rests
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(3));
+
+        let g = bond_geometry_at(&ctx, a, 0).unwrap();
+        assert!((g.equilibrium_length - r * 0.78).abs() < 1e-3, "rest length follows the order");
+    }
+
+    #[test]
+    fn upgrade_stops_at_max_bond_order() {
+        let (mut ctx, a, b) = bonded_h_pair(2);
+        let r = h_r_min();
+        place(&mut ctx, 1, r * 0.88);
+        run_bonds(&mut ctx);
+        place(&mut ctx, 1, r * 0.79);
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(2));
+    }
+
+    #[test]
+    fn overstretched_triple_relaxes_one_level_before_breaking() {
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        let r = h_r_min();
+        let (ha, hb) = (ctx.handles[0], ctx.handles[1]);
+        set_bond_order(&mut ctx, ha, hb, 3, r * 0.78);
+        // A triple breaks past 1.8 * 0.78 = 1.40 r_min, a double tolerates
+        // up to 1.8 * 0.87 = 1.57 r_min.
+        place(&mut ctx, 1, r * 1.5);
+        run_bonds(&mut ctx);
+        assert!(is_bonded(&ctx, a));
+        assert_eq!(order_of(&ctx, a, b), Some(2));
+    }
+
+    #[test]
+    fn overstretched_triple_can_skip_straight_to_single() {
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        let r = h_r_min();
+        let (ha, hb) = (ctx.handles[0], ctx.handles[1]);
+        set_bond_order(&mut ctx, ha, hb, 3, r * 0.78);
+        place(&mut ctx, 1, r * 1.7); // past a double's 1.57, inside a single's 1.8
+        run_bonds(&mut ctx);
+        assert_eq!(order_of(&ctx, a, b), Some(1));
+    }
+
+    #[test]
+    fn stretch_past_single_tolerance_still_breaks_a_multi_order_bond() {
+        let (mut ctx, a, b) = bonded_h_pair(3);
+        let r = h_r_min();
+        let (ha, hb) = (ctx.handles[0], ctx.handles[1]);
+        set_bond_order(&mut ctx, ha, hb, 3, r * 0.78);
+        place(&mut ctx, 1, r * 2.0);
+        run_bonds(&mut ctx);
+        assert!(!is_bonded(&ctx, a));
+        assert!(!is_bonded(&ctx, b));
+    }
+
+    #[test]
+    fn bond_events_record_form_upgrade_downgrade_and_break_in_order() {
+        let mut ctx = SimContext::new(10.0);
+        set_max_bond_order(&mut ctx, 2);
+        spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        spawn_atom(&mut ctx, 1, [h_r_min(), 0.0, 0.0]);
+        let r = h_r_min();
+
+        run_bonds(&mut ctx);            // forms
+        place(&mut ctx, 1, r * 0.88);
+        run_bonds(&mut ctx);            // upgrades to 2
+        place(&mut ctx, 1, r * 1.7);
+        run_bonds(&mut ctx);            // relaxes to 1
+        place(&mut ctx, 1, r * 3.0);
+        run_bonds(&mut ctx);            // breaks
+
+        // (kind, order): 0 = Formed, 1 = Broken, 2 = OrderChanged
+        assert_eq!(drain_events(&mut ctx), vec![(0, 1), (2, 2), (2, 1), (1, 1)]);
+        assert!(drain_events(&mut ctx).is_empty(), "taking events must consume them");
+    }
+
+    #[test]
+    fn suppressed_atom_does_not_bond_until_cleared() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        spawn_atom(&mut ctx, 1, [h_r_min(), 0.0, 0.0]);
+        assert!(suppress_atom(&mut ctx, a, f32::INFINITY));
+        run_bonds(&mut ctx);
+        run_bonds(&mut ctx);
+        assert!(!is_bonded(&ctx, a));
+        assert!(clear_suppression(&mut ctx, a));
+        run_bonds(&mut ctx);
+        assert!(is_bonded(&ctx, a));
+    }
+
+    #[test]
+    fn suppressing_only_the_other_atom_also_blocks_the_pair() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [h_r_min(), 0.0, 0.0]);
+        suppress_atom(&mut ctx, b, f32::INFINITY);
+        run_bonds(&mut ctx);
+        assert!(!is_bonded(&ctx, a));
+    }
+
+    #[test]
+    fn suppression_only_gates_chemistry_not_physical_repulsion() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [1.0, 0.0, 0.0]); // deep inside the LJ core
+        suppress_atom(&mut ctx, a, f32::INFINITY);
+        suppress_atom(&mut ctx, b, f32::INFINITY);
+        for _ in 0..5 {
+            step(&mut ctx, 1.0, 10.0);
+        }
+        let d = ctx.atoms[1].position[0] - ctx.atoms[0].position[0];
+        assert!(d > 1.0, "suppressed atoms must still repel each other (gap is now {d})");
+        assert!(!is_bonded(&ctx, a));
+    }
+
+    #[test]
+    fn timed_suppression_expires_and_infinite_does_not() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let b = spawn_atom(&mut ctx, 1, [50.0, 0.0, 0.0]);
+        suppress_atom(&mut ctx, a, 2.5);
+        suppress_atom(&mut ctx, b, f32::INFINITY);
+        let real_a = ctx.handles[0];
+        let real_b = ctx.handles[1];
+        step(&mut ctx, 1.0, 10.0);
+        step(&mut ctx, 1.0, 10.0);
+        assert!(ctx.suppressed.contains(real_a), "2 fs of a 2.5 fs suppression have elapsed");
+        step(&mut ctx, 1.0, 10.0);
+        assert!(!ctx.suppressed.contains(real_a), "3 fs elapsed, should have expired");
+        assert!(ctx.suppressed.contains(real_b), "an infinite suppression never times out");
+    }
+
+    #[test]
+    fn clearing_in_a_radius_only_touches_atoms_inside_it() {
+        let mut ctx = SimContext::new(10.0);
+        let near1 = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        let near2 = spawn_atom(&mut ctx, 1, [1.0, 0.0, 0.0]);
+        let far   = spawn_atom(&mut ctx, 1, [20.0, 0.0, 0.0]);
+        for h in [near1, near2, far] {
+            suppress_atom(&mut ctx, h, f32::INFINITY);
+        }
+        assert_eq!(clear_suppression_in_radius(&mut ctx, [0.0, 0.0, 0.0], 5.0), 2);
+        assert!(!clear_suppression(&mut ctx, near1), "already cleared by the radius call");
+        assert!(clear_suppression(&mut ctx, far), "outside the radius, so still suppressed");
+    }
+
+    #[test]
+    fn suppressing_a_stale_handle_is_a_harmless_no_op() {
+        let mut ctx = SimContext::new(10.0);
+        let a = spawn_atom(&mut ctx, 1, [0.0, 0.0, 0.0]);
+        assert!(despawn_atom(&mut ctx, a));
+        assert!(!suppress_atom(&mut ctx, a, 10.0));
+        assert!(!clear_suppression(&mut ctx, a));
+    }
+}

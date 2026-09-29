@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/chemistry_core.md, section "benches/bond_storage_compare.rs"
+// ============================================================================
 //! Direct MidVec-vs-Vec comparison for `ctx.bonds`'s storage, isolated
 //! from physics entirely.
 //!
@@ -126,12 +130,12 @@ fn build_saturated<C: BondList>(ids: &[GenerationalIndex], k: usize) -> SparseSe
             let equilibrium_length = 3.29_f32; // representative H-H r_min; value doesn't matter to this harness, only that it's touched
 
             match bonds.get_mut(a) {
-                Some(list) => list.push_edge(BondInfo { partner: b, equilibrium_length }),
-                None => { let mut l = C::default(); l.push_edge(BondInfo { partner: b, equilibrium_length }); bonds.insert(a, l); }
+                Some(list) => list.push_edge(BondInfo { partner: b, equilibrium_length, order: 1 }),
+                None => { let mut l = C::default(); l.push_edge(BondInfo { partner: b, equilibrium_length, order: 1 }); bonds.insert(a, l); }
             }
             match bonds.get_mut(b) {
-                Some(list) => list.push_edge(BondInfo { partner: a, equilibrium_length }),
-                None => { let mut l = C::default(); l.push_edge(BondInfo { partner: a, equilibrium_length }); bonds.insert(b, l); }
+                Some(list) => list.push_edge(BondInfo { partner: a, equilibrium_length, order: 1 }),
+                None => { let mut l = C::default(); l.push_edge(BondInfo { partner: a, equilibrium_length, order: 1 }); bonds.insert(b, l); }
             }
         }
     }

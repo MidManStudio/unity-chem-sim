@@ -122,6 +122,42 @@ integration, bond formation and breaking, angle-bend forces.
   three lines at the three places the transition is already being
   decided.
 
+- `BondParams` also gained `order_upgrade_tolerance`, default `1.05`. An
+  order upgrade's window uses it for its upper edge instead of
+  `range_factor`. The first version reused `range_factor`, which put the
+  double-bond window's upper edge at 0.87 times 1.15, about
+  `1.0005 * r_min`, the exact spot an ordinary bond already rests. Any
+  inward vibration then counted as an upgrade, so once `max_bond_order`
+  was raised every bond climbed to triple within a few steps. At 1.05 the
+  window tops out near 0.91 times `r_min`, about 8.6% compression, roughly
+  twelve times the vibration amplitude of an H-H bond at 300 K, so an
+  upgrade takes a real collision. The floor (`min_range_factor`) is
+  unchanged.
+- `BondInfo` is now 16 bytes, up from 12. `order` adds one byte and the
+  4-byte alignment pads the struct out to 16, and a compile-time assert
+  pins that. Each inline bond slot is a third bigger, so
+  `MAX_INLINE_BONDS = 6` now takes 96 bytes of bond slots per atom
+  instead of 72. That value was picked from the `bond_storage_compare`
+  bench at the old size, so the next bench run is worth reading with that
+  in mind.
+- Tests added for all of the above: upgrades off by default, the upgrade
+  gate (thermal wobble never upgrades, real compression does, one order
+  at a time, stops at `max_bond_order`), the downgrade cascade (one
+  level, straight to single, full break), bond event order and draining,
+  and suppression (either side blocks a pair, LJ repulsion still
+  applies, timed expiry, radius clear, stale handles).
+
+### `benches/bond_storage_compare.rs`
+**What it does:** Compares `MidVec` against `Vec` as the storage for
+`ctx.bonds`, on synthetic ring topologies with no physics involved, both
+in the same process so runner-to-runner variance cancels out.
+
+**Decisions:**
+- `build_saturated` builds `BondInfo` values by hand, because the real
+  `push_bond_edge` is private. Every field of `BondInfo` has to be listed
+  there, so adding a field to `BondInfo` breaks this file at compile time.
+  It sets `order: 1`, which is what a fresh bond starts with.
+
 ## CI and Workflows
 
 - `.github/workflows/rust-rust-ci.yml` - build/test on push to `rust_lib/**`
@@ -130,6 +166,13 @@ integration, bond formation and breaking, angle-bend forces.
   This is what picks up both changes above automatically — no manual Rust
   build needed before the Unity side sees them, once this lands on `main`.
 - `.github/workflows/rust-bench.yml` - benchmark suite
+
+- `rust-rust-ci.yml` runs `cargo build --workspace --all-targets`, which
+  compiles the benches as well as the library, so a broken bench fails
+  that job too.
+- `rust-bench.yml` pipes `cargo bench` through `tee`. Without `pipefail`
+  the job took `tee`'s exit code, so a compile error still showed green.
+  The step now sets `shell: bash`, which turns `pipefail` on.
 
 ## Fixes and Problems
 
@@ -155,3 +198,17 @@ integration, bond formation and breaking, angle-bend forces.
 - No way for Unity to know a bond formed/broke/upgraded *this frame*
   without polling `chem_bonds_ptr` and diffing it by hand. Added
   `BondEvent`/`chem_take_bond_events`.
+- The first version of the order upgrade gate reused `range_factor`, so
+  an ordinary bond at rest already sat inside the double-bond window. With
+  `max_bond_order` raised, a bond vibrating at 300 K upgraded almost
+  immediately, and so did a 1% squeeze. Caught by running it. Fixed with
+  `order_upgrade_tolerance` (see Decisions above).
+- The comment on `BondInfo.order` still said there was no downgrade path
+  after the downgrade path landed, and the size note claimed `order` cost
+  one byte when it really takes the struct from 12 to 16. Both corrected.
+
+### `benches/bond_storage_compare.rs`
+- Four hand-built `BondInfo` literals were missing `order`, which broke
+  `cargo build --all-targets` and `cargo bench`. Fixed with `order: 1`. A
+  search of `src/` alone missed it, so search `benches/` as well when
+  `BondInfo` changes.
