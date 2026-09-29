@@ -39,6 +39,10 @@ jobs:
       # useful if you ever want to download target/criterion as an
       # artifact and view it locally), but nothing here depends on Pages.
       - name: Run benchmarks
+        # An explicit `shell: bash` runs with -eo pipefail. The default shell
+        # for `run` has no pipefail, so `cargo bench | tee` exited with tee's
+        # status and a compile error still showed up as a green job.
+        shell: bash
         run: cargo bench -p chemistry_core 2>&1 | tee bench-output.txt
 
       # if: always() — still write whatever we have even if the bench step
