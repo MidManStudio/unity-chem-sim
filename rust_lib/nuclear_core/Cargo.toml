@@ -11,6 +11,10 @@ repository   = "https://github.com/MidManStudio/unity-chem-sim"
 [lib]
 name = "nuclear_core"
 
+[[bench]]
+name    = "chart_bench"
+harness = false
+
 # No dependencies on purpose. The mass table is generated source, and the
 # random number generator that later milestones need will live in this crate.
 [dependencies]

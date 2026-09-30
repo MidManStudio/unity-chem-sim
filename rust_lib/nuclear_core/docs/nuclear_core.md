@@ -108,15 +108,30 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 
 **Decisions:** The golden counts (2,940 rows, 453 estimated) must be updated together with this file when `scripts/gen_ame2020.py` is rerun against a different table.
 
+### `benches/chart_bench.rs`
+**What it does:** A timing harness for the hot paths: table lookup (listed, unlisted, and every row in turn), `binding_energy` (table row and fallback), the liquid drop formula, `q_value` for D+T and for a fission channel, `Nuclide` parse and display, and a sweep of binding energy per nucleon over the whole chart. It prints a Markdown table of median, minimum and maximum time per operation.
+
+**Decisions:**
+- No criterion. A dev-dependency is built for every `cargo test`. In a trial run, `cargo test` on Rust 1.75.0 failed with criterion 0.5 added, because `clap_lex` 1.1.1 in its dependency tree needs the `edition2024` Cargo feature and cargo 1.75 cannot read that manifest. The harness uses `std::time::Instant` and `std::hint::black_box` instead, which keeps the zero-dependency build and the 1.75 floor.
+- Each benchmark first finds how many calls fill a 25 ms batch, runs one untimed batch, then times 21 batches and reports the median with the minimum and maximum. Benchmarks that loop over the chart report time per row.
+- Run it with `cargo bench -p nuclear_core --bench chart_bench`. The `--bench` flag matters: without it cargo also runs the library's unit tests in bench mode and prints their output ahead of the table.
+- Results from shared CI runners show a big change between two runs and prove nothing about absolute speed. Values under about 5 ns are mostly loop overhead.
+
+**Tests:** none of its own. The `test` job builds all targets, so the harness cannot stop compiling unnoticed.
+
 ## CI and Workflows
 
+- `.github/workflows/nuclear-core.yml` - tests and benchmarks for this crate alone. The `test` job builds all targets, runs `cargo test -p nuclear_core`, and builds the docs with broken links denied, all on stable Rust. The `floor` job copies the crate into a workspace of its own and runs its tests on Rust 1.75.0, the `rust-version` in `Cargo.toml`. Copying it out means no other crate's dependencies are resolved. The `bench` job runs only from a manual run with the `bench` box ticked, and writes the results table to the run's Job Summary. The workflow also runs on pushes that touch `rust_lib/nuclear_core/**`.
 - `.github/workflows/rust-rust-ci.yml` - the existing workspace CI. It builds the whole workspace with `--all-targets` and runs `cargo test --workspace` on stable Rust, so it covers nuclear_core with no change. It runs on pushes and pull requests that touch `rust_lib/**` or the root `Cargo.toml`.
 - `.github/workflows/build-rust-lib.yml` - builds the native libraries for Unity. It builds chemistry_core only, and nuclear_core has no FFI layer yet, so it is not part of that build. Its trigger path is `rust_lib/**`, so a push that touches this crate also starts that build.
 - `scripts/gen_ame2020.py` - regenerates `src/ame2020_data.rs`. Needs `pip install periodictable`. Run it locally or in a scratch workflow, then update the golden counts in `tests/chart_sweep.rs` if the row counts changed.
 
-No CI job pins a Rust floor. The crate declares `rust-version = "1.75"`, checked by running `cargo test -p nuclear_core` on Rust 1.75.0 inside this workspace. The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-math.
+The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-math. The `floor` job checks this crate only.
 
 ## Fixes and Problems
+
+### `.github/workflows/nuclear-core.yml`
+- `cargo test --workspace` stops at the first failing doc-test. In a local run on Rust 1.85, five doc-tests in mid-math fail, so a workspace run ends before nuclear_core's own doc-test. The workflow gives this crate a result of its own.
 
 ### `ame2020_data.rs`
 - The rows are a second-hand copy of AME2020 (through `periodictable` 2.1.0). They have not been diffed against the primary IAEA file, which the build sandbox could not reach, so the row count may be below the full AME2020 listing. A CI job that downloads the primary file and compares it with the checked-in table would close this.
