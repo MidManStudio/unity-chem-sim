@@ -1,0 +1,22 @@
+[package]
+name         = "nuclear_core"
+version      = "0.0.1"
+edition      = "2021"
+rust-version = "1.75"
+authors      = ["MidManStudio"]
+description  = "Nuclide chart, binding energies and reaction Q-values from AME2020"
+license      = "MIT"
+repository   = "https://github.com/MidManStudio/unity-chem-sim"
+
+[lib]
+name = "nuclear_core"
+
+# No dependencies on purpose. The mass table is generated source, and the
+# random number generator that later milestones need will live in this crate.
+[dependencies]
+
+# The root manifest has no [workspace.lints] table, so the lint posture is
+# declared here instead of inherited.
+[lints.rust]
+unsafe_code  = "deny"
+missing_docs = "warn"
