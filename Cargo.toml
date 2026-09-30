@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "rust_lib/chemistry_core",
+    "rust_lib/nuclear_core",
     "rust_lib/vendor/mid-math",
     "rust_lib/vendor/mid-collections",
 ]
