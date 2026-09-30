@@ -1,0 +1,109 @@
+name: Nuclear core
+
+# Tests and benchmarks for rust_lib/nuclear_core only.
+#
+# rust-rust-ci.yml already builds and tests the whole workspace, but
+# `cargo test --workspace` stops at the first failing doc-test. In a local run
+# on Rust 1.85 five mid-math doc-tests fail, so a workspace run ends before it
+# reaches nuclear_core's own doc-test. This workflow gives the crate a result
+# of its own.
+#
+# The benchmark job is manual: Actions -> Nuclear core -> Run workflow, then
+# tick "bench". Results land in that run's Job Summary. GitHub-hosted runners
+# are shared hardware, so read them as "did anything change a lot between two
+# runs", not as absolute speed.
+on:
+  push:
+    paths:
+      - 'rust_lib/nuclear_core/**'
+      - '.github/workflows/nuclear-core.yml'
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: 'Also run the benchmarks and write them to the job summary'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # --all-targets also compiles the bench harness, so it cannot stop
+      # compiling between bench runs.
+      - name: Build all targets
+        run: cargo build -p nuclear_core --all-targets
+
+      - name: Run tests
+        run: cargo test -p nuclear_core
+
+      - name: Build docs (broken links are errors)
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken-intra-doc-links
+        run: cargo doc -p nuclear_core --no-deps
+
+  # nuclear_core declares rust-version 1.75. Testing only on stable never
+  # notices a floor break, so this job runs the tests on 1.75.0. The crate is
+  # copied into a workspace of its own first, so cargo does not resolve the
+  # dependencies of the other workspace crates (some of them need a newer
+  # cargo than 1.75 just to read their manifests).
+  floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.75.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.75.0
+
+      - name: Copy the crate into a workspace of its own
+        run: |
+          mkdir /tmp/floor
+          cp -r rust_lib/nuclear_core /tmp/floor/nuclear_core
+          printf '[workspace]\nmembers = ["nuclear_core"]\nresolver = "2"\n' > /tmp/floor/Cargo.toml
+
+      - name: Run tests on the floor
+        working-directory: /tmp/floor
+        run: cargo test
+
+  bench:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.bench }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # --bench chart_bench runs only the harness. Without it cargo also runs
+      # the library's unit tests in bench mode and prints them ahead of the
+      # table. Only stdout goes to the file, so compile output stays in the log.
+      - name: Run benchmarks
+        shell: bash
+        run: cargo bench -p nuclear_core --bench chart_bench > bench-output.txt
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## nuclear_core bench - $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            if [ -f bench-output.txt ]; then
+              cat bench-output.txt
+            else
+              echo "_No bench output: the benchmark step did not produce a file._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
