@@ -5,72 +5,71 @@
 # ============================================================================
 """Generate rust_lib/nuclear_core/src/ame2020_data.rs from the AME2020 mass table.
 
-The table is read from the public-domain `periodictable` package, which carries
-the AME2020 atomic masses published by the IAEA Atomic Mass Data Center. Atomic
-mass (u) is converted to mass excess (keV) with decimal arithmetic, so no float
-rounding enters the conversion. Output is plain ASCII.
+Reads the original AME2020 text file (rust_lib/nuclear_core/data/mass.mas20) and
+writes one row per nuclide: (z, a, mass excess in keV, uncertainty in keV,
+estimated). Only the Python standard library is needed.
 
-Usage:
-    pip install periodictable
-    python scripts/gen_ame2020.py --out rust_lib/nuclear_core/src/ame2020_data.rs
+AME marks values that come from systematic trends instead of measurement with
+a '#' in place of the decimal point. Those rows get estimated = true.
+
+Usage, from the repository root:
+    python scripts/gen_ame2020.py
 """
 import argparse
 import re
 import sys
-from decimal import Decimal, getcontext
+from decimal import Decimal
+from pathlib import Path
 
-import periodictable
-import periodictable.mass as pt_mass
-from periodictable import constants
-
-getcontext().prec = 40
-
-# keV per atomic mass unit, the conversion factor AME2020 uses.
-U_KEV = Decimal("931494.10242")
-
-# value(unc) with an optional trailing '#'. '#' marks a value taken from
-# systematic trends of the mass surface instead of measurement.
-MASS_RE = re.compile(r"^(?P<val>-?\d+(?:\.\d+)?)\((?P<unc>\d+)\)(?P<est>#)?\??$")
+ROOT = Path(__file__).resolve().parents[1]
+CRATE = ROOT / "rust_lib" / "nuclear_core"
 
 
-def parse_mass(text):
-    m = MASS_RE.match(text.strip())
-    if not m:
-        raise ValueError(f"unexpected mass field: {text!r}")
-    val = m.group("val")
-    decimals = len(val.split(".")[1]) if "." in val else 0
-    unc = Decimal(m.group("unc")) * (Decimal(10) ** -decimals)
-    return Decimal(val), unc, m.group("est") is not None
+def load_symbols():
+    """Element symbols from elements.rs, so there is one list in the repository."""
+    src = (CRATE / "src" / "elements.rs").read_text(encoding="utf-8")
+    block = re.search(r"const SYMBOLS: \[&str; 118\] = \[(.*?)\];", src, re.S).group(1)
+    symbols = re.findall(r'"([A-Za-z]+)"', block)
+    assert len(symbols) == 118, len(symbols)
+    return ["n"] + symbols  # index = Z, with the neutron at Z = 0
 
 
-def rows():
-    """Return (z, a, mass_excess_kev, uncertainty_kev, estimated) sorted by (z, a)."""
-    out = []
-    for line in pt_mass.isotope_mass.split("\n"):
-        iso, iso_mass = line.split(",")[:2]
-        z_str, _symbol, a_str = iso.split("-")
-        z, a = int(z_str), int(a_str)
-        mass_u, unc_u, est = parse_mass(iso_mass)
-        out.append((z, a, (mass_u - a) * U_KEV, unc_u * U_KEV, est))
-    # The neutron is element 0 in the AME table (N=1, Z=0).
-    n_mass = Decimal(repr(constants.neutron_mass))
-    n_unc = Decimal(repr(constants.neutron_mass_unc))
-    out.append((0, 1, (n_mass - 1) * U_KEV, n_unc * U_KEV, False))
-    out.sort(key=lambda r: (r[0], r[1]))
-    return out
+def number(token):
+    """Decimal value of an AME token; returns (value, estimated)."""
+    estimated = "#" in token
+    return Decimal(token.replace("#", ".")), estimated
+
+
+def parse(path, symbols):
+    lines = path.read_text(encoding="utf-8").split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith("1N-Z"))
+    rows = []
+    for line in lines[start + 2:]:
+        if not line.strip():
+            continue
+        n, z, a = int(line[4:9]), int(line[9:14]), int(line[14:19])
+        element = line[20:23].strip()
+        assert a == n + z, f"A != N + Z in: {line[:30]}"
+        assert element == symbols[z], f"symbol {element!r} != {symbols[z]!r} for Z={z}"
+        tokens = line[28:].split()
+        mass, estimated = number(tokens[0])
+        sigma, _ = number(tokens[1])
+        rows.append((z, a, mass, sigma, estimated))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    keys = [(r[0], r[1]) for r in rows]
+    assert len(keys) == len(set(keys)), "duplicate (z, a) key"
+    return rows
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--input", default=str(CRATE / "data" / "mass.mas20"))
+    ap.add_argument("--out", default=str(CRATE / "src" / "ame2020_data.rs"))
     args = ap.parse_args()
 
-    data = rows()
-    keys = [(r[0], r[1]) for r in data]
-    assert len(keys) == len(set(keys)), "duplicate (z, a) key"
-    by_key = {(r[0], r[1]): r for r in data}
-    h1 = by_key[(1, 1)][2]
-    nn = by_key[(0, 1)][2]
+    rows = parse(Path(args.input), load_symbols())
+    by_key = {(r[0], r[1]): r for r in rows}
+    h1, neutron = by_key[(1, 1)][2], by_key[(0, 1)][2]
 
     out = []
     w = out.append
@@ -79,33 +78,31 @@ def main():
     w('// live in docs/nuclear_core.md, section "ame2020_data.rs"')
     w("// ============================================================================")
     w("// GENERATED FILE. Do not edit by hand.")
-    w("// Regenerate with:")
-    w("//   python scripts/gen_ame2020.py --out rust_lib/nuclear_core/src/ame2020_data.rs")
+    w("// Regenerate from the repository root with: python scripts/gen_ame2020.py")
     w("//")
-    w("// Source: AME2020 atomic mass evaluation. M. Wang, W.J. Huang, F.G. Kondev,")
-    w("// G. Audi, S. Naimi, Chinese Phys. C 45, 030003 (2021), and W.J. Huang et al.,")
-    w("// Chinese Phys. C 45, 030002 (2021). Values come from the public-domain")
-    w(f"// periodictable package {periodictable.__version__}, which carries the IAEA AMDC")
-    w("// massround.mas20 table. The neutron row is the exception: it comes from the")
-    w("// CODATA neutron mass that periodictable ships, about 1 eV above the AME value.")
+    w("// Source: the AME2020 atomic mass table (data/mass.mas20). M. Wang, W.J. Huang,")
+    w("// F.G. Kondev, G. Audi, S. Naimi, Chinese Phys. C 45, 030003 (2021), and")
+    w("// W.J. Huang et al., Chinese Phys. C 45, 030002 (2021).")
     w("//")
     w("// Each row is (z, a, mass excess in keV, uncertainty in keV, estimated).")
     w("// `estimated` is true where AME2020 marks a value as taken from systematic")
     w("// trends of the mass surface instead of measurement.")
     w("")
-    w(f"pub(crate) const H1_MASS_EXCESS_KEV: f64 = {h1:.6f};")
-    w(f"pub(crate) const NEUTRON_MASS_EXCESS_KEV: f64 = {nn:.6f};")
-    w(f"pub(crate) const ENTRY_COUNT: usize = {len(data)};")
+    w("// A data value can land close to a math constant by chance. That is not a bug.")
+    w("#![allow(clippy::approx_constant)]")
+    w("")
+    w(f"pub(crate) const H1_MASS_EXCESS_KEV: f64 = {h1};")
+    w(f"pub(crate) const NEUTRON_MASS_EXCESS_KEV: f64 = {neutron};")
+    w(f"pub(crate) const ENTRY_COUNT: usize = {len(rows)};")
     w("")
     w("#[rustfmt::skip]")
     w("pub(crate) static RAW: [(u8, u16, f64, f64, bool); ENTRY_COUNT] = [")
-    for z, a, dm, sig, est in data:
-        w(f"    ({z}, {a}, {dm:.6f}, {sig:.6f}, {'true' if est else 'false'}),")
+    for z, a, mass, sigma, estimated in rows:
+        w(f"    ({z}, {a}, {mass:.6f}, {sigma:.6f}, {'true' if estimated else 'false'}),")
     w("];")
-    with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n".join(out) + "\n")
-    n_est = sum(1 for r in data if r[4])
-    print(f"wrote {len(data)} rows ({n_est} estimated) to {args.out}")
+    Path(args.out).write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")
+    n_est = sum(1 for r in rows if r[4])
+    print(f"wrote {len(rows)} rows ({n_est} estimated) to {args.out}")
 
 
 if __name__ == "__main__":

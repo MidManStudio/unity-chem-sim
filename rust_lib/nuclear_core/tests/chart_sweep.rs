@@ -35,12 +35,12 @@ fn table_is_strictly_sorted_and_self_consistent() {
 }
 
 /// Golden counts for the checked-in data. Update these, and the doc file, when
-/// scripts/gen_ame2020.py is rerun against a different source table.
+/// scripts/gen_ame2020.py is rerun against a different source file.
 #[test]
 fn row_counts_match_the_generated_file() {
-    assert_eq!(mass_table::ENTRY_COUNT, 2940);
+    assert_eq!(mass_table::ENTRY_COUNT, 3558);
     let estimated = mass_table::entries().filter(|e| e.estimated).count();
-    assert_eq!(estimated, 453);
+    assert_eq!(estimated, 1008);
 }
 
 #[test]

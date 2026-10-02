@@ -16,6 +16,8 @@
 //! * [`Nuclide`] and element symbols.
 //! * [`mass_excess`] and [`binding_energy`] for any nuclide.
 //! * [`q_value`] for reactions written as lists of nuclides.
+//! * [`half_life`](decay::half_life), [`outcomes`] and [`chain_to_stability`] for
+//!   decay, from NUBASE2020.
 //!
 //! ```
 //! use nuclear_core::{q_value, Nuclide};
@@ -23,16 +25,26 @@
 //! // Deuterium + tritium -> helium-4 + neutron.
 //! let q = q_value(&[Nuclide::H2, Nuclide::H3], &[Nuclide::HE4, Nuclide::NEUTRON]).unwrap();
 //! assert!((q.mev() - 17.589).abs() < 0.01);
+//!
+//! // Carbon-14 decays to stable nitrogen-14.
+//! let chain = nuclear_core::chain_to_stability(Nuclide::new(6, 8));
+//! assert_eq!(chain.end, Nuclide::new(7, 7));
 //! ```
 
 mod ame2020_data;
 pub mod binding;
+pub mod decay;
 pub mod elements;
 pub mod liquid_drop;
 pub mod mass_table;
+mod nubase2020_data;
 pub mod nuclide;
 pub mod reaction;
 
 pub use binding::{binding_energy, mass_excess, Binding, MassExcess, Source};
+pub use decay::{
+    chain_to_stability, decay_q_value, outcomes, Chain, ChainEnd, DecayMode, HalfLife,
+    HalfLifeState, Outcome,
+};
 pub use nuclide::Nuclide;
 pub use reaction::{q_value, QValue, ReactionError};
