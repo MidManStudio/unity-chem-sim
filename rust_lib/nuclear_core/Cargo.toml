@@ -4,7 +4,7 @@ version      = "0.0.1"
 edition      = "2021"
 rust-version = "1.75"
 authors      = ["MidManStudio"]
-description  = "Nuclide chart, binding energies and reaction Q-values from AME2020"
+description  = "Nuclide chart, binding energies, reaction Q-values and decay data from AME2020 and NUBASE2020"
 license      = "MIT"
 repository   = "https://github.com/MidManStudio/unity-chem-sim"
 
