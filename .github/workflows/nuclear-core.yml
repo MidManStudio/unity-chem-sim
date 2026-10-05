@@ -18,6 +18,7 @@ on:
       - 'rust_lib/nuclear_core/**'
       - 'scripts/gen_ame2020.py'
       - 'scripts/gen_nubase2020.py'
+      - 'scripts/gen_fission_yields.py'
       - '.github/workflows/nuclear-core.yml'
   workflow_dispatch:
     inputs:
@@ -78,9 +79,10 @@ jobs:
         working-directory: /tmp/floor
         run: cargo test
 
-  # The two generated Rust tables must be exactly what the scripts produce from
-  # the original AME2020 and NUBASE2020 files in rust_lib/nuclear_core/data.
-  # The scripts use only the Python standard library.
+  # The three generated Rust tables must be exactly what the scripts produce
+  # from the original AME2020, NUBASE2020 and ENDF/B-VIII.0 fission yield files
+  # in rust_lib/nuclear_core/data. The scripts use only the Python standard
+  # library.
   data:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -91,11 +93,13 @@ jobs:
         run: |
           python3 scripts/gen_ame2020.py --out /tmp/ame2020_data.rs
           python3 scripts/gen_nubase2020.py --out /tmp/nubase2020_data.rs
+          python3 scripts/gen_fission_yields.py --out /tmp/fission_yields_data.rs
 
       - name: Compare with the checked-in tables
         run: |
           diff -q /tmp/ame2020_data.rs rust_lib/nuclear_core/src/ame2020_data.rs
           diff -q /tmp/nubase2020_data.rs rust_lib/nuclear_core/src/nubase2020_data.rs
+          diff -q /tmp/fission_yields_data.rs rust_lib/nuclear_core/src/fission_yields_data.rs
 
   bench:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.bench }}
