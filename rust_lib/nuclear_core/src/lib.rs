@@ -20,6 +20,9 @@
 //!   decay, from NUBASE2020.
 //! * [`Propagator`], [`Sample`] and [`Amounts`] for atoms that decay over time,
 //!   with a seeded [`Rng`].
+//! * [`fission`] (products from ENDF/B-VIII.0 yields), [`neutron`] (capture
+//!   or fission of an absorbed neutron) and [`fusion`] (light nuclei at a
+//!   temperature), applied to a pile by the methods in [`react`].
 //!
 //! ```
 //! use nuclear_core::{q_value, Nuclide};
@@ -46,12 +49,17 @@ mod ame2020_data;
 pub mod binding;
 pub mod decay;
 pub mod elements;
+pub mod fission;
+mod fission_yields_data;
+pub mod fusion;
 pub mod lineage;
 pub mod liquid_drop;
 pub mod mass_table;
 pub mod matrix;
+pub mod neutron;
 mod nubase2020_data;
 pub mod nuclide;
+pub mod react;
 pub mod reaction;
 pub mod rng;
 pub mod sample;

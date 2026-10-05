@@ -6,7 +6,7 @@ nuclear_core is a Rust crate for event-level nuclear physics in MidManStudio gam
 
 The crate sits in this workspace next to chemistry_core and shares no code with it. chemistry_core models electron clouds and chemical bonds at angstrom scale and eV energies. Nuclear reactions happen inside the nucleus, at femtometer scale and MeV energies, so the two need different data models. The only planned connection is at the gameplay layer, where an authored hazard record can name a nuclear hazard type.
 
-Version 0.0.1 covers milestones M1 to M3: the nuclide type, mass excess and binding energy for the whole chart, Q-values for reactions written as lists of nuclides, decay (half-lives, decay outcomes as a distribution that sums to 100 percent, decay Q-values, and chains to a stable nuclide), and time evolution: a seeded random number generator, exact decay propagation over any interval, and samples that decay over time, either as whole atoms with counting noise or as fractional amounts. Fission and fusion outcomes, and the Unity layer, come in later milestones. Particle-level dynamics, and bulk neutron transport or assembly criticality, are out of scope for now because they are a different kind of simulation.
+Version 0.0.1 covers milestones M1 to M4: the nuclide type, mass excess and binding energy for the whole chart, Q-values for reactions written as lists of nuclides, decay (half-lives, decay outcomes as a distribution that sums to 100 percent, decay Q-values, and chains to a stable nuclide), time evolution (a seeded random number generator, exact decay propagation over any interval, and samples that decay over time, either as whole atoms with counting noise or as fractional amounts), and reactions: fission products from the ENDF/B-VIII.0 yields, neutron absorption that ends in capture or fission, and fusion of light nuclei at a temperature. The Unity layer comes in a later milestone. Particle-level dynamics, and bulk neutron transport or assembly criticality, are out of scope because they are a different kind of simulation. A reaction call applies a number of events the caller chose, and a game that wants a rate or a chain reaction builds it on top of those calls.
 
 Units: energies are in keV unless a name says otherwise. Masses are atomic masses, so electron masses are inside every mass excess.
 
@@ -16,7 +16,7 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 **What it does:** Crate root. Declares the modules, keeps the generated tables private, and re-exports the main types.
 
 **Decisions:**
-- `ame2020_data` and `nubase2020_data` are private. The rest of the crate reaches them through `mass_table` and `decay`, so the row layouts can change without touching callers.
+- `ame2020_data`, `nubase2020_data` and `fission_yields_data` are private. The rest of the crate reaches them through `mass_table`, `decay` and `fission`, so the row layouts can change without touching callers.
 - Energies stay in keV inside the crate. Helpers such as `QValue::mev` convert at the edge.
 
 **Tests:** the crate-level example in the module docs (deuterium plus tritium, and the carbon-14 chain) runs as a doctest.
@@ -167,12 +167,79 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 **Decisions:**
 - A step draws, for each nuclide, how its atoms spread over the states of its transition. Nuclides are processed in ascending order, so the same seed always gives the same result. A failed step leaves the sample unchanged.
 - Emitted nuclei (alphas, neutrons, protons) join the pile at the end of the step that produced them, so an unstable emitted nucleus starts to decay on the next step. Use shorter steps when that matters.
-- Atoms that end in a mode with no single daughter (spontaneous fission and delayed fission) move to a pending list. They still count in the nucleon total, until fission products are modelled.
+- Atoms that end in a mode with no single daughter (spontaneous fission and delayed fission) move to a pending list. They still count in the nucleon total until `resolve_fissions` (in `react.rs`) turns them into fission products. `advance` never resolves them.
 - Nucleons are conserved exactly in `Sample`, which uses integer arithmetic, and to rounding error in `Amounts`.
 - Counts are `u64`, and a count that would pass `u64::MAX` is an error. The binomial draws are exact up to 2^40 atoms per nuclide and approximate above that, so a larger pile should use `Amounts`.
 - Each step reports the atoms changed, the energy released in keV (total Q), the new pending fissions, and whether every mass was known.
 
+- The count fields are `pub(crate)` so `react.rs` can apply reactions to the same pile. `SampleError` gained variants for fission errors, a pile that is too small, a fusion pair with no channel, and an amount or probability out of range.
+
 **Tests:** unit tests cover nucleon conservation over six steps from 1 second to 1e30 seconds, determinism by seed, the counting noise of a half-life step of carbon-14, alphas joining the pile, failed steps leaving the pile unchanged, and exact amounts for carbon-14 and californium-252.
+
+### `fission_yields_data.rs`
+**What it does:** Generated table of ENDF/B-VIII.0 independent fission product yields: 60 sets (one per parent nucleus, trigger and neutron energy) and 39,786 product rows. Written by `scripts/gen_fission_yields.py` from `data/fission_yields.tsv`. Private; `fission` is the only reader.
+
+**Decisions:**
+- The data file is the copy of the ENDF/B-VIII.0 neutron-induced (NFY) and spontaneous (SFY) fission yield sublibraries bundled in the crates.io package `nucleide-nuclei` 0.16.0 (BSD-2-Clause), SHA-256 `c74b92ec1fa56b6fde748bb2e8ff379a1f843850c7b12c2462b5fc086bf4f6a8`, kept byte for byte. The NNDC host is not reachable from the build sandbox, and this package carries both sublibraries as plain TSV. The file header calls the table screening level. Both sublibraries are carried over unchanged from ENDF/B-VII.1 (the England and Rider ENDF-349 evaluations) except for Pu-239. ENDF/B-VIII.0 is a US government work from the National Nuclear Data Center at Brookhaven.
+- Only independent yields are used: the yield of a product per fission after prompt neutron emission and before any beta decay. The yields of one set sum to 2, one per fragment. The cumulative rows stay in the data file, and `tests/fission_chart.rs` uses typed cumulative values as a check.
+- The sets are 17 thermal (0.0253 eV), 22 at 500 keV, 1 at 2 MeV (Pu-239 only), 11 at 14 MeV, and 9 spontaneous. There are 30 neutron-induced parent nuclei and 9 spontaneous ones.
+- Isomers are not modelled. The one isomeric parent (Am-242m) is skipped, and an isomeric product adds its yield to the ground state of the same nucleus.
+- Yields of 1e-9 or less are dropped. The largest share dropped from any set is 1.7e-8.
+- The file is plain ASCII, carries `#![allow(clippy::approx_constant)]`, and is excluded from rustfmt by `#[rustfmt::skip]`, because CI compares it byte for byte with the generator output.
+
+**Tests:** `tests/fission_sweep.rs` parses the data file on its own and compares every set with what the model returns.
+
+### `fission.rs`
+**What it does:** `Fission` builds and caches the outcomes of a fission: a list of channels, each with a light fragment, a heavy fragment, a prompt neutron count, a probability and the energy released. `Trigger` says what starts it: a spontaneous split of a nucleus, or the absorption of a neutron of a given energy by a target. `fissioning_nucleus` names the nucleus that splits when an atom waits on the pending list after a delayed fission.
+
+**Decisions:**
+- The table gives the yield of each product but not which two products come out together. The pairing is built so that charge and nucleon number are conserved exactly in every channel and the product yields stay close to the table. Candidate pairs join a light and a heavy fragment whose charges add up to the compound nucleus and whose masses leave room for 0 to 10 neutrons. Each pair starts with a Gaussian weight on its neutron count, of width 1.08. The rows and columns are then scaled, with a damping exponent of 0.99 over 200 rounds, until the pair probabilities have the light and heavy yields as their sums. Fragments with no possible partner are removed first. The centre of the Gaussian is moved, up to six times, until the mean neutron count matches the one the yields imply, which is the compound mass number minus twice the mean fragment mass.
+- Drawing two fragments independently would not conserve anything. Taking one fragment from the table and finding its partner by conservation does conserve, but it deepens the valley between the two humps far below the table. The scaled pairing keeps both properties.
+- The width 1.08 comes from Terrell (1957), who described the spread of prompt neutron counts by a Gaussian, and Geant4 uses 1.079. Measured widths for spontaneous fission of plutonium, curium and californium are nearer 1.15 to 1.2.
+- The table nearest to the request is used. For a neutron trigger the parent is the evaluated target nearest on the chart (squared proton difference plus squared neutron difference, ties to the lighter nucleus), then the energy of that parent nearest in the logarithm. For a spontaneous trigger only the nine spontaneous tables are candidates.
+- A nucleus that has a table of its own gets `YieldSource::Evaluated`. Any other gets `YieldSource::Extended`: the nearest table with its light fragments shifted by the difference in charge and mass number of the compound nucleus, and the heavy fragments left in place. That keeps the heavy peak near xenon and barium, where the shells hold it.
+- Nuclei with fewer than 88 protons are refused with `FissionError::NotFissionable`.
+- The energy of a channel is the mass excess of the reactants minus the mass excess of the fragments and neutrons. It is the total, before the fragments decay. The decay energy arrives later through the lineage, so the whole chain adds up to about 200 MeV. The mean is 180 MeV for U-235 at thermal energy, 189 MeV for Pu-239 and 197 MeV for spontaneous Cf-252.
+- A `Fission` holds its cache and nothing else, so there is no global state. Building the pairs for one table takes about 5 ms and a cached lookup about 0.2 microseconds, so one `Fission` should serve a whole game.
+
+**Tests:** unit tests cover conservation and normalization for U-235 at thermal energy, the double hump, the energy release, table selection by neutron energy, a borrowed table for Cf-254, refused nuclei and energies, the daughter of a delayed fission, and caching. `tests/fission_sweep.rs` and `tests/fission_chart.rs` cover every table and the decay link.
+
+### `neutron.rs`
+**What it does:** The share of absorbed neutrons that cause fission instead of capture, for eight nuclei (U-233, U-235, U-238, Pu-238, Pu-239, Pu-240, Pu-241, Pu-242) in three neutron energy classes, plus `capture_q_kev`, the energy released by a capture.
+
+**Decisions:**
+- Authored table. You chose a small table for uranium and plutonium over leaving the choice of channel to the caller. A caller can still pass any `Branching` of their own for a nucleus that is not in the table.
+- The classes are thermal (below 100 keV), fast (100 keV up to 10 MeV) and high (10 MeV and above). The high class is 0.99 for every nucleus, because capture cross sections fall to millibarns there while fission stays near a barn.
+- Thermal values for U-233, U-235, Pu-239 and Pu-241 are fission over fission plus capture from the 2017 IAEA neutron data standards thermal constants (U-233: 533.0 and 44.9 barns, U-235: 587.3 and 99.5, Pu-239: 752.4 and 269.8, Pu-241: 1023.6 and 362.3). Thermal values for the other four are authored: 0 for U-238, Pu-240 and Pu-242, and 0.03 for Pu-238.
+- Fast values come from the fast reactor (metal fuel) column of the fission over absorption table in R. N. Hill's Argonne slides for the NRC Fast Reactor Technology Training Curriculum (26 March 2019): U-235 0.80, U-238 0.17, Pu-238 0.70, Pu-239 0.86, Pu-240 0.55, Pu-241 0.87, Pu-242 0.52. U-233 is not in that table, and its 0.91 is authored from a measured capture to fission ratio of about 0.10 in a soft spectrum fast assembly.
+- Only capture and fission are modelled. Scattering, (n,2n) and the other channels, and cross sections that would give a reaction rate, are left out.
+
+**Tests:** unit tests check the thermal values against the cross sections, the class boundaries, that fertile nuclei fission only when fast, that every value is a probability, and the capture energy of U-235 and U-238 against their neutron separation energies (6.545 and 4.806 MeV).
+
+### `fusion.rs`
+**What it does:** Seven fusion channels between light nuclei, each with its products, its energy release and its thermal reactivity (cross section times relative speed averaged over a Maxwell distribution, in cm^3/s) as a function of temperature in keV. `channels_for` finds the channels of a pair in either order, and `branching` gives the share of events that take each channel at a temperature.
+
+**Decisions:**
+- You chose published fits for D-T, D-D and D-He3, and a stylized formula for the rest. The four fitted channels are D + T, D + D to He-3 and a neutron, D + D to a triton and a proton, and D + He-3. They use the Bosch and Hale (1992) reactivity fit, whose published range is 0.2 to 100 keV, and 0.5 to 190 keV for D-He3. Outside that range the value is an extrapolation.
+- The three other channels (p + p, p + D, He-3 + He-3) use a Gamow-factor integral over an S-factor `S(E) = s0 + s1 E + s2 E^2 / 2`, done with Simpson's rule in the logarithm of the energy. The zero-energy S-factors are those of Solar Fusion II (Adelberger et al., Rev. Mod. Phys. 83, 195, 2011): p + p 4.01e-22 keV barns with a slope of 11.2 per MeV, p + D 2.14e-4 keV barns, and He-3 + He-3 5.21e3 keV barns with a slope of -4.9 barns and a curvature of 2.2e-2 barns per keV.
+- The reactivity of identical nuclei counts each pair once, so the reaction rate density is `n^2 * reactivity / 2`.
+- Q for p + p is worked out by hand from the atomic masses and two electron masses, because the positron carries away a unit of charge. It is 0.420 MeV, the kinetic energy of the positron and the neutrino, without the annihilation of the positron. Photons, positrons and neutrinos are not listed among the products.
+- Densities, confinement and a plasma model are not part of this module. The caller says how many events happen.
+
+**Tests:** unit tests cover the energy of every channel against the known values, conservation of nucleons and charge, D-T at 10 keV (1.136e-16 cm^3/s, the textbook 1.1e-22 m^3/s), the two orders of magnitude between D-T and D-D at 10 keV, rising reactivity with temperature, bad temperatures, the Gamow integral against the D-D fit, p + p against the lifetime of a proton in the solar core (1.6e-43 cm^3/s at 1.35 keV, against about 1e-43 from a lifetime of 1e10 years), and the two D-D branches. `tests/fusion_fits.rs` checks the reactivity fits against a Maxwell average of the S-factor fits of the same paper.
+
+### `react.rs`
+**What it does:** Applies reactions to a pile. `Sample` and `Amounts` each get three methods. `resolve_fissions` turns the pending fission list into fission products. `irradiate` sends neutrons of a given energy at a target nuclide: each neutron is absorbed by one target atom and ends in capture or in fission. `fuse` fuses pairs of light nuclei at a temperature. `Sample` draws the outcomes exactly, and `Amounts` applies the expectation.
+
+**Decisions:**
+- The caller says how many events happen. The module has no rates, fluxes, densities or geometry. Neutrons released by fission or fusion join the pile as free neutrons, and sending them at a target again is up to the caller, so a chain reaction is not built in.
+- The neutrons of `irradiate` come from outside the pile. They need a different target atom each, so a call with more neutrons than atoms is an error. The nucleon count of the pile rises by the number of neutrons sent.
+- Capture turns the target into the next heavier isotope and releases its neutron separation energy. The lineage then carries that isotope on, so U-238 captures a neutron and ends as Pu-239 through two beta decays with no extra code.
+- A fission event takes one channel of the cached outcomes, drawn with a multinomial split. `resolve_fissions` splits the nucleus named by `fissioning_nucleus`. The seven neutron deficient thallium, bismuth and astatine isotopes with a delayed fission branch have a splitting nucleus below the 88 proton limit. Their atoms stay on the pending list and are counted in `unresolved`.
+- Every call stages its changes and commits them at the end, so an error leaves the pile unchanged. The random generator state may have moved.
+- Energy is reported as the total Q in keV, before any later decay, and `energy_known` goes false if a needed mass is missing.
+
+**Tests:** unit tests cover nucleon conservation and the neutron count and energy of californium-252 spontaneous fission, repeatability by seed, delayed fission and the unresolved light nuclei, the fission share of slow neutrons on U-235 against the table, U-238 breeding to plutonium-239, refused calls leaving the pile unchanged, D + T and D + D fusion, and the same results from `Amounts`.
 
 ### `tests/known_values.rs`
 **What it does:** Checks the public API against published numbers: binding energies of light nuclei, binding energy per nucleon for iron-56, nickel-62, lead-208 and both uranium isotopes, and the Q-values listed under `reaction.rs`.
@@ -204,14 +271,30 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 
 **Decisions:** The fixed seeds make the outcomes repeatable, and the five-sigma limits are the ones the counting statistics allow.
 
+### `tests/fission_sweep.rs`
+**What it does:** Reads `data/fission_yields.tsv` on its own and compares it with `fission` for all 60 evaluated tables. Every table builds, has probabilities that sum to 1, products whose yields sum to 2, and channels that conserve charge and nucleon number exactly. The total variation distance between the model yields and the file is under 0.04 for every table, and the worst measured is 0.035. The median relative error of the products with a share above 0.1 percent is under 0.10 for every table, and the worst measured is 0.075. The mean neutron count is within 0.35 of the one the file implies, and the worst gap (0.32) is Pu-239 at 14 MeV, where the model gives 4.00 and the file implies 3.68.
+
+**Decisions:** The test has its own parser, so a change to `scripts/gen_fission_yields.py` cannot hide a mistake. The golden number of 60 tables must be updated with this file if the data file changes.
+
+### `tests/fission_chart.rs`
+**What it does:** Ties the yields to the decay data. All 141 nuclei in the chart that wait for a fission (118 spontaneous, 23 delayed) either resolve, with 10 using a table of their own, or are one of the 7 below the 88 proton limit. Then the modelled independent yields of U-235 at thermal energy are carried through the NUBASE2020 decay branches to cumulative yields, and eight of them are compared with the cumulative values in the ENDF/B-VIII.0 file. The worst error is 2.3 percent (Xe-135), against a limit of 5 percent, and the others are Sr-90, Zr-95, Mo-99, I-131, Cs-137, Ba-140 and Ce-144.
+
+**Decisions:** The cumulative values are typed into the test from the data file, so the check joins two datasets that were evaluated separately, as the energy check of the decay sweep does for the mass and decay tables. The golden counts must be updated with this file when either data file changes.
+
+### `tests/fusion_fits.rs`
+**What it does:** Takes the S-factor fit of Bosch and Hale (table IV in their paper), averages its cross section over a Maxwell distribution numerically at 2, 5, 10, 20, 50 and 100 keV, and compares the result with the reactivity fit (table VII) used by `fusion`, for the four fitted channels. They agree to within 4 percent, and the largest difference measured is 3.3 percent (D-He3 at 10 keV).
+
+**Decisions:** The two tables are separate sets of coefficients, so a typing error in either one shows up as a disagreement. The limit allows for the fits being fits.
+
 ### `benches/chart_bench.rs`
-**What it does:** A timing harness with about fifty benchmarks in seven groups, printed as one Markdown table per group. The groups are nuclides and the mass table, binding energies and Q-values, decay data, random numbers, the matrix exponential, decay propagation, and samples. Benchmarks that sweep the chart report time per row or per nuclide.
+**What it does:** A timing harness with about sixty benchmarks in eight groups, printed as one Markdown table per group. The groups are nuclides and the mass table, binding energies and Q-values, decay data, random numbers, the matrix exponential, decay propagation, samples, and reactions. Benchmarks that sweep the chart report time per row or per nuclide.
 
 **Decisions:**
 - No criterion. A dev-dependency is built for every `cargo test`. In a trial run, `cargo test` on Rust 1.75.0 failed with criterion 0.5 added, because `clap_lex` 1.1.1 in its dependency tree needs the `edition2024` Cargo feature and cargo 1.75 cannot read that manifest. The harness uses `std::time::Instant` and `std::hint::black_box` instead, which keeps the zero-dependency build and the 1.75 floor.
 - Each benchmark first finds how many calls fill a 25 ms batch, runs one untimed batch, then times 21 batches and reports the median with the minimum and maximum.
 - The propagation group separates three costs: building a lineage graph, solving it for a new interval, and a fully cached lookup. A game that steps by a fixed interval pays only the lookup, so the difference between them is the reason the cache exists.
 - The matrix group runs a stiff decay chain over 1e9 seconds at 10, 40 and 80 states, which brackets the graph sizes the chart produces.
+- The reactions group separates the one-time cost of building the pairs for a fission table from the cached lookup, and times the Bosch and Hale and Gamow reactivities and the three `Sample` reaction calls. In a sandbox run, building the U-235 thermal pairs took 5.6 ms and a cached lookup 0.2 microseconds. Resolving the pending fissions of a million californium-252 atoms took 0.25 ms, fusing 500,000 D-T pairs about 1 microsecond, and the p + p Gamow integral 11 microseconds.
 - The whole run takes under a minute on a development machine. Progress goes to stderr and the tables go to stdout, so the CI job can capture only the tables.
 - Run it with `cargo bench -p nuclear_core --bench chart_bench`. The `--bench` flag matters: without it cargo also runs the library's unit tests in bench mode and prints their output ahead of the tables.
 - Results from shared CI runners show a big change between two runs and prove nothing about absolute speed. Values under about 5 ns are mostly loop overhead.
@@ -220,10 +303,10 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 
 ## CI and Workflows
 
-- `.github/workflows/nuclear-core.yml` - tests and benchmarks for this crate alone. The `test` job builds all targets, runs `cargo test -p nuclear_core`, and builds the docs with broken links denied, all on stable Rust. The `floor` job copies the crate into a workspace of its own and runs its tests on Rust 1.75.0, the `rust-version` in `Cargo.toml`. Copying it out means no other crate's dependencies are resolved. The `data` job regenerates both generated tables from the files in `data/` and fails if either differs from the checked-in copy. The `bench` job runs only from a manual run with the `bench` box ticked, and writes the results table to the run's Job Summary. The workflow also runs on pushes that touch `rust_lib/nuclear_core/**`.
+- `.github/workflows/nuclear-core.yml` - tests and benchmarks for this crate alone. The `test` job builds all targets, runs `cargo test -p nuclear_core`, and builds the docs with broken links denied, all on stable Rust. The `floor` job copies the crate into a workspace of its own and runs its tests on Rust 1.75.0, the `rust-version` in `Cargo.toml`. Copying it out means no other crate's dependencies are resolved. The `data` job regenerates the three generated tables from the files in `data/` and fails if any differs from the checked-in copy. The `bench` job runs only from a manual run with the `bench` box ticked, and writes the results table to the run's Job Summary. The workflow also runs on pushes that touch `rust_lib/nuclear_core/**`.
 - `.github/workflows/rust-rust-ci.yml` - the existing workspace CI. It builds the whole workspace with `--all-targets` and runs `cargo test --workspace` on stable Rust, so it covers nuclear_core with no change. It runs on pushes and pull requests that touch `rust_lib/**` or the root `Cargo.toml`.
 - `.github/workflows/build-rust-lib.yml` - builds the native libraries for Unity. It builds chemistry_core only, and nuclear_core has no FFI layer yet, so it is not part of that build. Its trigger path is `rust_lib/**`, so a push that touches this crate also starts that build.
-- `scripts/gen_ame2020.py` and `scripts/gen_nubase2020.py` - regenerate `src/ame2020_data.rs` and `src/nubase2020_data.rs` from the original text files in `rust_lib/nuclear_core/data/`. Run them from the repository root with `python scripts/gen_ame2020.py` and `python scripts/gen_nubase2020.py`. Both need only Python 3. After a regeneration, update the golden counts in `tests/chart_sweep.rs` and `tests/decay_sweep.rs` and the numbers in this file.
+- `scripts/gen_ame2020.py`, `scripts/gen_nubase2020.py` and `scripts/gen_fission_yields.py` - regenerate `src/ame2020_data.rs`, `src/nubase2020_data.rs` and `src/fission_yields_data.rs` from the original files in `rust_lib/nuclear_core/data/`. Run them from the repository root with `python scripts/gen_ame2020.py`, `python scripts/gen_nubase2020.py` and `python scripts/gen_fission_yields.py`. All three need only Python 3. After a regeneration, update the golden counts in `tests/chart_sweep.rs`, `tests/decay_sweep.rs`, `tests/fission_sweep.rs` and `tests/fission_chart.rs` and the numbers in this file.
 
 The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-math. The `floor` job checks this crate only.
 
@@ -254,8 +337,37 @@ The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-ma
 - A graph of 80 states takes about 5 milliseconds to exponentiate, so the first step over a large and unusual sample costs a few milliseconds per species until the cache is warm.
 
 ### `sample.rs`
-- Pending fissions are counted but not resolved. A fissioning atom leaves the pile for the pending list, and fission products arrive in a later milestone.
+- Pending fissions stay on the pending list until `resolve_fissions` is called. A step never resolves them, so a game that wants fission products from a decaying sample calls `resolve_fissions` after the step.
 - `Sample` counts above 2^40 atoms for one nuclide use the approximate binomial.
+
+### `fission_yields_data.rs`
+- The data file is a third-party copy, and it was not compared with the NNDC files. The package that carries it (`nucleide-nuclei`) was first published in September 2026 and released six versions in five days, so the file is pinned by its SHA-256 and by version 0.16.0. The check that exists is internal: the independent yields sum to 2 in every set, and carried through the decay data they reproduce the cumulative yields of the same file to within 2.3 percent for eight fission products of U-235. To refresh from the primary source, download the NFY and SFY sublibraries of ENDF/B-VIII.0 from the National Nuclear Data Center, convert them to the same TSV layout, rerun the script and update the golden counts.
+- The yields are the ENDF-349 evaluation of the 1990s, not a recent one, and the cumulative values in the file are not always consistent with its independent values. Only the independent values are used.
+- The independent yields were built from a model, not measured one by one, and they are not consistent with each other as pairs. For some products no partner exists with enough yield, so the model cannot match them. The worst case is Ge-86 in U-235 at thermal energy, where the model gives about a quarter of the tabulated yield. Within one table, the median error of the products with a share above 0.1 percent is at most 7.5 percent over the 60 tables.
+- Only four neutron energies are tabulated (0.0253 eV, 500 keV, 2 MeV for Pu-239, 14 MeV). A neutron energy between them takes the table nearest in the logarithm, so the yields change in steps.
+
+### `fission.rs`
+- Extended tables are a guess. They hold the heavy peak in place and shift the light fragments, which fails for the symmetric fission of fermium-258 and heavier nuclei and for nuclei far from the actinides that have tables.
+- The pairing ignores how the neutron count depends on the fragment mass and any correlation between the charges of the two fragments.
+- The mean neutron count follows the yields, not the evaluated one. For U-235 at thermal energy it is 2.49 in the model, 2.40 from the yields and 2.44 evaluated. For spontaneous Cf-252 it is 3.89 in the model, 3.93 from the yields and 3.76 evaluated.
+- Only the fission of the compound nucleus is modelled. (n,2n), (n,3n) and second-chance fission are not, and prompt fission neutron and gamma energies are not separated from the total energy released.
+- A delayed fission is treated as the splitting of the daughter. A nucleus that has both a spontaneous and a delayed mode splits itself.
+
+### `neutron.rs`
+- The values are authored, not evaluated. Fast values are averages over one fast reactor spectrum, not values at a point in energy, and the thermal class covers everything up to 100 keV with the thermal values, so resonance energies are not told apart.
+- Only uranium and plutonium isotopes are in the table. Nuclei such as Am-241 or Th-232 need a `Branching` from the caller.
+
+### `fusion.rs`
+- The zero-energy S-factors for the three Gamow channels were read from two secondary sources that quote Solar Fusion II (a table in lecture notes and a conference slide). The paper itself was not opened. The p + D slope is not known to this module and is set to 0.
+- The Gamow integral has no resonances and no electron screening, which matters at stellar densities.
+- The module holds seven channels. T + T, the lithium and boron reactions, the CNO cycle and the triple alpha process are not in it.
+- The reactivity fits are valid inside the published ranges only.
+- Q for p + p does not include the annihilation of the positron (1.022 MeV).
+
+### `react.rs`
+- There is no neutron economy. Neutrons released by a fission stay in the pile, and a chain reaction needs the caller to send them back with `irradiate`.
+- Seven nuclei with a delayed fission branch are too light to be split by the model and stay on the pending list.
+- Fission energy is the total mass difference to the fission products. The neutrinos of the later beta decays are in the decay energy, not here, so the sum of fission and decay energy is the total and not the heat.
 
 ### `liquid_drop.rs`
 - Worst-case error is above 6 MeV per nucleon below A = 20, so anything labelled `LiquidDrop` should not be trusted for light nuclides.

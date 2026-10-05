@@ -14,10 +14,13 @@ use std::time::{Duration, Instant};
 
 use nuclear_core::decay::{self, DecayMode};
 use nuclear_core::elements;
+use nuclear_core::fission::{Fission, Trigger};
+use nuclear_core::fusion;
 use nuclear_core::lineage::Propagator;
 use nuclear_core::liquid_drop;
 use nuclear_core::mass_table;
 use nuclear_core::matrix;
+use nuclear_core::neutron;
 use nuclear_core::{
     binding_energy, chain_to_stability, decay_q_value, mass_excess, outcomes, q_value, Amounts,
     Nuclide, Rng, Sample,
@@ -490,6 +493,85 @@ fn main() {
                     sample.advance(1e6, &mut chart_rng, &mut chart_propagator)
                 },
             ),
+        ],
+    });
+
+    // --- reactions ------------------------------------------------------------
+    eprintln!("group: reactions");
+    let thermal = Trigger::Neutron { energy_ev: 0.0253 };
+    let cf252 = nuclide("Cf-252");
+    let mut fission = Fission::new();
+    fission.outcomes(u235, thermal).expect("benchmark fission");
+    fission
+        .outcomes(cf252, Trigger::Spontaneous)
+        .expect("benchmark fission");
+    // Californium-252 left to decay for 300 years has spontaneous fissions waiting.
+    let mut waiting = Sample::new();
+    waiting.add(cf252, 1_000_000).expect("benchmark sample");
+    waiting
+        .advance(1e10, &mut Rng::new(1), &mut Propagator::new())
+        .expect("benchmark sample");
+    let mut target_pile = Sample::new();
+    target_pile.add(u235, 100_000).expect("benchmark sample");
+    let branching = neutron::branching(u235, 0.0253).expect("benchmark branching");
+    let mut fuel = Sample::new();
+    fuel.add(Nuclide::H2, 1_000_000).expect("benchmark sample");
+    fuel.add(Nuclide::H3, 1_000_000).expect("benchmark sample");
+    let dt = fusion::channels_for(Nuclide::H2, Nuclide::H3);
+    let pp = fusion::channels_for(Nuclide::H1, Nuclide::H1);
+    let mut react_rng = Rng::new(2);
+    groups.push(Group {
+        title: "Reactions (fission, neutron absorption, fusion)",
+        rows: vec![
+            measure(
+                "fission::outcomes: build the U-235 thermal pairs, nothing cached",
+                1,
+                || {
+                    Fission::new()
+                        .outcomes(u235, thermal)
+                        .map(|o| o.channels.len())
+                },
+            ),
+            measure("fission::outcomes: cached, U-235 thermal", 1, || {
+                fission.outcomes(u235, thermal).map(|o| o.channels.len())
+            }),
+            measure(
+                "fusion reactivity: D + T at 10 keV (Bosch and Hale)",
+                1,
+                || dt[0].reactivity(10.0),
+            ),
+            measure(
+                "fusion reactivity: p + p at 1.35 keV (Gamow integral)",
+                1,
+                || pp[0].reactivity(1.35),
+            ),
+            measure(
+                "Sample::resolve_fissions: Cf-252 pending, outcomes cached",
+                1,
+                || {
+                    let mut sample = waiting.clone();
+                    sample.resolve_fissions(&mut fission, &mut react_rng)
+                },
+            ),
+            measure(
+                "Sample::irradiate: 50000 neutrons on U-235, outcomes cached",
+                1,
+                || {
+                    let mut sample = target_pile.clone();
+                    sample.irradiate(
+                        u235,
+                        50_000,
+                        0.0253,
+                        branching,
+                        &mut fission,
+                        &mut react_rng,
+                    )
+                },
+            ),
+            measure("Sample::fuse: 500000 D + T events", 1, || {
+                let mut sample = fuel.clone();
+                sample.fuse(Nuclide::H2, Nuclide::H3, 500_000, 10.0, &mut react_rng)
+            }),
         ],
     });
 

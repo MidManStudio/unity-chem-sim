@@ -13,11 +13,13 @@
 //! Emitted nuclei (alphas, neutrons, protons) join the pile at the end of the
 //! step that produced them, so an unstable emitted nucleus starts to decay on
 //! the next step. Atoms that end in a mode with no single daughter (fission)
-//! move to a pending list until fission products are modelled.
+//! move to a pending list until `resolve_fissions` (in [`react`](crate::react))
+//! turns them into fission products.
 
 use core::fmt;
 use std::collections::BTreeMap;
 
+use crate::fission::FissionError;
 use crate::lineage::{LineageError, Propagator};
 use crate::nuclide::Nuclide;
 use crate::rng::Rng;
@@ -29,6 +31,23 @@ pub enum SampleError {
     Lineage(LineageError),
     /// A count would pass `u64::MAX`.
     Overflow(Nuclide),
+    /// Fission outcomes could not be built.
+    Fission(FissionError),
+    /// The pile holds less of a nuclide than a reaction needs.
+    NotEnough {
+        /// The nuclide that runs short.
+        nuclide: Nuclide,
+        /// How much the pile holds.
+        have: f64,
+        /// How much the reaction needs.
+        need: f64,
+    },
+    /// No fusion channel runs for this pair at this temperature.
+    NoReaction(Nuclide, Nuclide),
+    /// A probability outside 0 to 1.
+    InvalidProbability(f64),
+    /// An amount that is negative or not finite.
+    InvalidAmount(f64),
 }
 
 impl fmt::Display for SampleError {
@@ -36,6 +55,25 @@ impl fmt::Display for SampleError {
         match self {
             SampleError::Lineage(e) => write!(f, "{e}"),
             SampleError::Overflow(n) => write!(f, "the count of {n} would overflow"),
+            SampleError::Fission(e) => write!(f, "{e}"),
+            SampleError::NotEnough {
+                nuclide,
+                have,
+                need,
+            } => {
+                write!(
+                    f,
+                    "the pile holds {have} of {nuclide} and the reaction needs {need}"
+                )
+            }
+            SampleError::NoReaction(a, b) => {
+                write!(
+                    f,
+                    "no fusion channel runs for {a} and {b} at this temperature"
+                )
+            }
+            SampleError::InvalidProbability(p) => write!(f, "{p} is not a probability"),
+            SampleError::InvalidAmount(x) => write!(f, "{x} is not a usable amount"),
         }
     }
 }
@@ -45,6 +83,12 @@ impl std::error::Error for SampleError {}
 impl From<LineageError> for SampleError {
     fn from(e: LineageError) -> Self {
         SampleError::Lineage(e)
+    }
+}
+
+impl From<FissionError> for SampleError {
+    fn from(e: FissionError) -> Self {
+        SampleError::Fission(e)
     }
 }
 
@@ -64,8 +108,8 @@ pub struct StepReport {
 /// A pile of whole atoms.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sample {
-    atoms: BTreeMap<Nuclide, u64>,
-    pending: BTreeMap<Nuclide, u64>,
+    pub(crate) atoms: BTreeMap<Nuclide, u64>,
+    pub(crate) pending: BTreeMap<Nuclide, u64>,
     elapsed_seconds: f64,
 }
 
@@ -208,8 +252,8 @@ pub struct AmountsReport {
 /// unit of amount, so for atoms it is keV and for moles it is keV per mole.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Amounts {
-    amounts: BTreeMap<Nuclide, f64>,
-    pending: BTreeMap<Nuclide, f64>,
+    pub(crate) amounts: BTreeMap<Nuclide, f64>,
+    pub(crate) pending: BTreeMap<Nuclide, f64>,
     elapsed_seconds: f64,
 }
 
