@@ -4,12 +4,15 @@ version      = "0.0.1"
 edition      = "2021"
 rust-version = "1.75"
 authors      = ["MidManStudio"]
-description  = "Nuclide chart, binding energies, reaction Q-values and decay data from AME2020 and NUBASE2020"
+description  = "Nuclide chart, binding energies, decay, fission, neutron capture and fusion for games, with a C interface"
 license      = "MIT"
 repository   = "https://github.com/MidManStudio/unity-chem-sim"
 
 [lib]
-name = "nuclear_core"
+name       = "nuclear_core"
+# cdylib for Unity on desktop and Android, staticlib for iOS and WebGL, rlib
+# for Rust callers, tests and benches. The C interface is in src/ffi.
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [[bench]]
 name    = "chart_bench"

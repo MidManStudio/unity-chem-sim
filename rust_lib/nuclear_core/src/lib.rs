@@ -23,6 +23,7 @@
 //! * [`fission`] (products from ENDF/B-VIII.0 yields), [`neutron`] (capture
 //!   or fission of an absorbed neutron) and [`fusion`] (light nuclei at a
 //!   temperature), applied to a pile by the methods in [`react`].
+//! * [`ffi`], the C interface Unity calls.
 //!
 //! ```
 //! use nuclear_core::{q_value, Nuclide};
@@ -49,6 +50,7 @@ mod ame2020_data;
 pub mod binding;
 pub mod decay;
 pub mod elements;
+pub mod ffi;
 pub mod fission;
 mod fission_yields_data;
 pub mod fusion;

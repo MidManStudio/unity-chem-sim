@@ -6,7 +6,7 @@ nuclear_core is a Rust crate for event-level nuclear physics in MidManStudio gam
 
 The crate sits in this workspace next to chemistry_core and shares no code with it. chemistry_core models electron clouds and chemical bonds at angstrom scale and eV energies. Nuclear reactions happen inside the nucleus, at femtometer scale and MeV energies, so the two need different data models. The only planned connection is at the gameplay layer, where an authored hazard record can name a nuclear hazard type.
 
-Version 0.0.1 covers milestones M1 to M4: the nuclide type, mass excess and binding energy for the whole chart, Q-values for reactions written as lists of nuclides, decay (half-lives, decay outcomes as a distribution that sums to 100 percent, decay Q-values, and chains to a stable nuclide), time evolution (a seeded random number generator, exact decay propagation over any interval, and samples that decay over time, either as whole atoms with counting noise or as fractional amounts), and reactions: fission products from the ENDF/B-VIII.0 yields, neutron absorption that ends in capture or fission, and fusion of light nuclei at a temperature. The Unity layer comes in a later milestone. Particle-level dynamics, and bulk neutron transport or assembly criticality, are out of scope because they are a different kind of simulation. A reaction call applies a number of events the caller chose, and a game that wants a rate or a chain reaction builds it on top of those calls.
+Version 0.0.1 covers milestones M1 to M5: the nuclide type, mass excess and binding energy for the whole chart, Q-values for reactions written as lists of nuclides, decay (half-lives, decay outcomes as a distribution that sums to 100 percent, decay Q-values, and chains to a stable nuclide), time evolution (a seeded random number generator, exact decay propagation over any interval, and samples that decay over time, either as whole atoms with counting noise or as fractional amounts), and reactions: fission products from the ENDF/B-VIII.0 yields, neutron absorption that ends in capture or fission, and fusion of light nuclei at a temperature. A C interface (`ffi`) exposes all of it to hosts, and the Unity package `com.midmanstudio.nuclear` wraps that interface in C#. Particle-level dynamics, and bulk neutron transport or assembly criticality, are out of scope because they are a different kind of simulation. A reaction call applies a number of events the caller chose, and a game that wants a rate or a chain reaction builds it on top of those calls.
 
 Units: energies are in keV unless a name says otherwise. Masses are atomic masses, so electron masses are inside every mass excess.
 
@@ -16,6 +16,7 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 **What it does:** Crate root. Declares the modules, keeps the generated tables private, and re-exports the main types.
 
 **Decisions:**
+- `ffi` is the only module allowed `unsafe` code. The crate builds as `cdylib` (Unity on desktop and Android), `staticlib` (iOS and WebGL) and `rlib`.
 - `ame2020_data`, `nubase2020_data` and `fission_yields_data` are private. The rest of the crate reaches them through `mass_table`, `decay` and `fission`, so the row layouts can change without touching callers.
 - Energies stay in keV inside the crate. Helpers such as `QValue::mev` convert at the edge.
 
@@ -241,6 +242,41 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 
 **Tests:** unit tests cover nucleon conservation and the neutron count and energy of californium-252 spontaneous fission, repeatability by seed, delayed fission and the unresolved light nuclei, the fission share of slow neutrons on U-235 against the table, U-238 breeding to plutonium-239, refused calls leaving the pile unchanged, D + T and D + D fusion, and the same results from `Amounts`.
 
+### `ffi/mod.rs`
+**What it does:** The C interface to the crate for Unity and other hosts: conventions, status codes, the `#[repr(C)]` structs, the context handle, the layout probe, version and error functions. Every function is `nuc_` plus a name. The library is `nuclear_core`. There are 64 exported functions in total, in this file, `ffi/query.rs` and `ffi/pile.rs`. The module's own documentation is the contract.
+
+**Decisions:**
+- The interface follows chemistry_core: opaque handles created and destroyed by C functions, structs with fixed-width fields, a function that gives the size of each struct. It differs in four places. Every fallible function returns a status code and the text of the last failure is available. Null pointers are checked and reported instead of dereferenced. Lists and strings use one buffer protocol (the count is always written and at most `capacity` elements are copied, so capacity 0 sizes the buffer). Every struct is laid out with explicit `reserved` fields so no offset depends on the target.
+- `NUC_ABI_VERSION` (1) changes whenever an old host would misread a function or struct. The C# package refuses to run against a library with another value, so a stale binary committed by an earlier CI run fails with a clear message.
+- `nuc_layout_probe` fills a struct with known values: counting the named fields in declaration order from 1, an integer field of position `k` holds `k` and a floating point field holds `k + 0.25`. A host reads the bytes through its own declaration and compares, which proves every field offset and not only the total size.
+- Panics are caught at the boundary and returned as `NUC_ERR_PANIC`. The release profile aborts on panic, so there a panic ends the process, as it does in chemistry_core.
+- `NucContext` holds the random generator, the decay propagation cache and the fission cache. Piles hold none of these, so many piles share one context and one seed controls a whole simulation. The generator state can be saved and restored as four 64-bit words.
+- The last error of a thread is a fixed 255-byte buffer in a thread local with no destructor. A Rust library unloaded while one of its thread locals has a destructor registered can crash the host at shutdown, which is the bug the chemistry build works around by keeping its Linux library out of the Editor.
+- The module has `#![allow(unsafe_code)]` and `#![allow(clippy::missing_safety_doc)]`. The safety contract is written once in the module documentation: pointers must be null or valid for the documented size, and handles must come from the matching create function and not be destroyed twice.
+
+**Tests:** unit tests check every field offset against the documented layout, that all 16 struct kinds have a size and a probe of that size, that a probe reads back through the same struct, that a panic becomes a status, the string and list protocols at the edges, per-thread last errors, and generator state round trips.
+
+### `ffi/query.rs`
+**What it does:** The queries that change no pile: nuclide parsing and names, element symbols, the table of 3558 nuclides, mass excess, binding energy, reaction Q-values, half-lives, abundance, decay outcomes, decay energies, chains to stability, neutron branching and capture energy, fission summaries, channels and yields, and the fusion channels with their reactivity and branching.
+
+**Decisions:**
+- Decay modes cross as an integer code: 0 to 28 for the plain modes in declaration order, 29 for a cluster mode (the cluster travels as a key) and 30 for the mixture of two cluster modes. The C# enum has the same numbers.
+- A fission query takes an energy in eV: 0 means spontaneous fission of the nucleus, a positive energy means a neutron absorbed by it as target. One function family covers both triggers.
+- The fusion channel table is built once and shared (an immutable `OnceLock`). Channels are addressed by index in a fixed order.
+- A query that finds no data returns `NUC_ERR_NOT_IN_TABLE`. A list function for a stable nuclide returns an empty list and success.
+
+**Tests:** unit tests check that every decay mode in the whole chart round trips through its code, that no decay outcome or chain step lists more than four emitted nuclei (the size of the array in the struct), and that no fusion channel has more than three product slots.
+
+### `ffi/pile.rs`
+**What it does:** `NucSample` (whole atoms) and `NucAmounts` (fractional amounts) as opaque handles, with create, destroy and clone, adding, counts, pending fissions, elapsed time, totals, and the time step and the three reactions of `react.rs`. Each call that needs the random generator or a cache takes the context.
+
+**Decisions:**
+- The neutron call takes the fission probability as a number. A host gets the authored value from `nuc_neutron_branching`, or passes its own for a nucleus outside the table.
+- `nuc_sample_totals` reports atoms without the pending fissions and nucleon number with them, as the Rust API does, and fails with `NUC_ERR_OVERFLOW` if either passes `u64::MAX`.
+- `nuc_amounts_add` refuses negative and non-finite amounts, where the Rust method silently ignores them.
+
+**Tests:** see `tests/ffi_api.rs`.
+
 ### `tests/known_values.rs`
 **What it does:** Checks the public API against published numbers: binding energies of light nuclei, binding energy per nucleon for iron-56, nickel-62, lead-208 and both uranium isotopes, and the Q-values listed under `reaction.rs`.
 
@@ -286,6 +322,11 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 
 **Decisions:** The two tables are separate sets of coefficients, so a typing error in either one shows up as a disagreement. The limit allows for the fits being fits.
 
+### `tests/ffi_api.rs`
+**What it does:** Calls the C interface the way a host does, through raw pointers, and compares the results with the Rust API. Nine tests cover version and handle lifecycle with null handles, names and the table, masses and Q-values, decay queries, neutron, fission and fusion queries, a time step against `Sample::advance` with the same seed (counts, pending fissions and energy must match exactly), saved generator state continuing the same stream, the reactions with their error codes and unchanged piles, and `NucAmounts`.
+
+**Decisions:** The file has `#![allow(unsafe_code)]` because the crate lints deny it for every other target. A helper runs each list function twice, once to size the buffer and once to fill it, so the protocol is exercised by every list test.
+
 ### `benches/chart_bench.rs`
 **What it does:** A timing harness with about sixty benchmarks in eight groups, printed as one Markdown table per group. The groups are nuclides and the mass table, binding energies and Q-values, decay data, random numbers, the matrix exponential, decay propagation, samples, and reactions. Benchmarks that sweep the chart report time per row or per nuclide.
 
@@ -309,6 +350,11 @@ Units: energies are in keV unless a name says otherwise. Masses are atomic masse
 - `scripts/gen_ame2020.py`, `scripts/gen_nubase2020.py` and `scripts/gen_fission_yields.py` - regenerate `src/ame2020_data.rs`, `src/nubase2020_data.rs` and `src/fission_yields_data.rs` from the original files in `rust_lib/nuclear_core/data/`. Run them from the repository root with `python scripts/gen_ame2020.py`, `python scripts/gen_nubase2020.py` and `python scripts/gen_fission_yields.py`. All three need only Python 3. After a regeneration, update the golden counts in `tests/chart_sweep.rs`, `tests/decay_sweep.rs`, `tests/fission_sweep.rs` and `tests/fission_chart.rs` and the numbers in this file.
 
 The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-math. The `floor` job checks this crate only.
+
+### The Unity package and the native build
+- `packages/com.midmanstudio.nuclear` wraps the C interface in C#. Its design is in `packages/com.midmanstudio.nuclear/docs/com.midmanstudio.nuclear.md`.
+- The `ffi` job of `nuclear-core.yml` builds the release library, compiles the C# sources and the editor tests with .NET 8 at C# language version 9, and runs them against it. It fails if any `DllImport` has no matching export or if the export count differs from the number of imports.
+- `build-nuclear-rust-libs.yml` builds the native libraries for six platforms and commits them into the package. It is a like-for-like port of `build-rust-lib.yml`. A push under `rust_lib/` also starts the chemistry build, because that workflow's trigger is `rust_lib/**`.
 
 ## Fixes and Problems
 
@@ -368,6 +414,14 @@ The workspace as a whole needs Rust 1.83 or newer because of the vendored mid-ma
 - There is no neutron economy. Neutrons released by a fission stay in the pile, and a chain reaction needs the caller to send them back with `irradiate`.
 - Seven nuclei with a delayed fission branch are too light to be split by the model and stay on the pending list.
 - Fission energy is the total mass difference to the fission products. The neutrinos of the later beta decays are in the decay energy, not here, so the sum of fission and decay energy is the total and not the heat.
+
+### `ffi/`
+- The native build workflow could not be run in the build sandbox. Its first real run is its verification.
+- The C# layer was checked against the Linux library only, under .NET 8. Other platforms rely on the explicit layout, which was not run on 32-bit ARM, iOS or WebGL.
+- A player that links both `libnuclear_core.a` and `libchemistry_core.a` (iOS, WebGL) can fail with duplicate Rust runtime symbols. Merge the crates into one static library if both must ship there.
+- Contexts and piles are not thread safe, and the interface does not check for misuse. A handle used after destroy, or destroyed twice, is undefined behaviour.
+- The last error is cut at 255 bytes.
+- A C header is not generated. The module documentation and the C# declarations are the contract.
 
 ### `liquid_drop.rs`
 - Worst-case error is above 6 MeV per nucleon below A = 20, so anything labelled `LiquidDrop` should not be trusted for light nuclides.

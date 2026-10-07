@@ -1,0 +1,28 @@
+{
+    "name": "com.midmanstudio.nuclear",
+    "version": "0.1.0",
+    "displayName": "Nuclear - Event-Level Nuclear Physics",
+    "description": "Nuclide chart, binding energies, decay chains, fission, neutron capture and fusion for games. A dependency-free Rust core (nuclear_core, AME2020, NUBASE2020 and ENDF/B-VIII.0 data) behind a C interface, with plain C# bindings that need no Unity engine references. Standalone and game-agnostic.",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {},
+    "keywords": [
+        "nuclear",
+        "physics",
+        "simulation",
+        "rust",
+        "ffi",
+        "isotopes",
+        "decay",
+        "fission",
+        "fusion"
+    ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}
