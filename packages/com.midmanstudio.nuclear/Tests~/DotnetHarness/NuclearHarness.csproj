@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles the package's Runtime/Core sources and the editor test fixture
+    into a plain .NET program and runs them against the real nuclear_core
+    library. Unity ignores this folder because its name ends in a tilde.
+    LangVersion 9.0 is what Unity 2022.3 compiles, so newer syntax cannot slip in.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseAppHost>false</UseAppHost>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>MidManStudio.Nuclear.Harness</RootNamespace>
+    <AssemblyName>NuclearHarness</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Runtime/Core/**/*.cs" />
+    <Compile Include="../../Tests/Editor/NuclearNativeTests.cs" />
+    <Compile Include="NUnitStubs.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>
