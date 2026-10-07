@@ -19,6 +19,7 @@ on:
       - 'scripts/gen_ame2020.py'
       - 'scripts/gen_nubase2020.py'
       - 'scripts/gen_fission_yields.py'
+      - 'packages/com.midmanstudio.nuclear/**'
       - '.github/workflows/nuclear-core.yml'
   workflow_dispatch:
     inputs:
@@ -58,6 +59,38 @@ jobs:
   # copied into a workspace of its own first, so cargo does not resolve the
   # dependencies of the other workspace crates (some of them need a newer
   # cargo than 1.75 just to read their manifests).
+  # The C interface and the C# bindings, end to end. Builds the release library
+  # the way Unity gets it, then compiles Runtime/Core and the editor tests as a
+  # plain .NET program and runs them against it. That proves every struct
+  # offset, every DllImport symbol and the whole pile and reaction API on a real
+  # library. The export count from nm must equal the number of DllImports, so a
+  # function added in Rust and forgotten in C# fails here.
+  ffi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the native library
+        run: cargo build --release -p nuclear_core
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run the C# bindings against the library
+        run: |
+          LIB=target/release/libnuclear_core.so
+          EXPORTS=$(nm -D --defined-only "$LIB" | grep -c ' T nuc_')
+          echo "nuc_ exports: $EXPORTS"
+          dotnet run -c Release \
+            --project packages/com.midmanstudio.nuclear/Tests~/DotnetHarness \
+            -- "$LIB" --expect-exports "$EXPORTS"
+
   floor:
     runs-on: ubuntu-latest
     timeout-minutes: 15
