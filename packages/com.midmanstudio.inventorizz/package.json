@@ -9,8 +9,8 @@
     "changelogUrl": "",
     "licensesUrl": "",
     "dependencies": {
-        "com.midmanstudio.mdix": "https://github.com/Mid-D-Man/DixScript-Rust.git?path=com.midmanstudio.mdix",
-        "com.midmanstudio.dragndrop": "https://github.com/MidManStudio/unity-chem-sim.git?path=packages/com.midmanstudio.dragndrop"
+        "com.midmanstudio.mdix": "1.0.0",
+        "com.midmanstudio.dragndrop": "1.0.0"
     },
     "keywords": [ "inventory", "items", "container", "mdix", "dixscript" ],
     "author": {
