@@ -1,0 +1,16 @@
+{
+    "name": "MidManStudio.Nuclear.Samples.NuclearLab",
+    "rootNamespace": "MidManStudio.Nuclear.Samples.NuclearLab",
+    "references": [
+        "MidManStudio.Nuclear"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
