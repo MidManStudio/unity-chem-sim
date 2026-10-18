@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `Samples~/NuclearLab`: a Play Mode panel with four tabs (nuclide, decay,
+  fission, fusion), drawn with plain IMGUI and registered as a sample in
+  `package.json`
+- `Tests~/DotnetHarness`: 14 tests for the model half of the sample, run against
+  the native library like the existing ones
+
 ## 0.1.0
 
 First release. C# bindings for nuclear_core 0.0.1 (C interface version 1):

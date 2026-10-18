@@ -46,10 +46,19 @@ using (var pile = new NuclearSample())
 A context holds the random stream and the caches and is shared between piles.
 Neither a context nor a pile is thread safe.
 
+## Sample
+
+`Samples~/NuclearLab` is a Play Mode panel that shows the package at work: look up
+a nuclide, decay a pile through time, fission a nucleus, fuse light nuclei. In
+Package Manager, open this package, select "Samples" and press "Import" next to
+"Nuclear Lab", then add the `NuclearLabView` component to an empty GameObject and
+press Play. The sample's own `README.md` lists what it needs and what was checked.
+
 ## Tests
 
 `Tests/Editor/NuclearNativeTests.cs` runs in the Unity Test Runner (Edit Mode).
 CI runs the same file under .NET 8 against the freshly built library, which also
 checks every struct offset and every exported function.
+The model half of the sample has its own tests in `Tests~/DotnetHarness`.
 
 See `docs/com.midmanstudio.nuclear.md` for the design and the known problems.

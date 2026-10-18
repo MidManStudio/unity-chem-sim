@@ -24,5 +24,12 @@
         "name": "MidMan Studio",
         "email": "midmanstudio@proton.me",
         "url": "https://github.com/MidManStudio/unity-chem-sim"
-    }
+    },
+    "samples": [
+        {
+            "displayName": "Nuclear Lab",
+            "description": "Drop-in Play Mode panel with four tabs: look up a nuclide, decay a pile through time, fission a nucleus and irradiate a pile, and fuse light nuclei at a temperature. Plain IMGUI, no scene setup. Shows what the package returns, not a shipping-game reference.",
+            "path": "Samples~/NuclearLab"
+        }
+    ]
 }
