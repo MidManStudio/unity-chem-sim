@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/com.midmanstudio.questly.md, section "QuestlyStudioWindow.cs"
+// ============================================================================
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -42,7 +46,7 @@ namespace MidManStudio.Questly.Editor
 
         // Validate
         private MdixAsset? _valSource;
-        private MdixValidationReport? _valReport;
+        private List<MdixValidationError>? _valErrors;
         private Vector2 _valScroll;
 
         // Bake
@@ -151,27 +155,36 @@ namespace MidManStudio.Questly.Editor
                 RunValidation();
             EditorGUI.EndDisabledGroup();
 
-            if (_valReport == null) return;
+            if (_valErrors == null) return;
 
             EditorGUILayout.Space(6);
 
-            if (_valReport.IsValid)
+            if (_valErrors.Count == 0)
             {
                 EditorGUILayout.HelpBox("Validation passed — no issues found.", MessageType.None);
                 return;
             }
 
-            EditorGUILayout.LabelField($"{_valReport.Errors.Count} issue(s) found", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField($"{_valErrors.Count} issue(s) found", EditorStyles.boldLabel);
 
             _valScroll = EditorGUILayout.BeginScrollView(_valScroll);
-            foreach (var error in _valReport.Errors)
+            foreach (var error in _valErrors)
             {
                 var messageType = error.Kind == MdixValidationErrorKind.Missing
                     ? MessageType.Error
                     : MessageType.Warning;
-                EditorGUILayout.HelpBox($"[{error.Kind}]  {error.Path}\n{error.Message}", messageType);
+                EditorGUILayout.HelpBox($"[{error.Kind}]  {error.Path}\n{Describe(error)}", messageType);
             }
             EditorGUILayout.EndScrollView();
+        }
+
+        // A problem from the quest graph pass carries the text in Actual and "no error" in Expected;
+        // a structural problem carries a real expected and actual value.
+        private static string Describe(MdixValidationError error)
+        {
+            return error.Expected == "no error"
+                ? error.Actual
+                : $"expected {error.Expected}, got {error.Actual}";
         }
 
         private void RunValidation()
@@ -187,7 +200,7 @@ namespace MidManStudio.Questly.Editor
             }
 
             using var db = dbResult.SuccessResult;
-            _valReport = db.Validate(new QuestlySchema());
+            _valErrors = new QuestlySchema().Validate(db);
         }
 
         // ── Bake tab ──────────────────────────────────────────────────────────
