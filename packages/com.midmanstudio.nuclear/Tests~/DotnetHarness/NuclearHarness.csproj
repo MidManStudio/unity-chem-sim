@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Compiles the package's Runtime/Core sources and the editor test fixture
-    into a plain .NET program and runs them against the real nuclear_core
-    library. Unity ignores this folder because its name ends in a tilde.
+    Compiles the package's Runtime/Core sources, the editor test fixture and
+    the model files of the Nuclear Lab sample into a plain .NET program and
+    runs them against the real nuclear_core library. Unity ignores this folder
+    because its name ends in a tilde.
     LangVersion 9.0 is what Unity 2022.3 compiles, so newer syntax cannot slip in.
   -->
 
@@ -25,6 +26,22 @@
   <ItemGroup>
     <Compile Include="../../Runtime/Core/**/*.cs" />
     <Compile Include="../../Tests/Editor/NuclearNativeTests.cs" />
+    <!-- The model half of the Nuclear Lab sample. Its OnGUI view needs UnityEngine, so it stays out. -->
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabFormat.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabInput.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabQueue.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabRandom.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabBlast.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclearLabShape.cs" />
+    <Compile Include="../../Samples~/NuclearLab/NuclideReport.cs" />
+    <Compile Include="../../Samples~/NuclearLab/DecayLab.cs" />
+    <Compile Include="../../Samples~/NuclearLab/FissionLab.cs" />
+    <Compile Include="../../Samples~/NuclearLab/FissionFrame.cs" />
+    <Compile Include="../../Samples~/NuclearLab/FissionShowPlan.cs" />
+    <Compile Include="../../Samples~/NuclearLab/FissionShow.cs" />
+    <Compile Include="../../Samples~/NuclearLab/FusionLab.cs" />
+    <Compile Include="NuclearLabModelTests.cs" />
+    <Compile Include="FissionShowTests.cs" />
     <Compile Include="NUnitStubs.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
