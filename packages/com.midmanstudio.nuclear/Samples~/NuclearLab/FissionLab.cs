@@ -18,6 +18,8 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
         public FissionSummary Summary;
         /// <summary>The most probable channels, the likeliest first.</summary>
         public FissionChannel[] TopChannels;
+        /// <summary>Every channel, the likeliest first. The fission animation draws its outcome from these.</summary>
+        public FissionChannel[] AllChannels;
         /// <summary>The most abundant fission products by yield, the largest first.</summary>
         public NuclideAmount[] TopYields;
         /// <summary>Number of fission products with a yield.</summary>
@@ -94,6 +96,7 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
 
             FissionChannel[] channels = queryContext.GetFissionChannels(target, energyEv);
             Array.Sort(channels, CompareChannels);
+            info.AllChannels = channels;
             info.TopChannels = Take(channels, channelLimit);
 
             NuclideAmount[] yields = queryContext.GetFissionYields(target, energyEv);

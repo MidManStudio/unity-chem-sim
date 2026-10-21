@@ -9,13 +9,15 @@ using UnityEngine;
 namespace MidManStudio.Nuclear.Samples.NuclearLab
 {
     /// <summary>
-    /// Shows the fission outcomes of a nucleus, the double-humped mass
-    /// distribution of its products, and runs a small neutron irradiation of a
-    /// pile. Event level only: no geometry, no flux, no chain reaction.
+    /// Shows the fission outcomes of a nucleus, plays one fission as a short animation, runs a small neutron
+    /// irradiation of a pile with a flash sized to the energy it released, and draws the double-humped mass
+    /// distribution of the products. Event level only: no geometry, no flux, no chain reaction.
     /// </summary>
     internal sealed class FissionTab : NuclearLabTab
     {
         private const int ProductLimit = 12;
+        private const float StageHeight = 230f;
+        private const float CaptionHeight = 52f;
         private static readonly float[] ChannelWidths = { 110f, 270f, 90f, 120f };
         private static readonly float[] ProductWidths = { 130f, 160f };
         private static readonly string[] PresetLabels = { "U-235 thermal", "U-238 fast (2 MeV)", "Cf-252 spontaneous" };
@@ -23,6 +25,10 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
         private static readonly string[] PresetEnergies = { "0.0253", "2e6", "0" };
 
         private readonly FissionLab lab = new FissionLab(8, 10);
+        private readonly FissionShow show = new FissionShow();
+        private readonly NuclearLabStage stage = new NuclearLabStage();
+        private FissionInfo info;
+        private ulong draws;
         private string targetText = "U-235";
         private string energyText = "0.0253";
         private string atomsText = "1000000";
@@ -87,7 +93,51 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
                 GUILayout.Label(line, styles.Body);
             }
 
-            GUILayout.Space(6f);
+            GUILayout.Space(8f);
+            GUILayout.Label("Watch it split", styles.Heading);
+            stage.Draw(show, StageHeight, styles);
+            GUILayout.Label(show.Caption, styles.Body, GUILayout.Height(CaptionHeight));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Split one atom", GUILayout.Width(150f)))
+            {
+                Do(SplitOne);
+            }
+            if (show.HasPlan && GUILayout.Button("Replay", GUILayout.Width(90f)))
+            {
+                Do(show.Replay);
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.Label("Slowed down enormously and not to scale: a real fission, prompt neutrons included, is over in under 10^-14 s. Sizes follow the cube root of the mass number. One event only, no chain reaction. Each press draws the next outcome from the seed below.", styles.Hint);
+
+            GUILayout.Space(10f);
+            GUILayout.Label("Send neutrons at a pile of this nucleus", styles.Heading);
+            GUILayout.Label("Event level: the neutrons come from outside and each goes into a different atom. Nothing models geometry, flux or a chain reaction. After a run with fissions the stage above plays one of them, and the flash is sized to the energy of all of them.", styles.Hint);
+            GUILayout.BeginHorizontal();
+            atomsText = Field("Atoms", atomsText, 45f, 100f);
+            neutronsText = Field("Neutrons", neutronsText, 65f, 100f);
+            seedText = Field("Seed", seedText, 35f, 50f);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            probabilityText = Field("Fission share of absorptions, 0 to 1 (blank = authored table)", probabilityText, 370f, 60f);
+            GUILayout.EndHorizontal();
+            if (GUILayout.Button("Irradiate", GUILayout.Width(120f)))
+            {
+                Do(Irradiate);
+            }
+            foreach (string line in runLines)
+            {
+                GUILayout.Label(line, styles.Body);
+            }
+            if (runRows.Length > 0)
+            {
+                Cells(styles.HeaderCell, ProductWidths, "Nuclide", "Atoms");
+                foreach (string[] row in runRows)
+                {
+                    Cells(styles.Cell, ProductWidths, row);
+                }
+            }
+
+            GUILayout.Space(10f);
             GUILayout.BeginHorizontal();
             GUILayout.Label("Product yield by mass number", styles.Heading);
             logScale = GUILayout.Toggle(logScale, "log scale");
@@ -115,38 +165,16 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
             {
                 Cells(styles.Cell, ProductWidths, row);
             }
+        }
 
-            GUILayout.Space(10f);
-            GUILayout.Label("Send neutrons at a pile of this nucleus", styles.Heading);
-            GUILayout.Label("Event level: the neutrons come from outside and each goes into a different atom. Nothing models geometry, flux or a chain reaction.", styles.Hint);
-            GUILayout.BeginHorizontal();
-            atomsText = Field("Atoms", atomsText, 45f, 100f);
-            neutronsText = Field("Neutrons", neutronsText, 65f, 100f);
-            seedText = Field("Seed", seedText, 35f, 50f);
-            GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            probabilityText = Field("Fission share of absorptions, 0 to 1 (blank = authored table)", probabilityText, 370f, 60f);
-            GUILayout.EndHorizontal();
-            if (GUILayout.Button("Irradiate", GUILayout.Width(120f)))
-            {
-                Do(Irradiate);
-            }
-            foreach (string line in runLines)
-            {
-                GUILayout.Label(line, styles.Body);
-            }
-            if (runRows.Length > 0)
-            {
-                Cells(styles.HeaderCell, ProductWidths, "Nuclide", "Atoms");
-                foreach (string[] row in runRows)
-                {
-                    Cells(styles.Cell, ProductWidths, row);
-                }
-            }
+        public override void Tick(float seconds)
+        {
+            show.Tick(seconds);
         }
 
         public override void Dispose()
         {
+            stage.Dispose();
             lab.Dispose();
         }
 
@@ -213,6 +241,7 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
                 }
             }
 
+            this.info = info;
             infoLines = lines.ToArray();
             channelRows = channels;
             yieldRows = yields;
@@ -222,6 +251,36 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
             massFloor = floor == double.MaxValue ? max / 1000.0 : floor;
             runLines = new string[0];
             runRows = new string[0][];
+            draws = 0UL;
+            if (info.AllChannels.Length > 0)
+            {
+                ulong seed;
+                if (!NuclearLabFormat.TryParseCount(seedText, out seed))
+                {
+                    seed = 1UL;
+                }
+                show.Prepare(FissionShowPlan.Build(info, new NuclearLabRandom(NuclearLabRandom.Mix(seed, draws++)), 0.0, 1UL));
+            }
+            else
+            {
+                show.Clear();
+            }
+        }
+
+        // Plays the outcome that was drawn when the nucleus was looked up, and after that a new draw on every press.
+        private void SplitOne()
+        {
+            if (info == null)
+            {
+                throw new InvalidOperationException("Look up a nucleus first.");
+            }
+            if (show.IsReady)
+            {
+                show.Replay();
+                return;
+            }
+            ulong seed = NuclearLabInput.ParseCount(seedText, "Seed", 0UL);
+            show.Start(FissionShowPlan.Build(info, new NuclearLabRandom(NuclearLabRandom.Mix(seed, draws++)), 0.0, 1UL));
         }
 
         private void Irradiate()
@@ -266,6 +325,17 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
             }
             runLines = lines.ToArray();
             runRows = table;
+
+            // The stage plays one of the fissions of the run, sized to the energy of all of them.
+            FissionInfo runInfo = lab.Query(target, energy);
+            if (r.Fissions > 0UL && runInfo.AllChannels.Length > 0)
+            {
+                show.Start(FissionShowPlan.Build(runInfo, new NuclearLabRandom(NuclearLabRandom.Mix(seed, draws++)), r.EnergyReleasedKev, r.Fissions));
+            }
+            else
+            {
+                show.Clear();
+            }
         }
     }
 }

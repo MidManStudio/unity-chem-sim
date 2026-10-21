@@ -28,7 +28,16 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
         /// <summary>Draws the tab inside the panel's scroll view.</summary>
         public abstract void Draw(NuclearLabStyles styles);
 
-        /// <summary>Frees native handles the tab owns.</summary>
+        /// <summary>
+        /// Called once a frame from Update with the seconds the frame took, for a tab that animates. A tab
+        /// changes what it shows here and never inside <see cref="Draw"/>, so that every pass of one OnGUI
+        /// frame sees the same state.
+        /// </summary>
+        public virtual void Tick(float seconds)
+        {
+        }
+
+        /// <summary>Frees native handles and textures the tab owns.</summary>
         public virtual void Dispose()
         {
         }

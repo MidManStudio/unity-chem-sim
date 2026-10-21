@@ -32,6 +32,8 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
         public GUIStyle Cell;
         /// <summary>A table header cell.</summary>
         public GUIStyle HeaderCell;
+        /// <summary>A short bold label centred on a point of the fission stage.</summary>
+        public GUIStyle Stage;
 
         public static NuclearLabStyles Create()
         {
@@ -45,6 +47,8 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
             styles.Error = Make(12, FontStyle.Bold, ErrorColor, true);
             styles.Cell = Make(12, FontStyle.Normal, Color.white, false);
             styles.HeaderCell = Make(12, FontStyle.Bold, HintColor, false);
+            styles.Stage = Make(11, FontStyle.Bold, Color.white, false);
+            styles.Stage.alignment = TextAnchor.MiddleCenter;
             return styles;
         }
 

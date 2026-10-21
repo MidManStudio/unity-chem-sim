@@ -74,6 +74,15 @@ namespace MidManStudio.Nuclear.Samples.NuclearLab
         private void Update()
         {
             _queue.RunAll();
+            if (_tabs == null)
+            {
+                return;
+            }
+            float seconds = Time.unscaledDeltaTime;
+            for (int i = 0; i < _tabs.Length; i++)
+            {
+                _tabs[i].Tick(seconds);
+            }
         }
 
         private void OnGUI()
