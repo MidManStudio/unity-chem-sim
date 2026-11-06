@@ -1,0 +1,30 @@
+[package]
+name         = "jiggle_core"
+version      = "0.0.1"
+edition      = "2021"
+rust-version = "1.75"
+authors      = ["MidManStudio"]
+description  = "Jiggle physics kernels for bone chains: a verlet solver over flat host-owned buffers, colliders, wind and force fields, sleep, with a C interface"
+license      = "MIT"
+repository   = "https://github.com/MidManStudio/unity-chem-sim"
+
+[lib]
+name       = "jiggle_core"
+# cdylib for Unity on desktop and Android, staticlib for iOS and WebGL, rlib
+# for Rust callers, tests and benches. The C interface is in src/ffi.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bench]]
+name    = "step_bench"
+harness = false
+
+# No dependencies on purpose. The scalar kernel is the reference every other
+# backend is checked against. A SIMD kernel that uses the vendored mid-math
+# wide types comes later behind a feature, once this one is green.
+[dependencies]
+
+# The root manifest has no [workspace.lints] table, so the lint posture is
+# declared here instead of inherited.
+[lints.rust]
+unsafe_code  = "deny"
+missing_docs = "warn"

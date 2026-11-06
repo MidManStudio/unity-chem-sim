@@ -1,0 +1,14 @@
+{
+    "name": "MidManStudio.AllThingsJiggle",
+    "rootNamespace": "MidManStudio.AllThingsJiggle",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}
