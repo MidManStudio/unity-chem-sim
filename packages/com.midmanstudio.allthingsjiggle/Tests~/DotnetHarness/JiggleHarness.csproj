@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiles the package's Runtime/Core sources and the editor test fixture
+    into a plain .NET program and runs them against the real jiggle_core
+    library. Unity ignores this folder because its name ends in a tilde.
+    LangVersion 9.0 is what Unity 2022.3 compiles, so newer syntax cannot slip in.
+    AllowUnsafeBlocks is on because the kernel and the bindings work on raw pointers,
+    the same setting as allowUnsafeCode in the runtime asmdef.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseAppHost>false</UseAppHost>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>MidManStudio.AllThingsJiggle.Harness</RootNamespace>
+    <AssemblyName>JiggleHarness</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Runtime/Core/**/*.cs" />
+    <Compile Include="../../Tests/Editor/JiggleParityTests.cs" />
+    <Compile Include="NUnitStubs.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>
