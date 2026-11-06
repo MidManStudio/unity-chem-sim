@@ -11,6 +11,8 @@ Builds/
 Logs/
 UserSettings/
 *.csproj
+# The .NET test harnesses inside Tests~ folders are source, not Unity-generated project files.
+!packages/**/Tests~/DotnetHarness/*.csproj
 *.sln
 *.pidb
 *.suo
