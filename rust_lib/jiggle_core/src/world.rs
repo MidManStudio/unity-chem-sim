@@ -92,11 +92,12 @@ impl World {
     /// continues the last bone is added, `tip_scale` times the length of the
     /// last bone away from it. The first bone is a root particle. Returns the rig index.
     ///
-    /// The solver is one way: a particle is pulled by its parent and never pulls it back. So the virtual
-    /// end particle cannot make the real bones swing slower or heavier, which is what a weight hung on a
-    /// hair strand does in a rigid body rig. It only sets how far the last bone turns for a given sideways
-    /// motion of its end, a shorter tip turning more and a longer one less. Slow, heavy swing is made with
-    /// a low stiffness, a high gravity multiplier and drag instead.
+    /// A link is one way unless both of its particles have a `mass` (see `AuthoringParams::mass`): then the
+    /// child also pulls its parent back. With no masses the virtual end particle cannot make the real bones
+    /// swing slower or heavier. It only sets how far the last bone turns for a given sideways motion of its
+    /// end, a shorter tip turning more and a longer one less. The virtual end particle takes the mass of the
+    /// last bone, and `set_mass` gives it a weight of its own, which is how a weight hung on a hair strand
+    /// is made.
     pub fn add_chain_with_tip(&mut self, rest_world: &[V3], params: &[AuthoringParams], tip_scale: f32) -> usize {
         assert!(rest_world.len() >= 2 && params.len() == rest_world.len() - 1);
         let bones = rest_world.len() - 1;
@@ -147,6 +148,20 @@ impl World {
         self.rigs.push(rig);
         self.tip_scale.push(tip_scale);
         self.rigs.len() - 1
+    }
+
+    /// Sets the mass of particle `particle` of a rig, counted in the rig: 1 is the first bone and the last
+    /// index is the virtual end particle. 0 makes its links one way again. Panics on an index outside the rig.
+    pub fn set_mass(&mut self, rig: usize, particle: usize, mass: f32) {
+        let r = self.rigs[rig];
+        assert!(particle >= 1 && particle < r.particle_count as usize);
+        self.defs[r.particle_offset as usize + particle].mass = if mass > crate::params::MAX_MASS {
+            crate::params::MAX_MASS
+        } else if mass > 0.0 {
+            mass
+        } else {
+            0.0
+        };
     }
 
     /// Gives a rig the colliders it should test, by index into `colliders`.

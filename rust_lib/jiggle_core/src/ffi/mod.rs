@@ -45,8 +45,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::solver::{self, Buffers, SolverError};
 use crate::types::*;
 
-/// The version of this C interface.
-pub const ABI_VERSION: i32 = 1;
+/// The version of this C interface. Version 2 gave `ParticleDef` a mass and `StepConfig` a coupling pass count.
+pub const ABI_VERSION: i32 = 2;
 
 /// Success.
 pub const JGL_OK: i32 = 0;
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn jgl_layout_probe(kind: i32, buffer: *mut u8, capacity: 
                 ignore_root_motion: 13.5,
                 wind_response: 14.5,
                 impulse_response: 15.5,
-                reserved2: 16.5,
+                mass: 16.5,
             };
             write_probe(&v, buffer, capacity)
         }
@@ -376,7 +376,8 @@ pub unsafe extern "C" fn jgl_layout_probe(kind: i32, buffer: *mut u8, capacity: 
                 sleep_deviation: 9.5,
                 sleep_frames: 2,
                 wake_motion: 10.5,
-                reserved: [11.5, 12.5, 13.5, 14.5],
+                coupling_passes: 3,
+                reserved: [11.5, 12.5, 13.5],
             };
             write_probe(&v, buffer, capacity)
         }

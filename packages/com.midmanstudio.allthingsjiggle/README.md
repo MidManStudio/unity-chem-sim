@@ -14,6 +14,9 @@ What the core does today:
   with an optional test of the whole bone segment, not only its end
 - force fields: directional, radial and vortex, as an acceleration or as a hit
   impulse, with falloff, a radius and gusts
+- two way coupling: give bones a mass and a bone pulls its parent back, so a weight on
+  a strand drags it down. Bones without a mass stay one way. The number of passes is a
+  setting
 - sleep and wake, teleport and reset, and a fixed step accumulator
 - two backends over the same flat buffers that give the same bits: a managed
   C# kernel and the Rust library `jiggle_core` through a C interface
@@ -26,10 +29,15 @@ bone chain, no Burst jobs, no transform reading and writing, no collider
 components. Those come in the next drop. Until then the package is a library you
 can drive from your own code with `JiggleWorld`.
 
-The solver is one way: a bone is pulled by its parent and never pulls it back.
-That makes heavy swing come from low stiffness, higher gravity and drag, not from a
-weight at the tip. `docs/com.midmanstudio.allthingsjiggle.md` lists this and the
-other known limits.
+A bone is pulled by its parent and, unless both have a mass, never pulls it back. Set
+`JiggleParams.Mass` on bones (or `JiggleWorld.SetMass` afterwards, tip included) to
+turn the coupling on for the links between them, and `Cfg.CouplingPasses` for how many
+passes a step uses. More passes hold bone lengths better under a heavy tip at a higher
+cost. The mass ratio between neighbours counts as at most 16.
+`docs/com.midmanstudio.allthingsjiggle.md` lists this and the other known limits.
+
+Version 0.2.0 changes the native interface to version 2. A build of the native
+libraries older than this package is refused by `JiggleLibrary.Verify`.
 
 The C# layer has no Unity engine references, so the same files compile and run
 under plain .NET. That is how CI tests them.
@@ -79,7 +87,8 @@ on them directly. Both take the same arguments and give the same status codes.
 `Tests/Editor/JiggleParityTests.cs` runs in the Unity Test Runner (Edit Mode).
 CI runs the same file under .NET 8 against the freshly built library. It checks
 every struct offset field by field, every exported function, random scenes of
-every feature bit for bit between the two backends, the error codes, threaded
-batches, and a golden scene whose hash the Rust tests assert too.
+every feature (with and without masses) bit for bit between the two backends, the
+error codes, threaded batches, and two golden scenes, one way and coupled, whose
+hashes the Rust tests assert too.
 
 See `docs/com.midmanstudio.allthingsjiggle.md` for the design and the known problems.

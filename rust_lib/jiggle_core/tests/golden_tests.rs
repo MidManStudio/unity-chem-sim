@@ -10,9 +10,13 @@
 //! sqrt), never from sin, cos or pow, so the two languages see bit-identical inputs. If either
 //! implementation changes behaviour, one of the two tests fails.
 //!
-//! When a deliberate change of the solver moves the hash, update `GOLDEN` here and `Golden` in the
-//! C# test together, after the C# managed kernel, the Rust kernel and the native-vs-managed parity
-//! tests all agree on the new behaviour.
+//! There are two scenes. The first has no masses, so it pins the one way solver: its hash must not move
+//! when the coupling changes. The second is the same scene with masses on five of its six rigs and three
+//! coupling passes, so it pins the two way solver and shows coupled and one way rigs side by side.
+//!
+//! When a deliberate change of the solver moves a hash, update the literal here and the matching one in the
+//! C# test together (`GOLDEN` and `Golden`, `GOLDEN_COUPLED` and `GoldenCoupled`), after the C# managed
+//! kernel, the Rust kernel and the native-vs-managed parity tests all agree on the new behaviour.
 
 use jiggle_core::math::{Q, V3};
 use jiggle_core::params::AuthoringParams;
@@ -21,6 +25,9 @@ use jiggle_core::world::World;
 
 /// The hash of the golden scene. Keep in sync with `Golden` in JiggleParityTests.cs.
 const GOLDEN: u64 = 0xbd735dd528713541;
+
+/// The hash of the coupled golden scene. Keep in sync with `GoldenCoupled` in JiggleParityTests.cs.
+const GOLDEN_COUPLED: u64 = 0x86c07fa5cdc256e4;
 
 struct Lcg(u32);
 
@@ -60,13 +67,16 @@ impl Fnv {
 const RIGS: usize = 6;
 const FRAMES: usize = 120;
 
-fn build() -> (World, Vec<Vec<V3>>) {
+fn build(coupled: bool) -> (World, Vec<Vec<V3>>) {
     let mut rng = Lcg(20261105);
     let mut w = World::new();
     w.cfg.sleep_speed = 0.002;
     w.cfg.sleep_deviation = 0.05;
     w.cfg.sleep_frames = 6;
     w.cfg.wake_motion = 0.01;
+    if coupled {
+        w.cfg.coupling_passes = 3;
+    }
 
     w.colliders.push(Collider { kind: COLLIDER_SPHERE, radius: 0.12, center: [0.4, 0.55, 0.0, 0.0], ..Collider::default() });
     w.colliders.push(Collider { kind: COLLIDER_CAPSULE, radius: 0.06, half_height: 0.25, center: [0.9, 0.5, 0.0, 0.0], axis: [0.0, 1.0, 0.0, 0.0], ..Collider::default() });
@@ -111,6 +121,7 @@ fn build() -> (World, Vec<Vec<V3>>) {
                 ignore_root_motion: rng.range(0.0, 0.3),
                 wind_response: rng.range(0.5, 1.5),
                 impulse_response: rng.range(0.5, 1.5),
+                mass: 0.0,
                 angle_limited: r % 2 == 1,
                 collide: true,
                 segment_collision: r % 3 == 0,
@@ -134,6 +145,14 @@ fn build() -> (World, Vec<Vec<V3>>) {
                 d.limit_cos = 0.8;
                 d.limit_sin = 0.6;
             }
+        }
+        if coupled && r != 1 {
+            // Rig 1 stays one way. The others get a mass that grows down the strand and a heavier virtual end.
+            // No mass is more than 16 times its neighbour's, so the cap on the ratio is not what the scene tests.
+            for b in 1..=bones {
+                w.set_mass(rig, b, 1.0 + 0.5 * b as f32);
+            }
+            w.set_mass(rig, bones + 1, 3.0 + r as f32);
         }
         let list: Vec<u32> = if r % 2 == 0 { vec![0, 1, 2, 3, 4] } else { vec![0, 2, 4] };
         w.set_collider_list(rig, &list);
@@ -202,9 +221,10 @@ struct Run {
     awake_after_sleep: bool,
 }
 
-/// Runs the golden scene. `colliders` and `fields` switch those parts off to show they matter.
-fn golden_scene(colliders: bool, fields: bool) -> Run {
-    let (mut w, rests) = build();
+/// Runs the golden scene. `colliders` and `fields` switch those parts off to show they matter, and `coupled`
+/// gives most rigs masses.
+fn golden_scene(colliders: bool, fields: bool, coupled: bool) -> Run {
+    let (mut w, rests) = build(coupled);
     if !colliders {
         for r in &mut w.rigs {
             r.ref_count = 0;
@@ -249,19 +269,63 @@ fn golden_scene(colliders: bool, fields: bool) -> Run {
 
 #[test]
 fn the_golden_scene_has_the_recorded_hash() {
-    let a = golden_scene(true, true);
+    let a = golden_scene(true, true, false);
     // The scene is a pure function of its code, so a second run gives the same hash.
-    assert_eq!(a.hash, golden_scene(true, true).hash);
+    assert_eq!(a.hash, golden_scene(true, true, false).hash);
     assert_eq!(a.hash, GOLDEN, "golden hash is now {:#018x}; see the note at the top of this file", a.hash);
 }
 
 #[test]
+fn the_coupled_golden_scene_has_the_recorded_hash() {
+    let a = golden_scene(true, true, true);
+    assert_eq!(a.hash, golden_scene(true, true, true).hash);
+    assert_eq!(a.hash, GOLDEN_COUPLED, "coupled golden hash is now {:#018x}; see the note at the top of this file", a.hash);
+}
+
+#[test]
 fn the_golden_scene_exercises_what_it_claims() {
-    let full = golden_scene(true, true);
+    let full = golden_scene(true, true, false);
     // Rig 4 holds still until frame 90, so it falls asleep and then wakes when it starts to move.
     assert!(full.asleep_frames > 10, "rig 4 slept for {} frames", full.asleep_frames);
     assert!(full.awake_after_sleep);
     // Taking the colliders or the fields away changes the result, so both do something.
-    assert_ne!(golden_scene(false, true).hash, full.hash);
-    assert_ne!(golden_scene(true, false).hash, full.hash);
+    assert_ne!(golden_scene(false, true, false).hash, full.hash);
+    assert_ne!(golden_scene(true, false, false).hash, full.hash);
+}
+
+#[test]
+fn the_coupled_golden_scene_exercises_what_it_claims() {
+    let one_way = golden_scene(true, true, false);
+    let coupled = golden_scene(true, true, true);
+    // The masses change the result, and so do the colliders and the fields of the coupled scene.
+    assert_ne!(coupled.hash, one_way.hash);
+    assert_ne!(golden_scene(false, true, true).hash, coupled.hash);
+    assert_ne!(golden_scene(true, false, true).hash, coupled.hash);
+    // The coupled sleeper still falls asleep and wakes.
+    assert!(coupled.asleep_frames > 10, "rig 4 slept for {} frames", coupled.asleep_frames);
+    assert!(coupled.awake_after_sleep);
+    // The pass count matters: one pass gives another result than three.
+    let (mut w, rests) = build(true);
+    w.cfg.coupling_passes = 1;
+    let mut h = Fnv(0xcbf29ce484222325);
+    let mut rng = Lcg(77);
+    for f in 0..FRAMES {
+        for r in 0..RIGS {
+            let (p, q) = pose(&rests, r, f);
+            w.set_pose(r, &p, Some(&q));
+        }
+        if f == 30 {
+            w.rigs[3].flags |= RIG_DISABLED;
+        }
+        if f == 40 {
+            w.rigs[3].flags &= !RIG_DISABLED;
+        }
+        if f == 50 {
+            w.rigs[2].flags |= RIG_RESET;
+        }
+        let dt = frame_dt(&mut rng, f);
+        w.step(dt).unwrap();
+        fold(&mut h, &w);
+    }
+    assert_ne!(h.0, coupled.hash);
 }

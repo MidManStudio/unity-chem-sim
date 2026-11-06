@@ -41,12 +41,20 @@ namespace MidManStudio.AllThingsJiggle
         public float WindResponse;
         /// <summary>Multiplier on impulse fields.</summary>
         public float ImpulseResponse;
+        /// <summary>
+        /// Relative mass for two way coupling, 0 for none. A bone pulls its parent back only when both have a mass
+        /// above 0. Only the ratio between neighbours matters. Values above <see cref="MaxMass"/> count as MaxMass.
+        /// </summary>
+        public float Mass;
         /// <summary>Whether the angle limit applies.</summary>
         public bool AngleLimited;
         /// <summary>Whether the bone collides.</summary>
         public bool Collide;
         /// <summary>Whether the whole bone segment collides, not only its end.</summary>
         public bool SegmentCollision;
+
+        /// <summary>Largest mass <see cref="Bake"/> keeps. Only ratios matter, so this just keeps sums finite.</summary>
+        public const float MaxMass = 1.0e6f;
 
         /// <summary>The same defaults as the Rust crate.</summary>
         public static JiggleParams Default()
@@ -66,6 +74,7 @@ namespace MidManStudio.AllThingsJiggle
             p.IgnoreRootMotion = 0.0f;
             p.WindResponse = 1.0f;
             p.ImpulseResponse = 1.0f;
+            p.Mass = 0.0f;
             p.AngleLimited = false;
             p.Collide = false;
             p.SegmentCollision = false;
@@ -126,6 +135,7 @@ namespace MidManStudio.AllThingsJiggle
             d.IgnoreRootMotion = Clamp01(IgnoreRootMotion);
             d.WindResponse = WindResponse;
             d.ImpulseResponse = ImpulseResponse;
+            d.Mass = Mass > MaxMass ? MaxMass : (Mass > 0.0f ? Mass : 0.0f);
             return d;
         }
 

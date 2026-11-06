@@ -54,7 +54,11 @@ namespace MidManStudio.AllThingsJiggle
         [FieldOffset(68)] public float WindResponse;
         /// <summary>Multiplier on impulse fields.</summary>
         [FieldOffset(72)] public float ImpulseResponse;
-        [FieldOffset(76)] public float Reserved2;
+        /// <summary>
+        /// Relative mass for two way coupling. 0 keeps the link to the parent one way. A link is coupled only when
+        /// this particle and its parent both have a mass above 0 and neither is kinematic.
+        /// </summary>
+        [FieldOffset(76)] public float Mass;
     }
 
     /// <summary>The simulated state of one particle, relative to the rig anchor of the last step.</summary>
@@ -144,7 +148,11 @@ namespace MidManStudio.AllThingsJiggle
         [FieldOffset(40)] public uint SleepFrames;
         /// <summary>A sleeping rig wakes when the anchor or the pose moves farther than this in one frame, in meters.</summary>
         [FieldOffset(44)] public float WakeMotion;
-        [FieldOffset(48)] public float Reserved0;
+        /// <summary>
+        /// Passes of the two way coupling in each step, 1 to <see cref="JiggleConst.MaxCouplingPasses"/>. 0 counts
+        /// as 1, more than the maximum counts as the maximum. Rigs without coupled links ignore it.
+        /// </summary>
+        [FieldOffset(48)] public uint CouplingPasses;
         [FieldOffset(52)] public float Reserved1;
         [FieldOffset(56)] public float Reserved2;
         [FieldOffset(60)] public float Reserved3;

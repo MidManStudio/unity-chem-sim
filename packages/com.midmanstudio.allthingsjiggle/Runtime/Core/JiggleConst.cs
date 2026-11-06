@@ -13,6 +13,16 @@ namespace MidManStudio.AllThingsJiggle
         /// <summary>Largest particle count of one rig, anchor and virtual end particles included.</summary>
         public const int MaxParticles = 128;
 
+        /// <summary>Most coupling passes one step runs, see <see cref="JiggleStepConfig.CouplingPasses"/>.</summary>
+        public const uint MaxCouplingPasses = 16;
+
+        /// <summary>
+        /// Largest mass ratio between a particle and its parent that the coupling uses. A link whose masses differ
+        /// more is split as if they differed by exactly this much. Position based solvers become erratic well
+        /// beyond it: a pinned strand stays smooth to about 64 to 1, a soft one starts to ring past 32 to 1.
+        /// </summary>
+        public const float MaxMassRatio = 16.0f;
+
         /// <summary>Particle flag: follows the pose exactly, never simulated. Particle 0 always has it.</summary>
         public const uint FlagKinematic = 1;
         /// <summary>Particle flag: its parent is the anchor, so the root spring holds it to the pose.</summary>
@@ -87,6 +97,6 @@ namespace MidManStudio.AllThingsJiggle
         public const int KindSolverArgs = 8;
 
         /// <summary>The native interface version this code was written against.</summary>
-        public const int ExpectedAbiVersion = 1;
+        public const int ExpectedAbiVersion = 2;
     }
 }

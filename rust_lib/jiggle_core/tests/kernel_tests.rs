@@ -923,3 +923,249 @@ fn tip_scale_sets_the_virtual_tip_distance_and_only_the_last_bones_turn() {
     let rig = w.add_chain_with_tip(&hang, &[p; 2], f32::NAN);
     assert_eq!(w.tip_scale[rig], 1.0);
 }
+
+// -------------------------------------------------------- two way coupling
+
+fn coupled_params(mass: f32) -> AuthoringParams {
+    AuthoringParams { stiffness: 0.3, stretch: 0.0, drag: 0.1, root_stretch: 0.5, mass, ..AuthoringParams::default() }
+}
+
+fn state_bits(w: &World) -> Vec<u32> {
+    let mut bits = Vec::new();
+    for s in &w.state {
+        for v in s.pos.iter().chain(s.prev.iter()) {
+            bits.push(v.to_bits());
+        }
+    }
+    bits
+}
+
+/// Runs a jerky pose for a number of frames, so every part of the solver has something to do.
+fn run_jerky(w: &mut World, rig: usize, rest: &[V3], frames: usize) {
+    for f in 0..frames {
+        let dz = ((f as f32) * 0.21).sin() * 0.08;
+        let dy = ((f as f32) * 0.13).cos() * 0.05;
+        let pose: Vec<V3> = rest.iter().map(|q| *q + V3::new(0.0, dy, dz)).collect();
+        w.set_pose(rig, &pose, None);
+        w.step_fixed(1).unwrap();
+    }
+}
+
+#[test]
+fn without_masses_the_pass_count_changes_nothing() {
+    let (mut a, ra, rest) = world_with(4, coupled_params(0.0));
+    let (mut b, rb, _) = world_with(4, coupled_params(0.0));
+    b.cfg.coupling_passes = 7;
+    run_jerky(&mut a, ra, &rest, 90);
+    run_jerky(&mut b, rb, &rest, 90);
+    assert_eq!(state_bits(&a), state_bits(&b));
+}
+
+#[test]
+fn zero_and_huge_pass_counts_are_clamped() {
+    let run = |passes: u32| {
+        let (mut w, rig, rest) = world_with(4, coupled_params(1.0));
+        w.cfg.coupling_passes = passes;
+        run_jerky(&mut w, rig, &rest, 60);
+        state_bits(&w)
+    };
+    assert_eq!(run(0), run(1));
+    assert_eq!(run(u32::MAX), run(MAX_COUPLING_PASSES));
+    assert_ne!(run(1), run(MAX_COUPLING_PASSES), "the passes should matter for a coupled rig");
+}
+
+#[test]
+fn a_correction_is_shared_by_mass_and_the_momentum_of_the_link_is_zero() {
+    for (ma, mb) in [(1.0f32, 1.0f32), (1.0, 4.0), (4.0, 1.0), (1.0, 100.0), (100.0, 1.0)] {
+        let p = AuthoringParams { stiffness: 0.5, stretch: 0.0, drag: 0.0, root_stretch: 1.0, ..AuthoringParams::default() };
+        let (mut w, rig, rest) = world_with(2, p);
+        w.cfg.gravity = [0.0; 3];
+        // Particles: 0 anchor, 1 and 2 the bones, 3 the virtual end. Only the link between 1 and 2 is coupled.
+        w.set_mass(rig, 1, ma);
+        w.set_mass(rig, 2, mb);
+        w.set_mass(rig, 3, 0.0);
+        let off = w.rigs[rig].particle_offset as usize;
+        w.state[off + 2].pos[1] += 0.05;
+        w.state[off + 2].prev[1] += 0.05;
+        let a0 = state_pos(&w, rig, 1);
+        let b0 = state_pos(&w, rig, 2);
+        run_frames(&mut w, rig, &rest, 1);
+        let da = state_pos(&w, rig, 1) - a0;
+        let db = state_pos(&w, rig, 2) - b0;
+        assert!(db.length() > 1e-4, "the displaced bone should be pulled back ({}, {})", ma, mb);
+        assert!(da.length() > 1e-6, "the parent should take a share ({}, {})", ma, mb);
+        // A ratio beyond the cap is split as the cap.
+        let (ea, eb) = (ma.min(mb * MAX_MASS_RATIO), mb.min(ma * MAX_MASS_RATIO));
+        let momentum = da * ea + db * eb;
+        assert!(momentum.length() < 1e-5 * (ea + eb), "momentum {:?} for masses ({}, {})", momentum, ma, mb);
+        // The heavier side moves less.
+        if ea > eb {
+            assert!(da.length() < db.length());
+        } else if eb > ea {
+            assert!(db.length() < da.length());
+        }
+        // The shares are exactly the capped masses', so the pair moves by the same total as with no cap.
+        let share_of_parent = da.length() / (da.length() + db.length());
+        assert!((share_of_parent - eb / (ea + eb)).abs() < 1e-4, "parent share {} for masses ({}, {})", share_of_parent, ma, mb);
+    }
+}
+
+#[test]
+fn a_weight_on_the_tip_sags_the_chain_and_makes_the_real_bones_depend_on_it() {
+    let run = |tip_mass: f32, bone_mass: f32| {
+        let (mut w, rig, rest) = world_with(4, coupled_params(bone_mass));
+        w.set_mass(rig, 5, tip_mass);
+        w.cfg.coupling_passes = 2;
+        run_frames(&mut w, rig, &rest, 400);
+        (2..=4).map(|i| w.world_pos(rig, i).y).collect::<Vec<f32>>()
+    };
+    let one_way = run(0.0, 0.0);
+    let light = run(1.0, 1.0);
+    let heavy = run(40.0, 1.0);
+    for i in 0..3 {
+        assert!(heavy[i] < light[i] - 0.001, "bone {}: heavy {} light {}", i + 2, heavy[i], light[i]);
+        assert!(light[i] < one_way[i] + 1e-6, "bone {}: light {} one way {}", i + 2, light[i], one_way[i]);
+    }
+    assert!(heavy[2] < one_way[2] - 0.004, "the tip weight should sag the last bone: {} against {}", heavy[2], one_way[2]);
+}
+
+#[test]
+fn a_coupled_rig_stays_finite_with_extreme_mass_ratios() {
+    for passes in [1u32, 3, MAX_COUPLING_PASSES] {
+        let p = AuthoringParams { stiffness: 0.4, stretch: 0.3, drag: 0.05, root_stretch: 0.6, ..AuthoringParams::default() };
+        let rest = chain_x(8);
+        let mut w = World::new();
+        let rig = w.add_chain(&rest, &vec![p; 8]);
+        for i in 1..=9 {
+            w.set_mass(rig, i, if i % 2 == 0 { 1.0e-3 } else { 1.0e3 });
+        }
+        w.fields.push(Field { kind: FIELD_DIRECTIONAL, dir: [0.2, 0.3, 1.0, 0.9], strength: 12.0, turbulence: 0.7, frequency: 2.0, ..Field::default() });
+        w.cfg.coupling_passes = passes;
+        run_jerky(&mut w, rig, &rest, 600);
+        let off = w.rigs[rig].particle_offset as usize;
+        for i in 0..10 {
+            let pos = V3::from4(&w.state[off + i].pos);
+            assert!(pos.is_finite(), "particle {} is not finite with {} passes", i, passes);
+            // The same chain with no masses reaches about 2.6 under this wind. The cap on the mass ratio
+            // keeps a million to one pattern within a few times that.
+            assert!(pos.length() < 12.0, "particle {} flew to {:?} with {} passes", i, pos, passes);
+        }
+        // The anchor particle is never moved by its children.
+        assert_eq!(V3::from4(&w.state[off].pos), V3::from4(&w.pose_curr[off]));
+    }
+}
+
+#[test]
+fn more_passes_hold_the_bone_length_better_under_a_heavy_tip() {
+    let error = |passes: u32| {
+        let p = AuthoringParams { stiffness: 0.3, stretch: 0.5, drag: 0.1, root_stretch: 0.5, mass: 1.0, ..AuthoringParams::default() };
+        let rest = chain_x(5);
+        let mut w = World::new();
+        let rig = w.add_chain(&rest, &vec![p; 5]);
+        w.set_mass(rig, 6, 30.0);
+        w.cfg.coupling_passes = passes;
+        run_frames(&mut w, rig, &rest, 300);
+        let mut err = 0.0f32;
+        for i in 2..=5 {
+            let len = (w.world_pos(rig, i) - w.world_pos(rig, i - 1)).length();
+            err += (len - BONE).abs();
+        }
+        err
+    };
+    let one = error(1);
+    let eight = error(8);
+    assert!(eight < one * 0.8, "length error with 1 pass {} and with 8 passes {}", one, eight);
+}
+
+#[test]
+fn a_coupled_parent_is_never_left_inside_a_collider() {
+    for passes in [1u32, 4] {
+        let p = AuthoringParams {
+            stiffness: 0.2,
+            stretch: 0.2,
+            drag: 0.05,
+            root_stretch: 0.5,
+            mass: 1.0,
+            collide: true,
+            collision_radius: 0.02,
+            segment_collision: true,
+            ..AuthoringParams::default()
+        };
+        let rest: Vec<V3> = (0..=4).map(|i| V3::new(0.0, -(i as f32) * 0.1, 0.0)).collect();
+        let mut w = World::new();
+        let rig = w.add_chain(&rest, &vec![p; 4]);
+        w.set_mass(rig, 4, 25.0);
+        w.colliders.push(Collider { kind: COLLIDER_PLANE, center: [0.0, -0.25, 0.0, 0.0], axis: [0.0, 1.0, 0.0, 0.0], ..Collider::default() });
+        w.set_collider_list(rig, &[0]);
+        w.cfg.coupling_passes = passes;
+        let mut lowest = f32::MAX;
+        for f in 0..300 {
+            let dx = ((f as f32) * 0.2).sin() * 0.1;
+            let pose: Vec<V3> = rest.iter().map(|q| *q + V3::new(dx, 0.0, 0.0)).collect();
+            w.set_pose(rig, &pose, None);
+            w.step_fixed(1).unwrap();
+            for i in 1..=4 {
+                let y = w.world_pos(rig, i).y;
+                lowest = lowest.min(y);
+                assert!(y >= -0.25 + 0.02 - 1e-4, "frame {} particle {} is inside the plane at y {} with {} passes", f, i, y, passes);
+            }
+        }
+        assert!(lowest < -0.2, "the chain should have reached the plane, lowest y {}", lowest);
+    }
+}
+
+#[test]
+fn coupled_rigs_fall_asleep_wake_and_snap_like_one_way_rigs() {
+    let (mut w, rig, rest) = world_with(3, coupled_params(1.0));
+    w.set_mass(rig, 4, 5.0);
+    w.cfg.gravity = [0.0; 3];
+    w.cfg.sleep_frames = 10;
+    w.cfg.coupling_passes = 3;
+    let off = w.rigs[rig].particle_offset as usize;
+    w.state[off + 3].pos[2] = 0.003;
+    run_frames(&mut w, rig, &rest, 400);
+    assert!(w.rigs[rig].flags & RIG_ASLEEP != 0, "the coupled rig should fall asleep, counter {}", w.rigs[rig].sleep_counter);
+    let mut moved = rest.clone();
+    for p in moved.iter_mut() {
+        p.y += 0.1;
+    }
+    w.set_pose(rig, &moved, None);
+    w.step_fixed(1).unwrap();
+    assert!(w.rigs[rig].flags & RIG_ASLEEP == 0, "a big anchor move should wake it");
+    // A reset snaps every particle to the pose and clears the flag.
+    w.state[off + 2].pos[1] += 0.2;
+    w.rigs[rig].flags |= RIG_RESET;
+    w.set_pose(rig, &rest, None);
+    w.step_fixed(1).unwrap();
+    assert_eq!(w.rigs[rig].flags & RIG_RESET, 0);
+    for i in 0..5 {
+        assert!(near(state_pos(&w, rig, i), V3::from4(&w.pose_curr[off + i]), 1e-6), "particle {} was not snapped", i);
+    }
+}
+
+#[test]
+fn coupled_and_one_way_rigs_do_not_affect_each_other() {
+    let rest = chain_x(3);
+    let mut both = World::new();
+    let one_way = both.add_chain(&rest, &[coupled_params(0.0); 3]);
+    let coupled = both.add_chain(&rest, &[coupled_params(2.0); 3]);
+    let mut only_one_way = World::new();
+    let alone = only_one_way.add_chain(&rest, &[coupled_params(0.0); 3]);
+    both.cfg.coupling_passes = 4;
+    only_one_way.cfg.coupling_passes = 4;
+    for f in 0..90 {
+        let dz = ((f as f32) * 0.21).sin() * 0.08;
+        let pose: Vec<V3> = rest.iter().map(|q| *q + V3::new(0.0, 0.0, dz)).collect();
+        both.set_pose(one_way, &pose, None);
+        both.set_pose(coupled, &pose, None);
+        only_one_way.set_pose(alone, &pose, None);
+        both.step_fixed(1).unwrap();
+        only_one_way.step_fixed(1).unwrap();
+    }
+    let n = both.rigs[one_way].particle_count as usize;
+    let a = both.rigs[one_way].particle_offset as usize;
+    for i in 0..n {
+        assert_eq!(both.state[a + i], only_one_way.state[i], "the one way rig changed at particle {}", i);
+    }
+    assert_ne!(both.state[a + 2].pos, both.state[both.rigs[coupled].particle_offset as usize + 2].pos);
+}

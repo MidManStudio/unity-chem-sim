@@ -5,7 +5,8 @@ jiggle physics for chains of bones: hair, tails, ears, strips of cloth, chests.
 A rig is a chain of particles, one per bone, hanging from an anchor that the
 animation moves. The solver keeps every particle near the pose the animation
 gives, lets it lag, swing and bounce, and gives back a position and a rotation
-for every bone.
+for every bone. A particle that has a mass can also pull its parent back, so a
+weight hung on a strand drags the whole strand down (two way coupling, below).
 
 The crate has no dependencies. It works on flat arrays that the host owns, so
 the same memory can go to the scalar Rust kernel, to the managed C# kernel in
@@ -53,7 +54,13 @@ same sum itself. Each fixed step does this for one rig:
    pose position by the root spring. Any other particle is pulled toward the
    pose of its bone as seen from the parent's current orientation, restored
    to its pose length, kept inside the angle limit cone if it has one, and
-   pushed out of colliders last, so nothing can push it back in.
+   pushed out of colliders last, so nothing can push it back in. On a link
+   where both particles have a mass, the correction is shared by mass and the
+   parent takes its share in the opposite direction.
+   3b. Only for a rig with at least one coupled link: `coupling_passes - 1` more
+   sweeps that restore length and angle limit on the coupled links, then one
+   more collision sweep, so a parent that took a share of a correction cannot
+   end up inside a collider.
 4. Store the new state. A non finite value falls back to the pose.
 
 After the steps, a rig that stayed within `sleep_deviation` of its pose and under
@@ -109,6 +116,12 @@ target.
 | `Field` | 64 | Kind, mode, power, center, direction, radius, strength, gusts |
 | `ParticleOut` | 32 | Output position and rotation |
 | `SolverArgs` | 112 | Ten 64 bit addresses and five counts |
+
+Two fields were added for two way coupling by taking reserved slots, so no size
+changed: `ParticleDef.mass` (offset 76, was `reserved2`) and
+`StepConfig.coupling_passes` (offset 48, was `reserved0`, which left three
+reserved floats). That changes what the records mean, so the interface version is
+2. `MAX_COUPLING_PASSES` is 16 and `MAX_MASS_RATIO` is 16.
 
 Particle flags are kinematic, root, virtual, angle limit, collide and segment.
 Rig flags are disabled, asleep and reset. Collider kinds are sphere, capsule,
@@ -172,6 +185,7 @@ once per rig:
 | `angle_limit` | `limit_cos` and `limit_sin` of angle_limit times 90 degrees |
 | `drag`, `air_drag`, `blend`, `ignore_root_motion` | clamped to 0 to 1 |
 | `collision_radius` | clamped to 0 or more |
+| `mass` | 0 for none (also for a negative or NaN value), at most `MAX_MASS` (1e6) |
 | `gravity`, `wind_response`, `impulse_response` | passed through |
 
 `anchor_def` is the definition of particle 0: kinematic, no parent. The squares
@@ -205,9 +219,40 @@ direction of its children in the pose to their direction in the simulation, scal
 toward the identity by `blend`. Kinematic particles, particles without children,
 and sleeping or disabled rigs output the pose.
 
-The solver is one way. A particle is pulled by its parent and never pulls it back,
-and there are no masses. That is why the virtual end particle cannot make the
-real bones swing slower. See Known limits.
+### Two way coupling
+
+A link is the pair of a particle and its parent. It is coupled when both have a
+mass above 0, neither is kinematic and the particle is not a root particle (a root
+is held to its pose by the root spring, not by a link). Every other link is one
+way: the particle is pulled by its parent and never pulls it back. A rig with no
+masses runs exactly the one way solver, bit for bit, and the pass count changes
+nothing for it.
+
+`link_shares` gives the two shares of a coupled link: the child takes
+`parent_mass / (parent_mass + own_mass)` of a correction and the parent takes
+`own_mass / (parent_mass + own_mass)` of it in the opposite direction. The heavier
+side moves less, and the mass weighted sum of the two moves is zero, so a link
+correction never pushes the pair's center of mass. Before the shares are taken a
+ratio beyond `MAX_MASS_RATIO` (16) counts as exactly 16. A sum that is not finite
+makes the link one way.
+
+Pass 1 is the parent first sweep itself. After the shape, length and angle limit
+corrections of a coupled particle, the correction is split: the particle keeps its
+share and the parent is moved by its share, and the parent's orientation for its
+other children is recomputed. Passes 2 up to `coupling_passes` repeat only the
+length and angle limit of the coupled links, since the shape pull is applied once
+per step, and recompute the orientations after each link. `coupling_passes` is
+clamped to 1 to 16, and 0 counts as 1. A last collision sweep runs on rigs with a
+coupled link, because a parent that is moved after its own collision test could be
+left inside a collider.
+
+The virtual end particle takes the mass of the last bone when it is baked.
+`World::set_mass` gives any real particle or the tip a mass of its own, and a
+heavy tip is how a weight hung on a hair strand is made.
+
+The operation order of `hold_link`, `collide_particle`, `aim_rot` and the sweeps is
+the one the C# kernel copies, with no fused multiply add, so both languages give
+the same bits.
 
 ## solver.rs
 
@@ -231,8 +276,13 @@ solver.
 `add_chain_with_tip` takes the rest pose of a chain with the anchor first. It adds
 the virtual end particle `tip_scale` bone lengths past the last bone. A bad scale
 falls back to 1. The scale changes only how far the last bone turns for a sideways
-motion of its end: shorter turns it more, longer turns it less. It does not change
-where any real bone goes.
+motion of its end: shorter turns it more, longer turns it less. With no masses it
+does not change where any real bone goes. With masses the tip takes the mass of the
+last bone and `set_mass` can make it heavier, and then it does pull the strand.
+
+`set_mass(rig, particle, mass)` sets the mass of one particle, counted in the rig:
+1 is the first bone and the last index is the tip. It asserts the index is a real
+particle (not the anchor) and clamps the value to `MAX_MASS`.
 
 `step` is the accumulator. A frame time that is not finite or is negative counts as
 0. The step count is `(accumulator / fixed_dt + 1e-4)` truncated, so a frame time that
@@ -247,7 +297,7 @@ The C interface Unity calls. Seven functions, all prefixed `jgl_`:
 
 | Function | What it does |
 | --- | --- |
-| `jgl_abi_version` | Interface version, 1 now. The host compares it with the one it was written for |
+| `jgl_abi_version` | Interface version, 2 now (1 before two way coupling). The host compares it with the one it was written for |
 | `jgl_library_version` | Crate version as text, like `snprintf` |
 | `jgl_last_error` | Text of the last failure on the calling thread |
 | `jgl_struct_size` | Size of a record by kind number, 0 for an unknown kind |
@@ -280,7 +330,7 @@ offset is added.
 
 ## tests/kernel_tests.rs
 
-47 behavior tests of the kernel through `World`: stability over many steps,
+56 behavior tests of the kernel through `World`: stability over many steps,
 gravity direction, stiffness ordering, bone lengths with and without stretch, jerk
 decay, drag and air drag, the angle limit bound, determinism, every collider kind
 and the segment test, fields and gusts, impulses once per frame, sleep and wake,
@@ -288,6 +338,15 @@ teleport, reset and disabled rigs, the zero step path, `ignore_root_motion`, the
 resolve rotation with blend and alpha, NaN sanitising, the largest rig, many steps
 per frame, the accumulator, the solver errors, rig isolation and the `tip_scale`
 effect.
+
+Nine of them cover the coupling: no masses means the pass count changes nothing,
+zero and huge pass counts are clamped, a correction is shared by mass and the
+mass weighted move of a link is zero, a weight on the tip sags the chain and makes
+the real bones depend on it, extreme mass ratios stay finite, more passes hold the
+bone length better under a heavy tip, a coupled parent is never left inside a
+collider, coupled rigs sleep, wake and snap like one way rigs, and coupled and one
+way rigs in one world do not affect each other. Unit tests of `link_shares` sit in
+`kernel.rs` (the ratio cap, infinities, NaN, negatives, overflow).
 
 ## tests/ffi_tests.rs
 
@@ -311,25 +370,43 @@ fails one of the two tests.
 A second test checks that the scene does what it claims: the sleeper sleeps and
 wakes, and turning the colliders or the fields off changes the hash.
 
+There is a second scene, the same one with masses: every rig but rig 1 gets a mass
+of `1 + 0.5 * bone` on bone `bone` and `3 + rig` on the tip, and the world runs three
+coupling passes. Rig 1 stays one way so the scene shows both kinds side by side. The
+first scene has no masses, so its hash did not move when the coupling was added; that
+is the proof the one way solver is unchanged. The coupled hash is `GOLDEN_COUPLED`,
+asserted by the same test pair in C# (`CoupledGoldenSceneMatchesTheRustWorld`). Its
+tests also check that the masses, the colliders, the fields and the pass count each
+change the hash. No mass of the scene is more than 16 times its neighbour's, so the
+ratio cap is covered by the random scenes and unit tests instead.
+
 The scene sets the angle limit cosine and sine to fixed literals after baking. The
 bake uses `cos` and `sin`, which the Rust standard library and the .NET runtime may
 round differently in the last bit.
 
-When a deliberate change to the solver moves the hash, update `GOLDEN` here and
-`Golden` in `JiggleParityTests.cs` together, after the other parity tests agree.
+When a deliberate change to the solver moves a hash, update `GOLDEN` or
+`GOLDEN_COUPLED` here and `Golden` or `GoldenCoupled` in `JiggleParityTests.cs`
+together, after the other parity tests agree.
 
 ## benches/step_bench.rs
 
 A plain timing harness with no dependencies. Run it with
 `cargo bench -p jiggle_core --bench step_bench`. It builds rigs, steps them for 200
 frames of one fixed step each and prints microseconds per rig step, pose upload
-included. Numbers from one local run, on shared hardware, release profile:
+included. The last two rows give every bone a mass, which turns on the coupling,
+at one and at three passes. Numbers from one local run, on shared hardware,
+release profile:
 
-| Rigs | Bones | Per rig step |
-| --- | --- | --- |
-| 100 | 6 | 1.5 us |
-| 600 | 6 | 1.7 us |
-| 600 | 12 | 2.7 us |
+| Rigs | Bones | Solver | Per rig step |
+| --- | --- | --- | --- |
+| 100 | 6 | one way | 1.6 us |
+| 600 | 6 | one way | 1.6 us |
+| 600 | 12 | one way | 2.5 us |
+| 600 | 6 | coupled, 1 pass | 1.6 us |
+| 600 | 6 | coupled, 3 passes | 2.3 us |
+
+The bench has no colliders, so the extra collision sweep of coupled rigs is not in
+these numbers.
 
 Read them as a size of the cost, not as a promise. The CI bench job writes the same
 table into the job summary.
@@ -386,15 +463,26 @@ What the game's own runtime solution does is unknown. We only saw a conversion.
 | `.github/workflows/jiggle-core.yml` | `test` builds all targets, runs the tests and doc tests, shows clippy lints and builds the docs with broken links as errors. `ffi` builds the release library, counts the `jgl_` exports with `nm` and runs the C# package against it as a plain .NET 8 program. `floor` copies the crate into a workspace of its own and runs the tests on Rust 1.75.0. `bench` is manual |
 | `.github/workflows/build-jiggle-rust-libs.yml` | Builds the library for macOS (universal), Windows, Linux, Android (three ABIs), iOS (device and simulator) and WebGL, and commits them with generated `.meta` files into `packages/com.midmanstudio.allthingsjiggle/Runtime/Plugins/Native` |
 
+The ABI bump to 2 makes the plugin binaries already committed under `Runtime/Plugins/Native`
+stale: a package with the new C# and the old binaries fails `JiggleLibrary.Verify` until the
+build workflow has rebuilt them, which it does on the push that changes `rust_lib/jiggle_core`.
+
 No root level scripts are used by these workflows. The build workflow is a port of
 `build-nuclear-rust-libs.yml`, and like it can only be verified by its first run on
 GitHub. The `ffi` job is the proof that the C# bindings and the library agree.
 
 ## Known limits
 
-- The solver is one way. A child never pulls its parent, and there are no mass
-  ratios. Heavy swing is made with parameters, not with a weight at the tip.
-  Two way coupling is a possible later extension.
+- Two way coupling is opt in per particle and local to one link. It is not a full
+  constraint solver: the passes are Gauss-Seidel sweeps over the links, so a long
+  strand with a heavy tip converges slowly and one pass leaves the strand stretched
+  (more passes hold the length better, see the test). The mass ratio between
+  neighbours is capped at 16 because a larger one made the solver unstable.
+- The shape pull (stiffness) is applied once per step, in pass 1 only. Passes 2 and
+  up do not repeat it, so a stiff heavy strand is pulled to its pose by the first
+  sweep alone.
+- Coupling has no mass for the anchor. The anchor is kinematic and a link to it is
+  always one way, so the animation is never pulled by the jiggle.
 - Segment collision is two samples, the end and the midpoint. A collider thinner
   than half a bone can slip between them.
 - There is no collider broadphase in the core. The host gives each rig a list of
@@ -428,6 +516,25 @@ GitHub. The `ffi` job is the proof that the C# bindings and the library agree.
 - The doc comment says a caught panic returns -3. In the release profile it cannot,
   because panics abort. The comment now says so, and so does Known limits.
 
+### kernel.rs
+
+- The first version of the two way coupling split every correction by the plain mass
+  ratio. The test with extreme ratios (1e-3 next to 1e3, alternating) sent a particle
+  tens of units away on one pass. I measured stability against ratio and pass count: a
+  pinned strand stayed smooth to about 64 to 1 and a soft one started to ring past
+  32 to 1. The ratio is therefore capped at 16 (`MAX_MASS_RATIO`), which leaves margin
+  on both. The stress test keeps a looser bound than the plain tests (12 units) and
+  says why in a comment.
+- An infinite mass first made the link one way, because the sum was not finite. With
+  the cap an infinite mass counts as 16 times its neighbour, so only two infinite masses
+  make the link one way. The unit tests and the momentum test were updated to the capped
+  masses.
+- Four deliberate breakages of the Rust coupling were each caught by at least one test.
+  Three more were run against the C# kernel: the sign of the parent share in passes 2
+  and up (caught by the coupled golden and the coupled random scenes), the last
+  collision sweep removed (same two tests), and the ratio cap removed (caught by the
+  coupled random scenes only, since the golden scene's masses stay inside the cap).
+
 ### solver.rs
 
 - A call over several rigs checked each rig just before running it, so a bad rig
@@ -457,11 +564,19 @@ GitHub. The `ffi` job is the proof that the C# bindings and the library agree.
   expectations and were fixed. The third found the accumulator rounding weakness
   above.
 
+### benches/step_bench.rs
+
+- The bench built its rigs with `AuthoringParams::default()` and had no coupled case,
+  so it did not show what the coupling costs. It now has two coupled rows.
+
 ### tests/golden_tests.rs
 
 - The first design of the golden scene never put rig 4 to sleep, because gravity
   and the fields kept it moving. Rig 4 now has no gravity and no field response, and
   a second test asserts that it sleeps and wakes.
+- `GOLDEN_COUPLED` was first recorded from the Rust run alone. It became final only
+  when the C# managed kernel, written separately from the Rust code, reproduced it
+  bit for bit.
 
 ### lib.rs
 

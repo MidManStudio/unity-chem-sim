@@ -261,6 +261,8 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             Segments = 4,
             Sleep = 8,
             All = 15,
+            // Masses and extra passes. Kept out of All so the draws of the older scenes do not move.
+            Coupled = 16,
         }
 
         /// <summary>
@@ -312,6 +314,11 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
                 w.Cfg.SleepSpeed = 0.01f;
                 w.Cfg.SleepDeviation = 0.5f;
                 w.Cfg.WakeMotion = 0.005f;
+            }
+            if ((mix & Mix.Coupled) != 0)
+            {
+                // 0 and a count past the maximum are both clamped by the solver, so the scenes use them too.
+                w.Cfg.CouplingPasses = rng.B(0.1f) ? 40u : (uint)rng.I(6);
             }
 
             if ((mix & Mix.Colliders) != 0)
@@ -410,9 +417,19 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
                     p.AngleLimited = rng.B(0.4f);
                     p.Collide = (mix & Mix.Colliders) != 0 && rng.B(0.8f);
                     p.SegmentCollision = (mix & Mix.Segments) != 0 && rng.B(0.5f);
+                    if ((mix & Mix.Coupled) != 0)
+                    {
+                        // Some bones stay one way, some are far heavier than their neighbours (past the ratio cap).
+                        p.Mass = rng.B(0.15f) ? 0.0f : (rng.B(0.1f) ? rng.R(50.0f, 500.0f) : rng.R(0.2f, 5.0f));
+                    }
                     ps[b] = p;
                 }
                 int rig = w.AddChain(rest, ps, rng.R(0.5f, 3.0f));
+                if ((mix & Mix.Coupled) != 0 && rng.B(0.5f))
+                {
+                    // A weight on the virtual end.
+                    w.SetMass(rig, bones + 1, rng.R(0.5f, 20.0f));
+                }
                 if (w.Colliders.Length > 0)
                 {
                     int n = rng.I(5);
@@ -574,6 +591,28 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             // The scenes must have used the sleep path and the wake path, or the comparison proves less than it claims.
             Assert.IsTrue(sawAsleep, "no rig ever fell asleep");
             Assert.IsTrue(sawWake, "no sleeping rig ever woke up");
+        }
+
+        [Test]
+        public void ManagedAndNativeAgreeOnCoupledScenes()
+        {
+            Mix[] mixes =
+            {
+                Mix.All | Mix.Coupled, Mix.Colliders | Mix.Segments | Mix.Coupled, Mix.Fields | Mix.Coupled, Mix.Coupled,
+            };
+            bool sawAsleep = false;
+            bool sawWake = false;
+            for (uint seed = 1; seed <= 8; seed++)
+            {
+                for (int m = 0; m < mixes.Length; m++)
+                {
+                    Mix mix = mixes[m] | Mix.Sleep;
+                    Scene s = BuildScene(seed * 31u + (uint)m, 3 + (int)seed * 3, mix, 10);
+                    RunScene(s, 90, seed * 31u + (uint)m, ref sawAsleep, ref sawWake);
+                }
+            }
+            Assert.IsTrue(sawAsleep, "no coupled rig ever fell asleep");
+            Assert.IsTrue(sawWake, "no sleeping coupled rig ever woke up");
         }
 
         [Test]
@@ -1207,6 +1246,9 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
         /// <summary>The hash of the golden scene. Keep in sync with GOLDEN in rust_lib/jiggle_core/tests/golden_tests.rs.</summary>
         private const ulong Golden = 0xbd735dd528713541UL;
 
+        /// <summary>The hash of the coupled golden scene. Keep in sync with GOLDEN_COUPLED in rust_lib/jiggle_core/tests/golden_tests.rs.</summary>
+        private const ulong GoldenCoupled = 0x86c07fa5cdc256e4UL;
+
         private sealed class Lcg
         {
             private uint s;
@@ -1275,7 +1317,7 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
         private const int GoldenRigs = 6;
         private const int GoldenFrames = 120;
 
-        private static JiggleWorld BuildGolden(out JVec3[][] rests)
+        private static JiggleWorld BuildGolden(bool coupled, out JVec3[][] rests)
         {
             Lcg rng = new Lcg(20261105);
             JiggleWorld w = new JiggleWorld();
@@ -1283,6 +1325,10 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             w.Cfg.SleepDeviation = 0.05f;
             w.Cfg.SleepFrames = 6;
             w.Cfg.WakeMotion = 0.01f;
+            if (coupled)
+            {
+                w.Cfg.CouplingPasses = 3;
+            }
 
             w.AddCollider(Sphere(0.4f, 0.55f, 0.0f, 0.12f));
             JiggleCollider cap = new JiggleCollider();
@@ -1391,6 +1437,16 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
                         w.Defs[i].LimitSin = 0.6f;
                     }
                 }
+                if (coupled && r != 1)
+                {
+                    // Rig 1 stays one way. The others get a mass that grows down the strand and a heavier virtual end.
+                    // No mass is more than 16 times its neighbour's, so the cap on the ratio is not what the scene tests.
+                    for (int b = 1; b <= bones; b++)
+                    {
+                        w.SetMass(rig, b, 1.0f + 0.5f * (float)b);
+                    }
+                    w.SetMass(rig, bones + 1, 3.0f + (float)r);
+                }
                 uint[] list = r % 2 == 0 ? new uint[] { 0, 1, 2, 3, 4 } : new uint[] { 0, 2, 4 };
                 w.SetColliderList(rig, list);
                 rests[r] = rest;
@@ -1468,10 +1524,14 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             public bool AwakeAfterSleep;
         }
 
-        private static GoldenRun RunGolden(bool colliders, bool fields, JiggleBackend backend)
+        private static GoldenRun RunGolden(bool colliders, bool fields, JiggleBackend backend, bool coupled = false, uint passes = 0)
         {
             JVec3[][] rests;
-            JiggleWorld w = BuildGolden(out rests);
+            JiggleWorld w = BuildGolden(coupled, out rests);
+            if (passes != 0)
+            {
+                w.Cfg.CouplingPasses = passes;
+            }
             if (!colliders)
             {
                 for (int i = 0; i < w.Rigs.Length; i++)
@@ -1545,6 +1605,65 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             Assert.IsTrue(full.AwakeAfterSleep, "rig 4 never woke up");
             Assert.AreNotEqual(RunGolden(false, true, JiggleBackend.Managed).Hash, full.Hash);
             Assert.AreNotEqual(RunGolden(true, false, JiggleBackend.Managed).Hash, full.Hash);
+        }
+
+        [Test]
+        public void CoupledGoldenSceneMatchesTheRustWorld()
+        {
+            GoldenRun managed = RunGolden(true, true, JiggleBackend.Managed, true);
+            GoldenRun native = RunGolden(true, true, JiggleBackend.Native, true);
+            Assert.AreEqual(native.Hash, managed.Hash, "managed and native hashes of the coupled golden scene");
+            Assert.AreEqual(GoldenCoupled, managed.Hash, "the coupled golden hash is now 0x" + managed.Hash.ToString("x16"));
+        }
+
+        [Test]
+        public void CoupledGoldenSceneExercisesWhatItClaims()
+        {
+            GoldenRun oneWay = RunGolden(true, true, JiggleBackend.Managed);
+            GoldenRun coupled = RunGolden(true, true, JiggleBackend.Managed, true);
+            Assert.AreNotEqual(oneWay.Hash, coupled.Hash, "the masses changed nothing");
+            Assert.AreNotEqual(RunGolden(false, true, JiggleBackend.Managed, true).Hash, coupled.Hash);
+            Assert.AreNotEqual(RunGolden(true, false, JiggleBackend.Managed, true).Hash, coupled.Hash);
+            Assert.AreNotEqual(RunGolden(true, true, JiggleBackend.Managed, true, 1).Hash, coupled.Hash, "the pass count changed nothing");
+            Assert.Greater(coupled.AsleepFrames, 10, "rig 4 never slept");
+            Assert.IsTrue(coupled.AwakeAfterSleep, "rig 4 never woke up");
+        }
+
+        [Test]
+        public void WithoutMassesThePassCountChangesNothing()
+        {
+            // The one way scene must give the same hash at any pass count, including 0 and one past the maximum.
+            ulong reference = RunGolden(true, true, JiggleBackend.Managed).Hash;
+            Assert.AreEqual(reference, RunGolden(true, true, JiggleBackend.Managed, false, 1).Hash);
+            Assert.AreEqual(reference, RunGolden(true, true, JiggleBackend.Managed, false, 7).Hash);
+            Assert.AreEqual(reference, RunGolden(true, true, JiggleBackend.Managed, false, 1000).Hash);
+        }
+
+        [Test]
+        public void MassIsBakedClampedAndSetOnlyOnRealParticles()
+        {
+            JiggleParams p = JiggleParams.Default();
+            Assert.AreEqual(0.0, p.Bake(0, 0).Mass, 0.0, "the default is one way");
+            p.Mass = 2.5f;
+            Assert.AreEqual(2.5, p.Bake(0, 0).Mass, 0.0);
+            p.Mass = -4.0f;
+            Assert.AreEqual(0.0, p.Bake(0, 0).Mass, 0.0, "a negative mass is one way");
+            p.Mass = float.NaN;
+            Assert.AreEqual(0.0, p.Bake(0, 0).Mass, 0.0, "NaN is one way");
+            p.Mass = float.PositiveInfinity;
+            Assert.AreEqual((double)JiggleParams.MaxMass, p.Bake(0, 0).Mass, 0.0, "infinity counts as the largest mass");
+
+            JiggleWorld w = new JiggleWorld();
+            JVec3[] rest = { new JVec3(0, 1, 0), new JVec3(0.1f, 1, 0), new JVec3(0.2f, 1, 0) };
+            JiggleParams[] ps = { JiggleParams.Default(), JiggleParams.Default() };
+            int rig = w.AddChain(rest, ps);
+            w.SetMass(rig, 1, 3.0f);
+            w.SetMass(rig, 3, 1.0e9f);
+            int off = (int)w.Rigs[rig].ParticleOffset;
+            Assert.AreEqual(3.0, w.Defs[off + 1].Mass, 0.0);
+            Assert.AreEqual((double)JiggleParams.MaxMass, w.Defs[off + 3].Mass, 0.0);
+            Assert.Throws<ArgumentException>(() => w.SetMass(rig, 0, 1.0f), "the anchor has no mass");
+            Assert.Throws<ArgumentException>(() => w.SetMass(rig, 4, 1.0f), "past the virtual end");
         }
     }
 }

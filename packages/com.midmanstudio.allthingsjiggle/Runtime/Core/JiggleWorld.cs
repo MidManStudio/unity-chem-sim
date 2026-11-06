@@ -93,8 +93,11 @@ namespace MidManStudio.AllThingsJiggle
         /// above the first bone. The others are the bones from the root down, each the child of the one before.
         /// p holds one entry per bone. A virtual end particle that continues the last bone is added, tipScale
         /// times the length of the last bone away from it. The first bone is a root particle. Returns the rig index.
-        /// The solver is one way, so the tip does not change how the real bones move. It only sets how far the last
-        /// bone turns for a given sideways motion of its end: a shorter tip turns it more, a longer one less.
+        /// A link is one way unless both of its particles have a mass (see <see cref="JiggleParams.Mass"/>): then the
+        /// child also pulls its parent back. With no masses the tip does not change how the real bones move. It only
+        /// sets how far the last bone turns for a given sideways motion of its end: a shorter tip turns it more, a
+        /// longer one less. The virtual end particle takes the mass of the last bone, and <see cref="SetMass"/> gives
+        /// it a weight of its own, which is how a weight hung on a hair strand is made.
         /// </summary>
         public int AddChain(JVec3[] restWorld, JiggleParams[] p, float tipScale = 1.0f)
         {
@@ -158,6 +161,21 @@ namespace MidManStudio.AllThingsJiggle
             Append(ref Rigs, rig);
             Append(ref TipScale, tipScale);
             return Rigs.Length - 1;
+        }
+
+        /// <summary>
+        /// Sets the mass of particle <paramref name="particle"/> of a rig, counted in the rig: 1 is the first bone
+        /// and the last index is the virtual end particle. 0 makes its links one way again.
+        /// </summary>
+        public void SetMass(int rig, int particle, float mass)
+        {
+            JiggleRig r = Rigs[rig];
+            if (particle < 1 || particle >= (int)r.ParticleCount)
+            {
+                throw new ArgumentException("the particle is outside the rig");
+            }
+            Defs[(int)r.ParticleOffset + particle].Mass =
+                mass > JiggleParams.MaxMass ? JiggleParams.MaxMass : (mass > 0.0f ? mass : 0.0f);
         }
 
         /// <summary>

@@ -80,9 +80,14 @@ namespace NUnit.Framework
 
         public static void AreNotEqual(object expected, object actual)
         {
+            AreNotEqual(expected, actual, string.Empty);
+        }
+
+        public static void AreNotEqual(object expected, object actual, string message)
+        {
             if (SameValue(expected, actual))
             {
-                Fail("expected a value different from <" + expected + ">");
+                Fail("expected a value different from <" + expected + "> " + message);
             }
         }
 
@@ -108,6 +113,11 @@ namespace NUnit.Framework
 
         public static T Throws<T>(TestDelegate code) where T : Exception
         {
+            return Throws<T>(code, string.Empty);
+        }
+
+        public static T Throws<T>(TestDelegate code, string message) where T : Exception
+        {
             try
             {
                 code();
@@ -118,9 +128,9 @@ namespace NUnit.Framework
             }
             catch (Exception e)
             {
-                Fail("expected " + typeof(T).Name + " but got " + e.GetType().Name + ": " + e.Message);
+                Fail("expected " + typeof(T).Name + " but got " + e.GetType().Name + ": " + e.Message + " " + message);
             }
-            Fail("expected " + typeof(T).Name + " but nothing was thrown");
+            Fail("expected " + typeof(T).Name + " but nothing was thrown " + message);
             return null;
         }
 

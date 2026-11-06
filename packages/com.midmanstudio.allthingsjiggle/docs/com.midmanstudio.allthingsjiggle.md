@@ -1,8 +1,9 @@
 # com.midmanstudio.allthingsjiggle
 
-All Things Jiggle is a Unity package for jiggle physics on chains of bones. This
-first drop is the core: the solver, the bindings to the Rust library and the proof
-that the two backends agree. It has no Unity components yet. The Rust half is
+All Things Jiggle is a Unity package for jiggle physics on chains of bones. It is
+still the core: the solver, the bindings to the Rust library and the proof that the
+two backends agree, now with two way coupling (a bone with a mass pulls its parent
+back). It has no Unity components yet. The Rust half is
 documented in `rust_lib/jiggle_core/docs/jiggle_core.md`, including how a frame
 runs, the records, the C interface and the known limits of the solver itself. This
 file covers the C# half.
@@ -24,8 +25,11 @@ file covers the C# half.
 
 ## Plan of the drops
 
-1. **Core (this drop).** The `jiggle_core` crate, the managed reference kernel, the
-   native bindings, the managed world and the parity tests and CI.
+1. **Core.** The `jiggle_core` crate, the managed reference kernel, the native
+   bindings, the managed world and the parity tests and CI.
+   **1.5 Two way coupling (this drop).** Per bone mass, `StepConfig.CouplingPasses`,
+   interface version 2, in both kernels, before any Burst port so the Burst kernel is
+   written once against the final solver.
 2. **Unity runtime.** Burst jobs, reading and writing transforms through
    `TransformAccessArray`, the backend switch (Burst by default, Rust selectable),
    editor labs, and the collider broadphase in C#. The broadphase will use collider
@@ -60,8 +64,8 @@ not `stiffness`, and `Kind` constants live in `JiggleConst`.
 
 Every constant in one place: the status codes (Ok 0, ErrNull -1, ErrRange -2,
 ErrPanic -3, ErrBadRig -4, ErrArg -5), flag bits for particles and rigs, collider and
-field kinds, the struct kind numbers used by the layout probe, `MaxParticles` 128 and
-`ExpectedAbiVersion` 1. The values are the ones of `types.rs` and `ffi/mod.rs`, and
+field kinds, the struct kind numbers used by the layout probe, `MaxParticles` 128,
+`MaxCouplingPasses` 16, `MaxMassRatio` 16 and `ExpectedAbiVersion` 2. The values are the ones of `types.rs` and `ffi/mod.rs`, and
 the layout test reads the numbers from the native side to check the struct kinds.
 
 ## Runtime/Core/JiggleMath.cs
@@ -86,6 +90,11 @@ has `AnchorDelta` and `AnchorWorld` vector properties over the plain floats, and
 `JiggleStepConfig` has a `Gravity` property, for readable code. Those properties are
 not fields, so they do not take part in the layout.
 
+Two way coupling took two reserved slots, so no size changed: `JiggleParticleDef.Mass`
+(offset 76, was `Reserved2`) and `JiggleStepConfig.CouplingPasses` (offset 48, was
+`Reserved0`, which leaves `Reserved1` to `Reserved3`). The layout test reads both back
+from the native probe.
+
 ## Runtime/Core/JiggleCollide.cs
 
 `JiggleCollide.PushOut`, the port of `collide.rs`: sphere, capsule, plane, box and
@@ -103,9 +112,17 @@ class over pointers into the shared arrays, with plain structs and no managed
 allocation in the hot path, so Burst can compile it in the next drop. The comments in
 the file say what each block does. How a frame runs is in the crate documentation.
 
+The coupling is written with the same helpers as the Rust file, under the same names in
+C# casing: `LinkShares`, `HoldLink`, `CollideParticle` and `AimRot`, and in `StepRig` the
+parent first sweep (pass 1, which splits the correction of a coupled link between the
+bone and its parent), the extra passes and the last collision sweep. A link is coupled
+when both bones have a mass above 0, neither is kinematic and the bone is not a root
+particle. The operation order is the one of `kernel.rs`, so the bits agree. Details of
+the maths are in the crate documentation, section kernel.rs.
+
 Parity is the point of this file. When the Rust kernel changes, this file changes the
-same way, and `GoldenSceneMatchesTheRustWorld` and the bitwise scene tests say whether
-it was done right.
+same way, and the two golden tests and the bitwise scene tests say whether it was done
+right.
 
 ## Runtime/Core/JiggleSolver.cs
 
@@ -144,6 +161,10 @@ extraFlags)` that makes a `JiggleParticleDef`, and `AnchorDef()`. The baking is 
 table in the crate documentation (params.rs). Out of range values are clamped, not
 passed on.
 
+`Mass` is the relative mass for two way coupling and defaults to 0, which keeps the
+bone one way. A negative or NaN mass bakes to 0 and anything above `MaxMass` (1e6)
+bakes to `MaxMass`. Only the ratio between neighbours matters.
+
 ## Runtime/Core/JiggleWorld.cs
 
 `JiggleWorld`, a model of the call sequence, with plain managed arrays that it owns.
@@ -153,6 +174,11 @@ It is what tests, tools and early users drive, and it is the C# twin of the Rust
 - `AddChain` builds a rig from the world positions of a chain, with the anchor first,
   and adds the virtual end particle. It throws `ArgumentException` for fewer than two
   points or a parameter count that is not one per bone.
+- `SetMass(rig, particle, mass)` sets the mass of one particle after `AddChain`: 1 is the
+  first bone and the last index is the virtual end, which takes the mass of the last bone
+  until then. It throws `ArgumentException` for the anchor or an index past the rig. A
+  heavy tip is how a weight on a strand is made. `Cfg.CouplingPasses` sets the number of
+  passes (clamped to 1 to 16, 0 counts as 1).
 - `AddCollider`, `AddField` and `SetColliderList` build the shared lists.
 - `SetPose` writes the pose of a rig for this frame and moves the last frame's pose.
 - `Step(frameDt, backend)` runs the fixed step accumulator and the two calls.
@@ -184,7 +210,7 @@ bindings directly.
 
 ## Tests/Editor/JiggleParityTests.cs
 
-One NUnit fixture of 16 tests that checks the managed kernel against the real
+One NUnit fixture of 21 tests that checks the managed kernel against the real
 library on the same memory:
 
 - interface version and `Verify`;
@@ -205,7 +231,15 @@ library on the same memory:
 - a chain that sags and stays near its pose, bone lengths kept, and the formulas of
   the baking;
 - the golden scene, whose hash is also asserted by `tests/golden_tests.rs`, and a
-  second test that the scene exercises what it claims.
+  second test that the scene exercises what it claims;
+- random scenes with masses (the same four mixes plus coupling, eight seeds each, with
+  some bones one way, some far heavier than their neighbours, weights on the tip and
+  pass counts from 0 to 40), compared bit for bit after every frame;
+- the coupled golden scene, whose hash is `GoldenCoupled`, asserted by `tests/golden_tests.rs`
+  too, and a test that the masses, the colliders, the fields and the pass count each change it;
+- that the pass count changes nothing in a scene without masses;
+- that `Mass` bakes and clamps as documented and `SetMass` refuses the anchor and an index
+  past the rig.
 
 The file has no UnityEngine references and uses `NUnit.Framework` only through
 `TestFixture`, `Test` and the `Assert` calls the stubs provide, so the harness can
@@ -223,6 +257,9 @@ compiles, and `TreatWarningsAsErrors`. `Program.cs` is the runner: it loads the 
 library path given on the command line, resolves `jiggle_core` to it, checks that the
 number of exports found by `nm` equals the number of `DllImport` functions (`--expect-exports`),
 and runs every test method of the fixture, printing PASS or FAIL per test.
+
+`NUnitStubs.cs` mirrors the NUnit signatures the fixture uses, including the overloads
+with a message, so the same file compiles under real NUnit in Unity.
 
 The folder name ends in a tilde, so Unity ignores it.
 
@@ -260,10 +297,24 @@ No root level scripts are used.
 - Nothing here has run inside Unity. The C# is compiled and tested under .NET 8 at
   language version 9. The asmdefs, the `.meta` files and the Linux plugin settings are
   copied from the nuclear package, which works, but they have not been tried here.
-- The solver is one way, segment collision is two samples, and rigs hold at most 126
-  bones. The crate documentation lists these and the other solver limits.
+- Coupling is opt in per bone and capped at a mass ratio of 16 between neighbours, segment
+  collision is two samples, and rigs hold at most 126 bones. The crate documentation lists
+  these and the other solver limits.
+- The native plugin binaries committed under `Runtime/Plugins/Native` are rebuilt by the
+  build workflow when `rust_lib/jiggle_core` changes. Until it has run after this drop, the
+  package has the new C# and the old binaries (interface version 1), and
+  `JiggleLibrary.Verify` throws. The managed backend does not need them.
 
 ## Fixes and Problems
+
+### Runtime/Core/JiggleKernel.cs
+
+- The coupling port matched the Rust golden hash on its first run, with no change to
+  the port. Three deliberate breakages were then run against it to prove the new tests
+  see it: the sign of the parent share in the extra passes, the last collision sweep
+  removed, and the ratio cap removed. The first two were caught by the coupled golden and
+  the coupled random scenes, the third by the coupled random scenes only, since the golden
+  scene's masses stay inside the cap. Each change was reverted.
 
 ### Runtime/Core/JiggleSolver.cs
 
@@ -289,6 +340,13 @@ No root level scripts are used.
   tests fail, and the change was reverted. The tests do see single bit differences.
 
 ### Tests~/DotnetHarness
+
+- CI failed with "Couldn't find a project to run": `JiggleHarness.csproj` was never
+  committed, because the repository `.gitignore` has `*.csproj` (for the files Unity
+  generates). The project file is now committed and `.gitignore` has a negation for
+  `packages/**/Tests~/DotnetHarness/*.csproj`.
+- `NUnitStubs.cs` lacked `Assert.AreNotEqual` and `Assert.Throws` with a message, which the
+  new tests use and real NUnit has. Both overloads were added.
 
 - `dotnet build` could not reach the package feed from the sandbox, so the harness
   was built with an empty local feed there. CI restores from the normal feed, and the

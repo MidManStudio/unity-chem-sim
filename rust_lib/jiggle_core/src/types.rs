@@ -13,6 +13,14 @@
 /// Largest particle count of one rig, anchor and virtual end particles included.
 pub const MAX_PARTICLES: usize = 128;
 
+/// Most coupling passes one step runs, see `StepConfig::coupling_passes`.
+pub const MAX_COUPLING_PASSES: u32 = 16;
+
+/// Largest mass ratio between a particle and its parent that the coupling uses. A link whose masses differ
+/// more is split as if they differed by exactly this much. Position based solvers become erratic well beyond
+/// it: a pinned strand stays smooth to about 64 to 1, a soft one starts to ring past 32 to 1.
+pub const MAX_MASS_RATIO: f32 = 16.0;
+
 /// Particle flag: follows the pose exactly, never simulated. Particle 0 always has it.
 pub const FLAG_KINEMATIC: u32 = 1;
 /// Particle flag: its parent is the anchor, so it is held to the pose by the root spring
@@ -103,8 +111,9 @@ pub struct ParticleDef {
     pub wind_response: f32,
     /// Multiplier on impulse fields.
     pub impulse_response: f32,
-    /// Reserved, keep 0.
-    pub reserved2: f32,
+    /// Relative mass for two way coupling. 0 keeps the link to the parent one way. A link is coupled only
+    /// when this particle and its parent both have a mass above 0 and neither is kinematic.
+    pub mass: f32,
 }
 
 /// The simulated state of one particle, relative to the rig anchor of the last step.
@@ -171,8 +180,11 @@ pub struct StepConfig {
     pub sleep_frames: u32,
     /// A sleeping rig wakes when the anchor or the pose moves farther than this in one frame, in meters.
     pub wake_motion: f32,
+    /// Passes of the two way coupling in each step, 1 to `MAX_COUPLING_PASSES`. 0 counts as 1, more than the
+    /// maximum counts as the maximum. Rigs without coupled links ignore it.
+    pub coupling_passes: u32,
     /// Reserved, keep 0.
-    pub reserved: [f32; 4],
+    pub reserved: [f32; 3],
 }
 
 /// A collider in world space.

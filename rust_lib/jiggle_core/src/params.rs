@@ -10,6 +10,9 @@
 
 use crate::types::*;
 
+/// Largest mass `AuthoringParams::bake` keeps. Only ratios matter, so this just keeps sums finite.
+pub const MAX_MASS: f32 = 1.0e6;
+
 /// The values an author sets for one bone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuthoringParams {
@@ -41,6 +44,9 @@ pub struct AuthoringParams {
     pub wind_response: f32,
     /// Multiplier on impulse fields.
     pub impulse_response: f32,
+    /// Relative mass for two way coupling, 0 for none. A bone pulls its parent back only when both have a mass
+    /// above 0. Only the ratio between neighbours matters. Values above `MAX_MASS` count as `MAX_MASS`.
+    pub mass: f32,
     /// Whether the angle limit applies.
     pub angle_limited: bool,
     /// Whether the bone collides.
@@ -66,6 +72,7 @@ impl Default for AuthoringParams {
             ignore_root_motion: 0.0,
             wind_response: 1.0,
             impulse_response: 1.0,
+            mass: 0.0,
             angle_limited: false,
             collide: false,
             segment_collision: false,
@@ -124,7 +131,13 @@ impl AuthoringParams {
             ignore_root_motion: clamp01(self.ignore_root_motion),
             wind_response: self.wind_response,
             impulse_response: self.impulse_response,
-            reserved2: 0.0,
+            mass: if self.mass > MAX_MASS {
+                MAX_MASS
+            } else if self.mass > 0.0 {
+                self.mass
+            } else {
+                0.0
+            },
         }
     }
 }

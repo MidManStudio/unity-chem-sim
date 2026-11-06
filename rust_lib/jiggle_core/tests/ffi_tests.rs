@@ -34,7 +34,7 @@ fn fl(v: f32) -> u32 {
 #[test]
 fn version_and_abi() {
     assert_eq!(jgl_abi_version(), ABI_VERSION);
-    assert_eq!(ABI_VERSION, 1);
+    assert_eq!(ABI_VERSION, 2);
     let v = text_of(jgl_library_version);
     assert_eq!(v, env!("CARGO_PKG_VERSION"));
     // A short buffer truncates but still returns the full length.
@@ -75,7 +75,7 @@ fn layout_probe_matches_the_documented_field_order() {
     let rig = vec![1, 2, 3, 4, 5, 6, fl(1.5), 7, fl(2.5), fl(3.5), fl(4.5), fl(5.5), fl(6.5), fl(7.5), fl(8.5), fl(9.5)];
     assert_eq!(probe_words(KIND_RIG), rig);
 
-    let cfg = vec![fl(1.5), 1, fl(2.5), fl(3.5), fl(4.5), fl(5.5), fl(6.5), fl(7.5), fl(8.5), fl(9.5), 2, fl(10.5), fl(11.5), fl(12.5), fl(13.5), fl(14.5)];
+    let cfg = vec![fl(1.5), 1, fl(2.5), fl(3.5), fl(4.5), fl(5.5), fl(6.5), fl(7.5), fl(8.5), fl(9.5), 2, fl(10.5), 3, fl(11.5), fl(12.5), fl(13.5)];
     assert_eq!(probe_words(KIND_STEP_CONFIG), cfg);
 
     let mut col = vec![1, 2, fl(1.5), fl(2.5)];
