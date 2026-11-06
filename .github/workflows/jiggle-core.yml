@@ -1,0 +1,152 @@
+name: Jiggle core
+
+# Tests and benchmarks for rust_lib/jiggle_core, and the proof that the C#
+# package agrees with it.
+#
+# rust-rust-ci.yml already builds and tests the whole workspace, but
+# `cargo test --workspace` stops at the first failing doc-test. This workflow
+# gives the crate a result of its own.
+#
+# The ffi job is the one that matters most for Unity. It builds the release
+# library the way Unity gets it, compiles Runtime/Core and the editor tests of
+# the package as a plain .NET program and runs them against that library. The
+# managed kernel and the Rust kernel then work on the same memory and must give
+# the same bits, struct layouts are checked field by field, and a golden scene
+# ties the C# world to the Rust world.
+#
+# The benchmark job is manual: Actions -> Jiggle core -> Run workflow, then
+# tick "bench". Results land in that run's Job Summary. GitHub-hosted runners
+# are shared hardware, so read them as "did anything change a lot between two
+# runs", not as absolute speed.
+on:
+  push:
+    paths:
+      - 'rust_lib/jiggle_core/**'
+      - 'packages/com.midmanstudio.allthingsjiggle/**'
+      - '.github/workflows/jiggle-core.yml'
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: 'Also run the benchmarks and write them to the job summary'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # --all-targets also compiles the bench harness, so it cannot stop
+      # compiling between bench runs.
+      - name: Build all targets
+        run: cargo build -p jiggle_core --all-targets
+
+      - name: Run tests
+        run: cargo test -p jiggle_core
+
+      # Lints are shown in the log and do not fail the job, so a lint added in
+      # a newer clippy cannot break a push by itself.
+      - name: Lint
+        run: cargo clippy -p jiggle_core --all-targets
+
+      - name: Build docs (broken links are errors)
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken-intra-doc-links
+        run: cargo doc -p jiggle_core --no-deps
+
+  # The C interface and the C# package, end to end. The export count from nm
+  # must equal the number of DllImports, so a function added in Rust and
+  # forgotten in C# fails here.
+  ffi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the native library
+        run: cargo build --release -p jiggle_core
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run the C# package against the library
+        run: |
+          LIB=target/release/libjiggle_core.so
+          EXPORTS=$(nm -D --defined-only "$LIB" | grep -c ' T jgl_')
+          echo "jgl_ exports: $EXPORTS"
+          dotnet run -c Release \
+            --project packages/com.midmanstudio.allthingsjiggle/Tests~/DotnetHarness \
+            -- "$LIB" --expect-exports "$EXPORTS"
+
+  # jiggle_core declares rust-version 1.75. Testing only on stable never
+  # notices a floor break, so this job runs the tests on 1.75.0. The crate is
+  # copied into a workspace of its own first, so cargo does not resolve the
+  # dependencies of the other workspace crates (some of them need a newer
+  # cargo than 1.75 just to read their manifests).
+  floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.75.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.75.0
+
+      - name: Copy the crate into a workspace of its own
+        run: |
+          mkdir /tmp/floor
+          cp -r rust_lib/jiggle_core /tmp/floor/jiggle_core
+          printf '[workspace]\nmembers = ["jiggle_core"]\nresolver = "2"\n' > /tmp/floor/Cargo.toml
+
+      - name: Run tests on the floor
+        working-directory: /tmp/floor
+        run: cargo test
+
+  bench:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.bench }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # --bench step_bench runs only the harness. Without it cargo also runs
+      # the library's unit tests in bench mode and prints them ahead of the
+      # table. Only stdout goes to the file, so compile output stays in the log.
+      - name: Run benchmarks
+        shell: bash
+        run: cargo bench -p jiggle_core --bench step_bench > bench-output.txt
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## jiggle_core bench - $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo '```'
+            if [ -f bench-output.txt ]; then
+              cat bench-output.txt
+            else
+              echo "No bench output: the benchmark step did not produce a file."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
