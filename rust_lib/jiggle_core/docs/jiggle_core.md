@@ -23,7 +23,7 @@ This file is the documentation of the crate. The C# side is documented in
 - Files: lib.rs, math.rs, types.rs, collide.rs, field.rs, params.rs, kernel.rs,
   solver.rs, world.rs, ffi/mod.rs
 - Tests and benchmark: tests/kernel_tests.rs, tests/ffi_tests.rs,
-  tests/golden_tests.rs, benches/step_bench.rs
+  tests/golden_tests.rs, benches/step_bench.rs, benches/scene_bench.rs
 - Cargo.toml and the workspace
 - What the MMD rig study taught the design
 - CI and workflows
@@ -411,6 +411,78 @@ these numbers.
 Read them as a size of the cost, not as a promise. The CI bench job writes the same
 table into the job summary.
 
+## benches/scene_bench.rs
+
+The comparison suite, also with no dependencies. Run it with
+`cargo bench -p jiggle_core --bench scene_bench`. It runs a fixed table of scenes at several
+thread counts and prints a table and one `CSV,v1,rust,...` line per row.
+
+A frame has three phases: the pose write (what the host does), the step and the resolve (what a
+backend does). A worker thread owns a window of whole rigs and does the three phases for them,
+with a barrier between frames, the way a job system splits a frame. The anchors move every
+frame by an amount that differs per rig, so no two rigs do the same work.
+
+| Scene | Rigs | Bones | What is different |
+| --- | --- | --- | --- |
+| `tiny` | 1 | 8 | one rig, the fixed cost of a frame |
+| `hair-100`, `hair-1k`, `hair-10k` | 100, 1000, 10000 | 8 | the plain case at three sizes |
+| `long-64` | 100 | 64 | long chains |
+| `max-126` | 20 | 126 | the longest chain a rig holds |
+| `collide-1k` | 1000 | 8 | a shared ground plane, plus a sphere, a capsule and a box for each rig, with segment collision |
+| `fields-1k` | 1000 | 8 | a directional field with gusts and a vortex over the whole grid |
+| `coupled-1k-p1`, `coupled-1k-p4` | 1000 | 8 | every bone has a mass, with one and with four coupling passes |
+| `asleep-1k` | 1000 | 8 | sleep on and the anchors still, so every rig falls asleep during the warm up |
+| `full-1k` | 1000 | 8 | colliders, fields, three passes of coupling and sleep together |
+
+The columns of the table and of the CSV line are `wall` (the time of one whole frame),
+`pose`, `step` and `resolve` (CPU time per frame, summed over the workers, so with
+several threads they add up to more than `wall`), `ns/part` (step plus resolve CPU time per
+particle) and `x thr1` (wall time against one thread). The last column, `checksum`, is a hash of
+eight floats of every particle after the last frame. The hash is summed over particles and mixes in the global particle index, so it does not depend on how the rigs were split into windows. The bench prints `RESULT DIFFERS FROM 1 THREAD`
+when a thread count gives another checksum than one thread, which would mean the split of the
+work changed the result. A scene that does not stay finite is flagged `NOT FINITE`.
+
+Environment variables: `JIGGLE_BENCH_FILTER` keeps the scenes whose name contains the text,
+`JIGGLE_BENCH_THREADS` is a comma separated list of thread counts (the default is 1, 2, 4 and
+the number of cores) and `JIGGLE_BENCH_SCALE` multiplies every frame count, for example 0.2 for a
+quick run. A scene with fewer rigs than threads runs on as many threads as it has rigs.
+
+The last section measures the call overhead of the C interface. It steps 1000 rigs with one call, then
+splits the same work over 4, 16, 63 and 1000 calls. The extra time per extra call comes out at a few
+hundredths of a microsecond, so splitting a frame into batches costs next to nothing and the size
+of a batch can be chosen for load balance. The figures for few calls are noise.
+
+Numbers from one run of the sandbox with 2 shared cores, at a frame scale of 0.3, one thread, release
+profile:
+
+| Scene | Frame (wall) | ns per particle |
+| --- | --- | --- |
+| `hair-1k` | 1.7 ms | 166 |
+| `hair-10k` | 17.9 ms | 173 |
+| `long-64` | 1.0 ms | 146 |
+| `collide-1k` | 2.3 ms | 223 |
+| `fields-1k` | 2.7 ms | 264 |
+| `coupled-1k-p4` | 3.2 ms | 312 |
+| `asleep-1k` | 0.13 ms | 8 |
+| `full-1k` | 5.1 ms | 503 |
+
+Two threads gave 1.8 to 2.1 times the speed on the larger scenes. The four thread rows are not
+informative here because the machine has two cores. As with the step bench, read them as a size of the
+cost. They are not a promise and the CI bench job gives numbers from its own hardware.
+
+**How it relates to the Unity lab.** The Unity package builds the same scene table, the same geometry
+and the same motion in `Editor/Lab/JiggleBenchScenes.cs` and runs it on the Burst, native (this crate) and
+managed backends in `Editor/Lab/JiggleLabRunner.cs`. That run is the like for like comparison: one
+machine, one build of this crate, the same scenes. A run of this file alone gives the scaling over
+threads and a number to watch for regressions. Do not compare a row of this bench with a row of the lab
+directly: the machines differ, and this bench sums CPU time per phase while the lab reports wall clock
+time per phase. Compare `wall_us` within the lab. The CSV lines share their columns so both can be
+put into one spreadsheet. The checksums do not match across the two, because the motion here uses the
+Rust sine and cosine and the lab uses Unity's. The lab compares its own backends with each other.
+
+When the scene table changes here, `JiggleBenchScenes.cs` has to change the same way, or the two benches
+stop measuring the same thing.
+
 ## Cargo.toml and the workspace
 
 The crate is `cdylib` for Unity on desktop and Android, `staticlib` for iOS and
@@ -460,7 +532,7 @@ What the game's own runtime solution does is unknown. We only saw a conversion.
 
 | Workflow | What it does |
 | --- | --- |
-| `.github/workflows/jiggle-core.yml` | `test` builds all targets, runs the tests and doc tests, shows clippy lints and builds the docs with broken links as errors. `ffi` builds the release library, counts the `jgl_` exports with `nm` and runs the C# package against it as a plain .NET 8 program. `floor` copies the crate into a workspace of its own and runs the tests on Rust 1.75.0. `bench` is manual |
+| `.github/workflows/jiggle-core.yml` | `test` builds all targets, runs the tests and doc tests, shows clippy lints and builds the docs with broken links as errors. `ffi` builds the release library, counts the `jgl_` exports with `nm` and runs the C# package against it as a plain .NET 8 program. `floor` copies the crate into a workspace of its own and runs the tests on Rust 1.75.0. `unity-stubs` compiles the C# package against Unity API stubs (see the package documentation). `bench` is manual and runs both `step_bench` and `scene_bench` |
 | `.github/workflows/build-jiggle-rust-libs.yml` | Builds the library for macOS (universal), Windows, Linux, Android (three ABIs), iOS (device and simulator) and WebGL, and commits them with generated `.meta` files into `packages/com.midmanstudio.allthingsjiggle/Runtime/Plugins/Native` |
 
 The ABI bump to 2 makes the plugin binaries already committed under `Runtime/Plugins/Native`
@@ -568,6 +640,12 @@ GitHub. The `ffi` job is the proof that the C# bindings and the library agree.
 
 - The bench built its rigs with `AuthoringParams::default()` and had no coupled case,
   so it did not show what the coupling costs. It now has two coupled rows.
+
+### benches/scene_bench.rs
+
+- The file header named a Unity file that does not exist (`JiggleBenchLab.cs`). It now names
+  `JiggleBenchScenes.cs` and `JiggleLabRunner.cs`, found by checking the names against the package before
+  the documentation was written.
 
 ### tests/golden_tests.rs
 

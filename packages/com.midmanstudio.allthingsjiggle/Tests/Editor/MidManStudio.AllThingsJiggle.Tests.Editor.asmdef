@@ -3,6 +3,7 @@
     "rootNamespace": "MidManStudio.AllThingsJiggle.EditorTests",
     "references": [
         "MidManStudio.AllThingsJiggle",
+        "MidManStudio.AllThingsJiggle.Unity",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

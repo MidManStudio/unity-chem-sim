@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The editor tests against the Core, the Unity layer and the Unity stubs, with the NUnit stand in of the dotnet
+    harness. It is only compiled. The tests that need Burst run in the Unity Test Runner.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputType>Library</OutputType>
+    <AssemblyName>MidManStudio.AllThingsJiggle.Tests.Editor</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Tests/Editor/**/*.cs" />
+    <Compile Include="../DotnetHarness/NUnitStubs.cs" />
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Unity.csproj" />
+    <ProjectReference Include="UnityApiStubs.csproj" />
+  </ItemGroup>
+
+</Project>

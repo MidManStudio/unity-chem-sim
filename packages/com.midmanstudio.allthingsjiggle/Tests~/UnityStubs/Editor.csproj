@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Editor against the Core, the Unity layer and the Unity stubs, as its asmdef references them. -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputType>Library</OutputType>
+    <AssemblyName>MidManStudio.AllThingsJiggle.Editor</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Editor/**/*.cs" />
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Unity.csproj" />
+    <ProjectReference Include="UnityApiStubs.csproj" />
+  </ItemGroup>
+
+</Project>

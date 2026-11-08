@@ -1,0 +1,17 @@
+{
+    "name": "MidManStudio.AllThingsJiggle.Unity",
+    "rootNamespace": "MidManStudio.AllThingsJiggle",
+    "references": [
+        "MidManStudio.AllThingsJiggle",
+        "Unity.Burst"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

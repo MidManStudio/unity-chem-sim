@@ -1665,5 +1665,536 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
             Assert.Throws<ArgumentException>(() => w.SetMass(rig, 0, 1.0f), "the anchor has no mass");
             Assert.Throws<ArgumentException>(() => w.SetMass(rig, 4, 1.0f), "past the virtual end");
         }
+
+        // ------------------------------------------------------------------ Unity runtime support: math, host, pose
+
+        private static void AssertSameFloat(float expected, float actual, string what)
+        {
+            if (float.IsNaN(expected))
+            {
+                Assert.IsTrue(float.IsNaN(actual), what + ": expected NaN");
+                return;
+            }
+            Assert.AreEqual(Bits(expected), Bits(actual), what + ": " + expected + " vs " + actual);
+        }
+
+        [Test]
+        public void BurstSafeMathGivesTheBitsOfMathF()
+        {
+            // The kernel uses JiggleMath.Sqrt, Abs and Floor because Burst rejects System.MathF. They must give the same
+            // float as MathF for every input, or the managed kernel would stop matching the Rust one.
+            float[] edge =
+            {
+                0.0f, -0.0f, 1.0f, -1.0f, 0.5f, 2.5f, -2.5f, 3.0f, 1e-38f, 1.17549435e-38f, float.Epsilon, -float.Epsilon,
+                float.MaxValue, -float.MaxValue, float.PositiveInfinity, float.NegativeInfinity, float.NaN, 1e20f,
+                16777216.0f, 16777217.0f, 4294967296.0f, 2147483648.0f, -2147483648.0f,
+            };
+            Lcg rng = new Lcg(77);
+            for (int k = 0; k < edge.Length + 40000; k++)
+            {
+                float x = k < edge.Length ? edge[k] : BitConverter.Int32BitsToSingle(unchecked((int)rng.Next()));
+                AssertSameFloat(MathF.Sqrt(x), JiggleMath.Sqrt(x), "Sqrt(" + x + ")");
+                AssertSameFloat(MathF.Abs(x), JiggleMath.Abs(x), "Abs(" + x + ")");
+                AssertSameFloat(MathF.Floor(x), JiggleMath.Floor(x), "Floor(" + x + ")");
+                Assert.AreEqual(float.IsNaN(x), JiggleMath.IsNaN(x), "IsNaN(" + x + ")");
+                Assert.AreEqual(!(float.IsNaN(x) || float.IsInfinity(x)), JiggleMath.IsFinite(x), "IsFinite(" + x + ")");
+            }
+        }
+
+        private sealed class HostScene
+        {
+            public JVec3[][] Rest;
+            public JiggleParams[][] Params;
+            public float[] TipScale;
+            public float[] TipMass;
+        }
+
+        private static HostScene BuildHostScene(uint seed, int rigs)
+        {
+            Lcg rng = new Lcg(seed);
+            HostScene sc = new HostScene();
+            sc.Rest = new JVec3[rigs][];
+            sc.Params = new JiggleParams[rigs][];
+            sc.TipScale = new float[rigs];
+            sc.TipMass = new float[rigs];
+            for (int r = 0; r < rigs; r++)
+            {
+                int bones = 1 + (int)(rng.Next() % 9u);
+                JVec3 b = new JVec3(r * 0.6f, rng.Range(0.0f, 1.0f), rng.Range(-0.5f, 0.5f));
+                sc.Rest[r] = new JVec3[bones + 1];
+                sc.Params[r] = new JiggleParams[bones];
+                for (int i = 0; i <= bones; i++)
+                {
+                    sc.Rest[r][i] = b + new JVec3(0.0f, -0.1f * (float)i, 0.0f);
+                }
+                for (int i = 0; i < bones; i++)
+                {
+                    JiggleParams p = JiggleParams.Default();
+                    p.Stiffness = rng.Range(0.2f, 0.9f);
+                    p.Drag = rng.Range(0.0f, 0.3f);
+                    p.Stretch = rng.Range(0.0f, 0.5f);
+                    p.Mass = rng.Unit() < 0.6f ? rng.Range(0.5f, 4.0f) : 0.0f;
+                    p.AngleLimited = rng.Unit() < 0.3f;
+                    p.AngleLimit = rng.Range(0.2f, 0.9f);
+                    sc.Params[r][i] = p;
+                }
+                sc.TipScale[r] = rng.Unit() < 0.2f ? float.NaN : rng.Range(0.5f, 2.0f);
+                sc.TipMass[r] = rng.Unit() < 0.5f ? rng.Range(1.0f, 9.0f) : -1.0f;
+            }
+            return sc;
+        }
+
+        private static void PoseFor(Lcg rng, JVec3[] rest, int frame, int rig, JVec3[] pos, JQuat[] rots)
+        {
+            float t = (float)frame;
+            JVec3 sway = new JVec3((float)Math.Sin(t * 0.3 + rig) * 0.08f, 0.0f, (float)Math.Cos(t * 0.21 + rig * 0.5) * 0.05f);
+            if (frame == 30 && rig == 0)
+            {
+                sway = sway + new JVec3(12.0f, 0.0f, 0.0f);
+            }
+            for (int i = 0; i < pos.Length; i++)
+            {
+                pos[i] = rest[i] + sway;
+                rots[i] = new JQuat(rng.Range(-1f, 1f), rng.Range(-1f, 1f), rng.Range(-1f, 1f), rng.Range(0.2f, 1f)).Normalized();
+            }
+        }
+
+        private static bool SameBytes(void* a, void* b, long len)
+        {
+            byte* x = (byte*)a;
+            byte* y = (byte*)b;
+            for (long i = 0; i < len; i++)
+            {
+                if (x[i] != y[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static void AssertHostEqualsWorld(JiggleHost h, JiggleWorld w, string where)
+        {
+            Assert.AreEqual(w.Rigs.Length, h.RigCount, where + ": rig count");
+            Assert.AreEqual(w.Defs.Length, h.ParticleCount, where + ": particle count");
+            fixed (JiggleRig* pr = w.Rigs)
+            fixed (JiggleParticleDef* pd = w.Defs)
+            fixed (JiggleParticleState* ps = w.State)
+            fixed (JVec4* pp = w.PosePrev)
+            fixed (JVec4* pc = w.PoseCurr)
+            fixed (JVec4* pq = w.PoseRot)
+            fixed (JiggleParticleOut* po = w.Out)
+            {
+                Assert.IsTrue(SameBytes(pr, h.Rigs, (long)h.RigCount * sizeof(JiggleRig)), where + ": rigs");
+                Assert.IsTrue(SameBytes(pd, h.Defs, (long)h.ParticleCount * sizeof(JiggleParticleDef)), where + ": defs");
+                Assert.IsTrue(SameBytes(ps, h.State, (long)h.ParticleCount * sizeof(JiggleParticleState)), where + ": state");
+                Assert.IsTrue(SameBytes(pp, h.PosePrev, (long)h.ParticleCount * sizeof(JVec4)), where + ": pose prev");
+                Assert.IsTrue(SameBytes(pc, h.PoseCurr, (long)h.ParticleCount * sizeof(JVec4)), where + ": pose curr");
+                Assert.IsTrue(SameBytes(pq, h.PoseRot, (long)h.ParticleCount * sizeof(JVec4)), where + ": pose rot");
+                Assert.IsTrue(SameBytes(po, h.Out, (long)h.ParticleCount * sizeof(JiggleParticleOut)), where + ": out");
+            }
+            Assert.AreEqual(w.Colliders.Length, h.ColliderCount, where + ": collider count");
+            Assert.AreEqual(w.Refs.Length, h.RefCount, where + ": ref count");
+            Assert.AreEqual(w.Fields.Length, h.FieldCount, where + ": field count");
+            fixed (JiggleCollider* pk = w.Colliders)
+            fixed (uint* pf = w.Refs)
+            fixed (JiggleField* pl = w.Fields)
+            {
+                Assert.IsTrue(SameBytes(pk, h.Colliders, (long)h.ColliderCount * sizeof(JiggleCollider)), where + ": colliders");
+                Assert.IsTrue(SameBytes(pf, h.Refs, (long)h.RefCount * sizeof(uint)), where + ": refs");
+                Assert.IsTrue(SameBytes(pl, h.Fields, (long)h.FieldCount * sizeof(JiggleField)), where + ": fields");
+            }
+        }
+
+        private static void WriteHostPose(JiggleHost h, int rig, JVec3[] pos, JQuat[] rots)
+        {
+            JiggleRig r = h.Rigs[rig];
+            int off = (int)r.ParticleOffset;
+            fixed (JVec3* pPos = pos)
+            fixed (JQuat* pRots = rots)
+            {
+                JigglePose.Write(h.Rigs + rig, h.PosePrev + off, h.PoseCurr + off, h.PoseRot + off, h.TipScale[rig], pPos, pRots, rots.Length);
+            }
+        }
+
+        [Test]
+        public void HostMatchesTheWorldBitForBitOnBothBackends()
+        {
+            foreach (JiggleBackend backend in new[] { JiggleBackend.Managed, JiggleBackend.Native })
+            {
+                for (uint seed = 1; seed <= 6; seed++)
+                {
+                    HostScene sc = BuildHostScene(seed * 13u, 2 + (int)seed * 2);
+                    JiggleWorld w = new JiggleWorld();
+                    w.Cfg.SleepSpeed = 0.002f;
+                    w.Cfg.SleepDeviation = 0.05f;
+                    w.Cfg.SleepFrames = 8;
+                    w.Cfg.WakeMotion = 0.01f;
+                    w.Cfg.CouplingPasses = 1 + seed % 4u;
+                    using (JiggleHost h = new JiggleHost(2, 8))
+                    {
+                        for (int r = 0; r < sc.Rest.Length; r++)
+                        {
+                            int a = w.AddChain(sc.Rest[r], sc.Params[r], sc.TipScale[r]);
+                            int b = h.AddChain(sc.Rest[r], sc.Params[r], sc.TipScale[r]);
+                            Assert.AreEqual(a, b);
+                            if (sc.TipMass[r] > 0.0f)
+                            {
+                                int tip = sc.Rest[r].Length;
+                                w.SetMass(a, tip, sc.TipMass[r]);
+                                h.SetMass(b, tip, sc.TipMass[r]);
+                            }
+                        }
+                        *h.Cfg = w.Cfg;
+                        AssertHostEqualsWorld(h, w, backend + " seed " + seed + " built");
+
+                        Lcg rng = new Lcg(seed * 977u);
+                        Lcg frames = new Lcg(seed * 31u);
+                        for (int f = 0; f < 70; f++)
+                        {
+                            for (int r = 0; r < sc.Rest.Length; r++)
+                            {
+                                JVec3[] pos = new JVec3[sc.Rest[r].Length];
+                                JQuat[] rots = new JQuat[pos.Length];
+                                PoseFor(rng, sc.Rest[r], f, r, pos, rots);
+                                w.SetPose(r, pos, rots);
+                                WriteHostPose(h, r, pos, rots);
+                            }
+                            float dt = f % 11 == 3 ? 0.0f : (f == 40 ? 0.3f : frames.Range(0.004f, 0.04f));
+                            int cw = w.Step(dt, backend);
+                            int ch = h.Step(dt, backend);
+                            Assert.AreEqual(cw, ch);
+                            Assert.AreEqual(Bits(w.Cfg.Time), Bits(h.Cfg->Time), "time");
+                            Assert.AreEqual(w.Cfg.Steps, h.Cfg->Steps, "steps");
+                            Assert.AreEqual(Bits(w.Cfg.Alpha), Bits(h.Cfg->Alpha), "alpha");
+                            AssertHostEqualsWorld(h, w, backend + " seed " + seed + " frame " + f);
+                        }
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void ClockGivesTheStepsAndAlphaOfTheWorld()
+        {
+            JiggleWorld w = new JiggleWorld();
+            using (JiggleHost h = new JiggleHost())
+            {
+                Lcg rng = new Lcg(5);
+                float[] odd = { float.NaN, float.PositiveInfinity, float.NegativeInfinity, -1.0f, 0.0f, 1.0f / 60.0f, 2.0f / 60.0f, 100.0f };
+                for (int k = 0; k < 600; k++)
+                {
+                    float dt = k < odd.Length ? odd[k] : (k % 50 == 0 ? rng.Range(0.1f, 0.5f) : rng.Range(0.0f, 0.05f));
+                    w.Step(dt, JiggleBackend.Managed);
+                    h.Step(dt, JiggleBackend.Managed);
+                    Assert.AreEqual(w.Cfg.Steps, h.Cfg->Steps, "steps at " + k);
+                    Assert.AreEqual(Bits(w.Cfg.Alpha), Bits(h.Cfg->Alpha), "alpha at " + k);
+                }
+            }
+        }
+
+        [Test]
+        public void HostRebuiltWithStateCarriedOverKeepsSimulatingTheSame()
+        {
+            HostScene sc = BuildHostScene(4242u, 5);
+            // The new host has two extra rigs in front, so every old rig moves two places.
+            HostScene extra = BuildHostScene(99u, 2);
+            using (JiggleHost a = new JiggleHost(2, 8))
+            using (JiggleHost b = new JiggleHost(2, 8))
+            {
+                for (int r = 0; r < sc.Rest.Length; r++)
+                {
+                    a.AddChain(sc.Rest[r], sc.Params[r], sc.TipScale[r]);
+                }
+                a.Cfg->CouplingPasses = 2;
+                a.Cfg->SleepFrames = 8;
+                Lcg rng = new Lcg(1);
+                for (int f = 0; f < 40; f++)
+                {
+                    for (int r = 0; r < sc.Rest.Length; r++)
+                    {
+                        JVec3[] pos = new JVec3[sc.Rest[r].Length];
+                        JQuat[] rots = new JQuat[pos.Length];
+                        PoseFor(rng, sc.Rest[r], f, r, pos, rots);
+                        WriteHostPose(a, r, pos, rots);
+                    }
+                    Assert.AreEqual(0, a.StepFixed(1, JiggleBackend.Managed));
+                }
+
+                for (int r = 0; r < extra.Rest.Length; r++)
+                {
+                    b.AddChain(extra.Rest[r], extra.Params[r], extra.TipScale[r]);
+                }
+                for (int r = 0; r < sc.Rest.Length; r++)
+                {
+                    b.AddChain(sc.Rest[r], sc.Params[r], sc.TipScale[r]);
+                }
+                *b.Cfg = *a.Cfg;
+                for (int r = 0; r < sc.Rest.Length; r++)
+                {
+                    b.CopyRigRuntime(a, r, r + extra.Rest.Length);
+                }
+
+                for (int f = 40; f < 80; f++)
+                {
+                    for (int r = 0; r < sc.Rest.Length; r++)
+                    {
+                        JVec3[] pos = new JVec3[sc.Rest[r].Length];
+                        JQuat[] rots = new JQuat[pos.Length];
+                        PoseFor(rng, sc.Rest[r], f, r, pos, rots);
+                        WriteHostPose(a, r, pos, rots);
+                        WriteHostPose(b, r + extra.Rest.Length, pos, rots);
+                    }
+                    for (int r = 0; r < extra.Rest.Length; r++)
+                    {
+                        JVec3[] pos = new JVec3[extra.Rest[r].Length];
+                        JQuat[] rots = new JQuat[pos.Length];
+                        PoseFor(rng, extra.Rest[r], f, r + 50, pos, rots);
+                        WriteHostPose(b, r, pos, rots);
+                    }
+                    Assert.AreEqual(0, a.StepFixed(1, JiggleBackend.Managed));
+                    Assert.AreEqual(0, b.StepFixed(1, JiggleBackend.Managed));
+                    for (int r = 0; r < sc.Rest.Length; r++)
+                    {
+                        JiggleRig ra = a.Rigs[r];
+                        JiggleRig rb = b.Rigs[r + extra.Rest.Length];
+                        long n = ra.ParticleCount;
+                        Assert.AreEqual(ra.ParticleCount, rb.ParticleCount);
+                        Assert.IsTrue(
+                            SameBytes(a.State + ra.ParticleOffset, b.State + rb.ParticleOffset, n * sizeof(JiggleParticleState)),
+                            "state of rig " + r + " at frame " + f);
+                        Assert.IsTrue(
+                            SameBytes(a.Out + ra.ParticleOffset, b.Out + rb.ParticleOffset, n * sizeof(JiggleParticleOut)),
+                            "output of rig " + r + " at frame " + f);
+                        Assert.AreEqual(ra.Flags, rb.Flags, "flags of rig " + r);
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void LocalRotationsComposeBackToTheResolvedWorldRotations()
+        {
+            HostScene sc = BuildHostScene(808u, 6);
+            using (JiggleHost h = new JiggleHost())
+            {
+                for (int r = 0; r < sc.Rest.Length; r++)
+                {
+                    h.AddChain(sc.Rest[r], sc.Params[r], sc.TipScale[r]);
+                }
+                Lcg rng = new Lcg(3);
+                for (int f = 0; f < 30; f++)
+                {
+                    for (int r = 0; r < sc.Rest.Length; r++)
+                    {
+                        JVec3[] pos = new JVec3[sc.Rest[r].Length];
+                        JQuat[] rots = new JQuat[pos.Length];
+                        PoseFor(rng, sc.Rest[r], f, r, pos, rots);
+                        WriteHostPose(h, r, pos, rots);
+                    }
+                    Assert.AreEqual(0, h.StepFixed(1, JiggleBackend.Managed));
+                }
+                for (int r = 0; r < sc.Rest.Length; r++)
+                {
+                    JiggleRig rig = h.Rigs[r];
+                    int off = (int)rig.ParticleOffset;
+                    int bones = (int)rig.ParticleCount - 2;
+                    JQuat[] local = new JQuat[bones];
+                    fixed (JQuat* pLocal = local)
+                    {
+                        JigglePose.LocalRotations(h.PoseRot + off, h.Out + off, bones, pLocal);
+                    }
+                    JQuat world = JQuat.From4(h.PoseRot[off]);
+                    for (int b = 1; b <= bones; b++)
+                    {
+                        world = JQuat.Mul(world, local[b - 1]).Normalized();
+                        JQuat want = JQuat.From4(h.Out[off + b].Rot);
+                        float dot = world.X * want.X + world.Y * want.Y + world.Z * want.Z + world.W * want.W;
+                        Assert.Greater(MathF.Abs(dot), 0.99999f, "rig " + r + " bone " + b);
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void HostGrowsKeepsItsLayoutAndRefusesUseAfterDispose()
+        {
+            JiggleHost h = new JiggleHost(1, 1);
+            Lcg rng = new Lcg(11);
+            uint expectOffset = 0;
+            for (int r = 0; r < 3000; r++)
+            {
+                int bones = 1 + (int)(rng.Next() % 5u);
+                JVec3[] rest = new JVec3[bones + 1];
+                for (int i = 0; i <= bones; i++)
+                {
+                    rest[i] = new JVec3(r * 0.1f, -0.1f * (float)i, 0.0f);
+                }
+                JiggleParams[] ps = new JiggleParams[bones];
+                for (int i = 0; i < bones; i++)
+                {
+                    ps[i] = JiggleParams.Default();
+                }
+                Assert.AreEqual(r, h.AddChain(rest, ps));
+                Assert.AreEqual(expectOffset, h.Rigs[r].ParticleOffset);
+                expectOffset += (uint)(bones + 2);
+            }
+            Assert.AreEqual(3000, h.RigCount);
+            Assert.AreEqual((int)expectOffset, h.ParticleCount);
+            Assert.AreEqual(0, h.StepFixed(1, JiggleBackend.Managed), "a grown host has to pass the solver's checks");
+            Assert.Throws<ArgumentException>(delegate { h.SetMass(0, 0, 1.0f); }, "the anchor has no mass");
+            Assert.Throws<ArgumentException>(delegate { h.SetMass(3000, 1, 1.0f); }, "no such rig");
+            Assert.Throws<ArgumentException>(
+                delegate { h.AddChain(new JVec3[1], new JiggleParams[0]); }, "one point is not a chain");
+            h.Dispose();
+            h.Dispose();
+            Assert.Throws<ObjectDisposedException>(
+                delegate { h.AddChain(new JVec3[2], new JiggleParams[1]); }, "no use after Dispose");
+        }
+
+        [Test]
+        public void HostWithCollidersAndFieldsMatchesTheWorldOnBothBackends()
+        {
+            foreach (JiggleBackend backend in new[] { JiggleBackend.Managed, JiggleBackend.Native })
+            {
+                JiggleWorld w = new JiggleWorld();
+                using (JiggleHost h = new JiggleHost(1, 4))
+                {
+                    for (int k = 0; k < 5; k++)
+                    {
+                        JiggleCollider[] cs = ColliderCases(k);
+                        w.AddCollider(cs[0]);
+                        Assert.AreEqual(k, h.AddCollider(cs[0]));
+                    }
+                    JiggleField gusty = Field(
+                        JiggleConst.FieldDirectional, JiggleConst.FieldAcceleration, 0, 12.0f, 0.0f,
+                        new JVec4(0.4f, 1.0f, 0.0f, 0.0f), new JVec4(0.3f, 0.0f, 1.0f, 0.9f));
+                    gusty.Turbulence = 0.7f;
+                    gusty.Frequency = 1.4f;
+                    JiggleField vortex = Field(
+                        JiggleConst.FieldVortex, JiggleConst.FieldAcceleration, 1, 40.0f, 2.0f,
+                        new JVec4(0.4f, 1.0f, 0.0f, 0.0f), new JVec4(0.0f, 1.0f, 0.0f, 0.0f));
+                    w.AddField(gusty);
+                    w.AddField(vortex);
+                    Assert.AreEqual(0, h.AddField(gusty));
+                    Assert.AreEqual(1, h.AddField(vortex));
+
+                    JiggleParams p = JiggleParams.Default();
+                    p.Stiffness = 0.3f;
+                    p.Collide = true;
+                    p.SegmentCollision = true;
+                    p.CollisionRadius = 0.05f;
+                    JiggleParams[] ps = { p, p, p, p };
+                    for (int r = 0; r < 3; r++)
+                    {
+                        JVec3[] rest = new JVec3[HandRest.Length];
+                        for (int i = 0; i < rest.Length; i++)
+                        {
+                            rest[i] = HandRest[i] + new JVec3(0.0f, 0.0f, 0.3f * (float)r);
+                        }
+                        int a = w.AddChain(rest, ps);
+                        int b = h.AddChain(rest, ps);
+                        uint[] list = r == 1 ? new uint[] { 4, 2, 0 } : new uint[] { 0, 1, 2, 3, 4 };
+                        w.SetColliderList(a, list);
+                        h.SetColliderList(b, list);
+                    }
+                    *h.Cfg = w.Cfg;
+                    AssertHostEqualsWorld(h, w, backend + " built");
+                    for (int f = 0; f < 60; f++)
+                    {
+                        for (int r = 0; r < 3; r++)
+                        {
+                            JVec3[] pos = new JVec3[HandRest.Length];
+                            for (int i = 0; i < pos.Length; i++)
+                            {
+                                pos[i] = HandRest[i] + new JVec3(0.0f, (float)Math.Sin(f * 0.1 + i + r) * 0.03f, 0.3f * (float)r);
+                            }
+                            w.SetPose(r, pos);
+                            WriteHostPose(h, r, pos, new JQuat[0]);
+                        }
+                        float dt = w.FixedDt * (float)(1 + f % 3);
+                        Assert.AreEqual(w.Step(dt, backend), h.Step(dt, backend));
+                        AssertHostEqualsWorld(h, w, backend + " frame " + f);
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void HostSetParamsBakesInPlaceAndRefusesTheWrongCount()
+        {
+            JiggleParams a = JiggleParams.Default();
+            a.Stiffness = 0.2f;
+            JiggleParams b = JiggleParams.Default();
+            b.Stiffness = 0.9f;
+            b.Mass = 3.0f;
+            b.AngleLimited = true;
+            JVec3[] rest = { new JVec3(0f, 1f, 0f), new JVec3(0f, 0.9f, 0f), new JVec3(0f, 0.8f, 0f), new JVec3(0f, 0.7f, 0f) };
+            using (JiggleHost changed = new JiggleHost())
+            using (JiggleHost fresh = new JiggleHost())
+            {
+                changed.AddChain(rest, new JiggleParams[] { a, a, a });
+                fresh.AddChain(rest, new JiggleParams[] { b, b, b });
+                changed.StepFixed(5, JiggleBackend.Managed);
+                int rigBytes = sizeof(JiggleParticleState) * changed.ParticleCount;
+                byte[] before = new byte[rigBytes];
+                System.Runtime.InteropServices.Marshal.Copy((IntPtr)changed.State, before, 0, rigBytes);
+                changed.SetParams(0, new JiggleParams[] { b, b, b });
+                Assert.IsTrue(
+                    SameBytes(changed.Defs, fresh.Defs, (long)changed.ParticleCount * sizeof(JiggleParticleDef)),
+                    "baked in place the same as built");
+                byte[] after = new byte[rigBytes];
+                System.Runtime.InteropServices.Marshal.Copy((IntPtr)changed.State, after, 0, rigBytes);
+                for (int i = 0; i < rigBytes; i++)
+                {
+                    Assert.AreEqual(before[i], after[i], "SetParams must not touch the state");
+                }
+                Assert.Throws<ArgumentException>(delegate { changed.SetParams(0, new JiggleParams[] { b, b }); }, "two for three bones");
+                Assert.Throws<ArgumentException>(delegate { changed.SetParams(1, new JiggleParams[] { b, b, b }); }, "no such rig");
+                changed.SetTipScale(0, 2.0f);
+                Assert.AreEqual(2.0f, changed.TipScale[0]);
+                changed.SetTipScale(0, -1.0f);
+                Assert.AreEqual(1.0f, changed.TipScale[0], "a bad tip scale counts as 1");
+            }
+        }
+
+        [Test]
+        public void HostResetFlagIsClearedByTheSolverAndTheClockCarriesOver()
+        {
+            JiggleParams p = JiggleParams.Default();
+            JVec3[] rest = { new JVec3(0f, 1f, 0f), new JVec3(0f, 0.9f, 0f), new JVec3(0f, 0.8f, 0f) };
+            foreach (JiggleBackend backend in new[] { JiggleBackend.Managed, JiggleBackend.Native })
+            {
+                using (JiggleHost h = new JiggleHost())
+                {
+                    h.AddChain(rest, new JiggleParams[] { p, p });
+                    h.Reset(0);
+                    Assert.AreNotEqual(0u, h.Rigs[0].Flags & JiggleConst.RigReset, "set");
+                    Assert.AreEqual(0, h.StepFixed(1, backend));
+                    Assert.AreEqual(0u, h.Rigs[0].Flags & JiggleConst.RigReset, backend + ": cleared by the solver");
+                    Assert.Throws<ArgumentException>(delegate { h.Reset(1); });
+                }
+            }
+            using (JiggleHost a = new JiggleHost())
+            using (JiggleHost b = new JiggleHost())
+            {
+                a.AddChain(rest, new JiggleParams[] { p, p });
+                b.AddChain(rest, new JiggleParams[] { p, p });
+                a.FixedDt = 1.0f / 30.0f;
+                a.MaxSteps = 3;
+                a.Step(0.05f, JiggleBackend.Managed);
+                b.CopyClock(a);
+                Assert.AreEqual(Bits(a.Accumulator), Bits(b.Accumulator));
+                Assert.AreEqual(Bits(a.Cfg->Time), Bits(b.Cfg->Time));
+                Assert.AreEqual(Bits(a.FixedDt), Bits(b.FixedDt));
+                Assert.AreEqual(a.MaxSteps, b.MaxSteps);
+                a.Step(0.02f, JiggleBackend.Managed);
+                b.Step(0.02f, JiggleBackend.Managed);
+                Assert.AreEqual(a.Cfg->Steps, b.Cfg->Steps);
+                Assert.AreEqual(Bits(a.Cfg->Alpha), Bits(b.Cfg->Alpha));
+                b.Accumulator = float.NaN;
+                Assert.AreEqual(0.0f, b.Accumulator, "a bad value counts as 0");
+            }
+        }
     }
 }

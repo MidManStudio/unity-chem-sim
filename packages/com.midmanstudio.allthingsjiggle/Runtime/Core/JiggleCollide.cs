@@ -35,7 +35,7 @@ namespace MidManStudio.AllThingsJiggle
             {
                 return x;
             }
-            float l = MathF.Sqrt(l2);
+            float l = JiggleMath.Sqrt(l2);
             JVec3 n = l > 1e-6f ? d * (1.0f / l) : JVec3.Up;
             return core + n * minDist;
         }
@@ -106,15 +106,15 @@ namespace MidManStudio.AllThingsJiggle
                 {
                     return x;
                 }
-                float l = MathF.Sqrt(l2);
+                float l = JiggleMath.Sqrt(l2);
                 JVec3 n = d * (1.0f / l);
                 JVec3 pushed = clamped + n * rr;
                 return center + q.Rotate(pushed);
             }
             // Inside the core box: leave through the nearest face.
-            float px = half.X - MathF.Abs(local.X);
-            float py = half.Y - MathF.Abs(local.Y);
-            float pz = half.Z - MathF.Abs(local.Z);
+            float px = half.X - JiggleMath.Abs(local.X);
+            float py = half.Y - JiggleMath.Abs(local.Y);
+            float pz = half.Z - JiggleMath.Abs(local.Z);
             JVec3 o = local;
             if (px <= py && px <= pz)
             {

@@ -62,30 +62,13 @@ namespace MidManStudio.AllThingsJiggle
         {
             FixedDt = 1.0f / 60.0f;
             MaxSteps = 8;
-            Cfg = new JiggleStepConfig();
-            Cfg.Dt = FixedDt;
-            Cfg.Steps = 1;
-            Cfg.GravityY = -9.81f;
-            Cfg.TeleportDistance = 5.0f;
-            Cfg.SleepSpeed = 0.0005f;
-            Cfg.SleepDeviation = 0.002f;
-            Cfg.SleepFrames = 0;
-            Cfg.WakeMotion = 0.002f;
+            Cfg = JiggleStepConfig.Defaults(FixedDt);
         }
 
         private static void Append<T>(ref T[] array, T value)
         {
             Array.Resize(ref array, array.Length + 1);
             array[array.Length - 1] = value;
-        }
-
-        // Where the virtual end particle goes: past the last bone, along its direction, scale bone lengths away.
-        private static JVec3 TipPosition(JVec3[] world, float scale)
-        {
-            int n = world.Length;
-            JVec3 last = world[n - 1];
-            JVec3 before = world[n - 2];
-            return last + (last - before) * scale;
         }
 
         /// <summary>
@@ -101,42 +84,20 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         public int AddChain(JVec3[] restWorld, JiggleParams[] p, float tipScale = 1.0f)
         {
-            if (restWorld == null || p == null || restWorld.Length < 2 || p.Length != restWorld.Length - 1)
-            {
-                throw new ArgumentException("a chain needs an anchor and one parameter set per bone");
-            }
-            int bones = restWorld.Length - 1;
+            JiggleChainBuild.Validate(restWorld, p);
             int offset = Defs.Length;
-            if (!(JiggleMath.IsFinite(tipScale) && tipScale > 0.0f))
+            tipScale = JiggleChainBuild.CleanTipScale(tipScale);
+
+            JiggleParticleDef[] defs = JiggleChainBuild.BakeDefs(p);
+            for (int i = 0; i < defs.Length; i++)
             {
-                tipScale = 1.0f;
+                Append(ref Defs, defs[i]);
             }
 
-            Append(ref Defs, JiggleParams.AnchorDef());
-            for (int b = 0; b < bones; b++)
-            {
-                uint flags = b == 0 ? JiggleConst.FlagRoot : 0u;
-                Append(ref Defs, p[b].Bake(b, flags));
-            }
-            JiggleParams tip = p[bones - 1];
-            tip.Collide = false;
-            Append(ref Defs, tip.Bake(bones, JiggleConst.FlagVirtual));
-
-            int n = bones + 2;
+            int n = defs.Length;
             JVec3 anchor = restWorld[0];
-            JVec3[] worldPose = new JVec3[n];
-            Array.Copy(restWorld, worldPose, restWorld.Length);
-            worldPose[n - 1] = TipPosition(restWorld, tipScale);
-
-            float extent = 0.0f;
-            for (int i = 0; i < n; i++)
-            {
-                float d = (worldPose[i] - anchor).Length();
-                if (d > extent)
-                {
-                    extent = d;
-                }
-            }
+            JVec3[] worldPose = JiggleChainBuild.PoseWithTip(restWorld, tipScale);
+            float extent = JiggleChainBuild.Extent(worldPose);
             for (int i = 0; i < n; i++)
             {
                 JVec3 rel = worldPose[i] - anchor;
@@ -212,45 +173,22 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         public void SetPose(int rig, JVec3[] poseWorld, JQuat[] rots = null)
         {
-            JiggleRig r = Rigs[rig];
-            int off = (int)r.ParticleOffset;
-            int n = (int)r.ParticleCount;
+            int off = (int)Rigs[rig].ParticleOffset;
+            int n = (int)Rigs[rig].ParticleCount;
             if (poseWorld.Length != n - 1)
             {
                 throw new ArgumentException("the pose needs the anchor and one position per bone");
             }
-            JVec3 anchor = poseWorld[0];
-            JVec3 oldAnchor = r.AnchorWorld;
-            JVec3[] world = new JVec3[n];
-            Array.Copy(poseWorld, world, poseWorld.Length);
-            world[n - 1] = TipPosition(poseWorld, TipScale[rig]);
-
-            for (int i = 0; i < n; i++)
+            // The same code the Unity jobs run, so the tests that use this method check it against the Rust kernel.
+            fixed (JiggleRig* pRig = &Rigs[rig])
+            fixed (JVec4* pPrev = &PosePrev[off])
+            fixed (JVec4* pCurr = &PoseCurr[off])
+            fixed (JVec4* pRot = &PoseRot[off])
+            fixed (JVec3* pWorld = poseWorld)
+            fixed (JQuat* pRots = rots)
             {
-                PosePrev[off + i] = PoseCurr[off + i];
-                JVec3 rel = world[i] - anchor;
-                rel.Write4(ref PoseCurr[off + i]);
-                PoseCurr[off + i].W = 0.0f;
-                JQuat q = (rots != null && i < rots.Length) ? rots[i] : JQuat.Identity;
-                PoseRot[off + i] = q.To4();
+                JigglePose.Write(pRig, pPrev, pCurr, pRot, TipScale[rig], pWorld, pRots, rots == null ? 0 : rots.Length);
             }
-            JVec3 delta = anchor - oldAnchor;
-            Rigs[rig].AnchorDelta = delta;
-            Rigs[rig].AnchorWorld = anchor;
-        }
-
-        // A float to uint conversion that follows Rust's `as u32`: NaN and negative values give 0, large ones stick.
-        private static uint FloatToUint(float v)
-        {
-            if (float.IsNaN(v) || v <= 0.0f)
-            {
-                return 0u;
-            }
-            if (v >= 4294967296.0f)
-            {
-                return uint.MaxValue;
-            }
-            return (uint)v;
         }
 
         /// <summary>
@@ -259,24 +197,11 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         public int Step(float frameDt, JiggleBackend backend)
         {
-            if (JiggleMath.IsFinite(frameDt) && frameDt > 0.0f)
-            {
-                accumulator += frameDt;
-            }
-            uint n = FloatToUint(accumulator / FixedDt + 1e-4f);
-            if (n > MaxSteps)
-            {
-                n = MaxSteps;
-                accumulator = 0.0f;
-            }
-            else
-            {
-                float rest = accumulator - (float)n * FixedDt;
-                accumulator = rest > 0.0f ? rest : 0.0f;
-            }
+            uint n;
+            float alpha;
+            JiggleClock.Advance(ref accumulator, frameDt, FixedDt, MaxSteps, out n, out alpha);
             Cfg.Steps = n;
-            float alpha = accumulator / FixedDt;
-            Cfg.Alpha = alpha > 1.0f ? 1.0f : alpha;
+            Cfg.Alpha = alpha;
             return Run(backend);
         }
 

@@ -1,14 +1,16 @@
 {
     "name": "com.midmanstudio.allthingsjiggle",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "displayName": "All Things Jiggle - Bone Jiggle Physics",
-    "description": "Jiggle physics for bone chains: hair, tails, ears, cloth strips and chests. A dependency-free Rust core (jiggle_core) behind a C interface and a managed C# reference kernel that give the same bits, with plain C# bindings that need no Unity engine references. Standalone and game-agnostic.",
+    "description": "Jiggle physics for bone chains: hair, tails, ears, cloth strips and chests. Add a JiggleChain to the first bone and a manager simulates every chain once a frame with Burst jobs, or with the dependency-free Rust core (jiggle_core) behind a C interface, or with a managed C# reference kernel. The Rust and managed kernels give the same bits. Standalone and game-agnostic.",
     "unity": "2022.3",
     "unityRelease": "0f1",
     "documentationUrl": "",
     "changelogUrl": "",
     "licensesUrl": "",
-    "dependencies": {},
+    "dependencies": {
+        "com.unity.burst": "1.8.4"
+    },
     "keywords": [
         "jiggle",
         "physics",

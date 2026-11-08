@@ -1,0 +1,20 @@
+{
+    "name": "MidManStudio.AllThingsJiggle.Editor",
+    "rootNamespace": "MidManStudio.AllThingsJiggle.EditorTools",
+    "references": [
+        "MidManStudio.AllThingsJiggle",
+        "MidManStudio.AllThingsJiggle.Unity",
+        "Unity.Burst"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

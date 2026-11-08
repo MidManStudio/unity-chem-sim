@@ -163,6 +163,24 @@ namespace MidManStudio.AllThingsJiggle
             get { return new JVec3(GravityX, GravityY, GravityZ); }
             set { GravityX = value.X; GravityY = value.Y; GravityZ = value.Z; }
         }
+
+        /// <summary>
+        /// The settings of a new world: one step per call, gravity of 9.81 meters per second squared down, a teleport
+        /// distance of 5 meters and sleeping off.
+        /// </summary>
+        public static JiggleStepConfig Defaults(float fixedDt)
+        {
+            JiggleStepConfig c = new JiggleStepConfig();
+            c.Dt = fixedDt;
+            c.Steps = 1;
+            c.GravityY = -9.81f;
+            c.TeleportDistance = 5.0f;
+            c.SleepSpeed = 0.0005f;
+            c.SleepDeviation = 0.002f;
+            c.SleepFrames = 0;
+            c.WakeMotion = 0.002f;
+            return c;
+        }
     }
 
     /// <summary>A collider in world space.</summary>

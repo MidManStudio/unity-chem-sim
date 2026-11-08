@@ -6,41 +6,54 @@ anchor that the animation moves. The solver keeps every bone near the pose the
 animation gives, lets it lag, swing and bounce, and hands back a position and a
 rotation per bone.
 
-What the core does today:
+What it does today:
 
+- **Components.** Add a `JiggleChain` to the first bone of a chain. A `JiggleManager`
+  appears by itself and simulates every chain once a frame in `LateUpdate`, after the
+  animation, and writes the local rotation of each bone
+- **Three backends over the same flat buffers.** Burst jobs (the default), the Rust
+  library `jiggle_core` through a C interface, and a managed C# kernel. The managed kernel
+  and the Rust library give the same bits. Burst is checked to a tolerance of 1e-4 meters
+- **A lab in the editor** (Tools, MidMan Studio, Jiggle Lab) that checks Burst and the native
+  library, compares the three backends frame by frame and benchmarks them on the same scenes
+  as the Rust `scene_bench`
 - verlet solving per bone with a pull to the animated shape, a pull to the bone
   length, an optional angle limit, drag, air drag, gravity and a root spring
-- colliders: sphere, capsule, plane, box (optionally rounded) and inside sphere,
-  with an optional test of the whole bone segment, not only its end
-- force fields: directional, radial and vortex, as an acceleration or as a hit
-  impulse, with falloff, a radius and gusts
 - two way coupling: give bones a mass and a bone pulls its parent back, so a weight on
-  a strand drags it down. Bones without a mass stay one way. The number of passes is a
-  setting
+  a strand drags it down. Bones without a mass stay one way
+- colliders (sphere, capsule, plane, box, inside sphere, optional bone segment test) and
+  force fields (directional, radial, vortex, as an acceleration or a hit impulse) in the
+  solver and in `JiggleHost`. Wiring them to Unity objects is the next drop
 - sleep and wake, teleport and reset, and a fixed step accumulator
-- two backends over the same flat buffers that give the same bits: a managed
-  C# kernel and the Rust library `jiggle_core` through a C interface
 
 ## State of this release
 
-This is the core drop. It has the solver, the bindings and the proof that the two
-backends agree. It does not yet have the Unity side: no component to put on a
-bone chain, no Burst jobs, no transform reading and writing, no collider
-components. Those come in the next drop. Until then the package is a library you
-can drive from your own code with `JiggleWorld`.
+Version 0.3.0 is the runtime drop. **Nothing in it has run inside Unity yet.** The C# Core is
+tested under .NET 8 against the Rust library. The Unity layer, the editor lab and the Unity
+tests are compiled against stubs of the Unity API in CI, which proves they are well formed and
+nothing more. Burst compiling the kernel, the transform jobs and the lab are untried. Run the lab
+in your project first, and read the known limits in `docs/com.midmanstudio.allthingsjiggle.md`.
 
-A bone is pulled by its parent and, unless both have a mass, never pulls it back. Set
-`JiggleParams.Mass` on bones (or `JiggleWorld.SetMass` afterwards, tip included) to
-turn the coupling on for the links between them, and `Cfg.CouplingPasses` for how many
-passes a step uses. More passes hold bone lengths better under a heavy tip at a higher
-cost. The mass ratio between neighbours counts as at most 16.
-`docs/com.midmanstudio.allthingsjiggle.md` lists this and the other known limits.
+Not in this drop: colliders, fields and hit impulses from scene objects, level of detail and
+culling (drop 2b), and body colliders, presets and the chest adapter (drop 3).
 
-Version 0.2.0 changes the native interface to version 2. A build of the native
-libraries older than this package is refused by `JiggleLibrary.Verify`.
+Only local rotations are written, so a bone never stretches on screen. A chain is a path: each
+bone is the first child of the one above. A bone can be driven by one chain only.
 
-The C# layer has no Unity engine references, so the same files compile and run
-under plain .NET. That is how CI tests them.
+The Burst package must stay on a 1.8 release up to 1.8.29 on Unity 2022.3, because 1.8.30 and
+later need Unity 6. The package asks for 1.8.4 as the lowest.
+
+The native libraries under `Runtime/Plugins/Native` were built for interface version 1. The
+current interface is 2, so until the `build-jiggle-rust-libs` workflow has run on this drop the
+Native backend is refused and the manager runs Burst instead, with one warning.
+
+A bone is pulled by its parent and, unless both have a mass, never pulls it back. Set `mass` on the
+chain (or `JiggleParams.Mass` per bone) to turn the coupling on for the links between them, and
+`couplingPasses` on the manager for how many passes a step uses. The mass ratio between neighbours
+counts as at most 16.
+
+The Core has no Unity engine references, so the same files compile and run under plain .NET.
+That is how CI tests them.
 
 ## Install
 
@@ -55,6 +68,19 @@ binaries. The managed backend works without them. The native backend throws
 `DllNotFoundException` on its first call.
 
 ## Use
+
+In the editor:
+
+1. Select the first bone that should move, for example the root of a strand of hair.
+2. Add Component, MidMan Studio, Jiggle Chain. The parent of that bone is the anchor.
+3. Press play. A Jiggle Manager is created by itself. Add one to the scene yourself to change gravity,
+   the step rate or the backend.
+
+`poseSource` is **Bind** by default: the chain holds the pose its bones had when it was enabled, carried
+along by the anchor. Use **Animated** for bones that an Animator rewrites every frame.
+
+From code, `JiggleManager.TryGet()` gives the running manager, `Stats` what the last frame did and
+`Simulate(dt)` runs a frame by hand. Without Unity components the solver is a library:
 
 ```csharp
 using MidManStudio.AllThingsJiggle;
@@ -77,18 +103,21 @@ JVec3 tip = world.WorldPos(rig, 3);
 JQuat tipRotation = world.WorldRot(rig, 3);
 ```
 
-`JiggleWorld` is a model of the call sequence, with plain managed arrays. A host
-that keeps its own native buffers calls `JiggleSolver.StepRigs` and
-`JiggleSolver.ResolveRigs` (managed) or the matching `jgl_` functions (native)
+`JiggleWorld` is a model of the call sequence, with plain managed arrays. `JiggleHost` is the same in
+unmanaged memory, for jobs and threads. A host that keeps its own native buffers calls
+`JiggleSolver.StepRigs` and `JiggleSolver.ResolveRigs` (managed) or the matching `jgl_` functions (native)
 on them directly. Both take the same arguments and give the same status codes.
 
 ## Tests
 
-`Tests/Editor/JiggleParityTests.cs` runs in the Unity Test Runner (Edit Mode).
-CI runs the same file under .NET 8 against the freshly built library. It checks
-every struct offset field by field, every exported function, random scenes of
-every feature (with and without masses) bit for bit between the two backends, the
-error codes, threaded batches, and two golden scenes, one way and coupled, whose
-hashes the Rust tests assert too.
+`Tests/Editor/JiggleParityTests.cs` (30 tests) runs in the Unity Test Runner (Edit Mode). CI runs the same
+file under .NET 8 against the freshly built library. It checks every struct offset field by field, every
+exported function, random scenes of every feature (with and without masses) bit for bit between the two
+backends, the error codes, threaded batches, the host against the world, and two golden scenes, one way and
+coupled, whose hashes the Rust tests assert too.
+
+`Tests/Editor/JiggleUnityLayerTests.cs` (5 tests) needs the editor: the settings bake, Burst against the
+managed kernel within 1e-4 meters, and the step and resolve as two jobs. CI compiles it against the Unity
+stubs in `Tests~/UnityStubs` but cannot run it.
 
 See `docs/com.midmanstudio.allthingsjiggle.md` for the design and the known problems.

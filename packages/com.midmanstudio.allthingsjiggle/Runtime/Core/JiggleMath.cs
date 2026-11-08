@@ -101,7 +101,7 @@ namespace MidManStudio.AllThingsJiggle
         /// <summary>Length.</summary>
         public float Length()
         {
-            return MathF.Sqrt(LengthSq());
+            return JiggleMath.Sqrt(LengthSq());
         }
 
         /// <summary>The unit vector, or <paramref name="fallback"/> when the length is too small to divide by.</summary>
@@ -110,7 +110,7 @@ namespace MidManStudio.AllThingsJiggle
             float l2 = LengthSq();
             if (l2 > 1e-20f)
             {
-                return this * (1.0f / MathF.Sqrt(l2));
+                return this * (1.0f / JiggleMath.Sqrt(l2));
             }
             return fallback;
         }
@@ -195,7 +195,7 @@ namespace MidManStudio.AllThingsJiggle
             float l2 = X * X + Y * Y + Z * Z + W * W;
             if (l2 > 1e-20f)
             {
-                float inv = 1.0f / MathF.Sqrt(l2);
+                float inv = 1.0f / JiggleMath.Sqrt(l2);
                 return new JQuat(X * inv, Y * inv, Z * inv, W * inv);
             }
             return Identity;
@@ -248,10 +248,45 @@ namespace MidManStudio.AllThingsJiggle
     /// <summary>Scalar helpers shared by the kernel files.</summary>
     public static class JiggleMath
     {
-        /// <summary>Whether a float is neither NaN nor infinite.</summary>
+        /// <summary>
+        /// Square root of a float, correctly rounded. It is computed in double and rounded back to float, which gives
+        /// the same float as MathF.Sqrt for every input: a double has more than twice the bits of a float plus two,
+        /// so rounding twice cannot change the result. It exists because Burst accepts System.Math but rejects
+        /// System.MathF, and the kernel must compile under Burst and give the bits of the Rust kernel.
+        /// </summary>
+        public static float Sqrt(float v)
+        {
+            return (float)Math.Sqrt((double)v);
+        }
+
+        /// <summary>Absolute value of a float, exact. In double for the same reason as <see cref="Sqrt"/>.</summary>
+        public static float Abs(float v)
+        {
+            return (float)Math.Abs((double)v);
+        }
+
+        /// <summary>Largest whole number not above v, exact. In double for the same reason as <see cref="Sqrt"/>.</summary>
+        public static float Floor(float v)
+        {
+            return (float)Math.Floor((double)v);
+        }
+
+        /// <summary>
+        /// Whether a float is NaN. Both comparisons are false for NaN and one is true for every number and infinity,
+        /// so no call into System.Single is needed under Burst. (The compiler refuses the plain test v != v.)
+        /// </summary>
+        public static bool IsNaN(float v)
+        {
+            return !(v >= -float.MaxValue || v <= float.MaxValue);
+        }
+
+        /// <summary>
+        /// Whether a float is neither NaN nor infinite. Written as two comparisons, which are false for NaN, so no
+        /// call into System.Single is needed under Burst.
+        /// </summary>
         public static bool IsFinite(float v)
         {
-            return !(float.IsNaN(v) || float.IsInfinity(v));
+            return v >= -float.MaxValue && v <= float.MaxValue;
         }
 
         /// <summary>a + (b - a) * t.</summary>
@@ -265,9 +300,9 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         public static JVec3 Perpendicular(JVec3 a)
         {
-            float ax = MathF.Abs(a.X);
-            float ay = MathF.Abs(a.Y);
-            float az = MathF.Abs(a.Z);
+            float ax = JiggleMath.Abs(a.X);
+            float ay = JiggleMath.Abs(a.Y);
+            float az = JiggleMath.Abs(a.Z);
             JVec3 axis;
             if (ax <= ay && ax <= az)
             {
@@ -290,7 +325,7 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         public static int FloatToInt(float v)
         {
-            if (float.IsNaN(v))
+            if (IsNaN(v))
             {
                 return 0;
             }

@@ -30,7 +30,7 @@ namespace MidManStudio.AllThingsJiggle
         /// <summary>Smooth value noise in -1 to 1 along one axis.</summary>
         public static float Noise1(float x, uint channel)
         {
-            float f = System.MathF.Floor(x);
+            float f = JiggleMath.Floor(x);
             int i = JiggleMath.FloatToInt(f);
             float t = x - f;
             float s = t * t * (3.0f - 2.0f * t);
