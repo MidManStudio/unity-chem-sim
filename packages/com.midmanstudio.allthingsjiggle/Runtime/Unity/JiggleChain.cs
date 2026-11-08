@@ -14,7 +14,7 @@ namespace MidManStudio.AllThingsJiggle
     /// <see cref="maxBones"/>. The component only describes the chain. The <see cref="JiggleManager"/> simulates it.
     /// </summary>
     [DisallowMultipleComponent]
-    [AddComponentMenu("MidMan Studio/Jiggle Chain")]
+    [AddComponentMenu("MidManStudio/AllThingsJiggle/Jiggle Chain")]
     public sealed class JiggleChain : MonoBehaviour
     {
         /// <summary>The values of the bones.</summary>

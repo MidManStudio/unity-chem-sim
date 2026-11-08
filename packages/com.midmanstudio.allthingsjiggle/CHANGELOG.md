@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- menu paths follow the house rule (a top level `MidManStudio` menu, never `Tools` or `Window`): the lab is
+  `MidManStudio/AllThingsJiggle/Jiggle Lab` and the components are `MidManStudio/AllThingsJiggle/Jiggle Chain` and
+  `Jiggle Manager`. Nothing else changed
+
 ## 0.3.0
 
 The Unity runtime. Colliders, fields and level of detail from scene objects are the next drop.
@@ -21,7 +27,7 @@ compiled against stubs of the Unity API.
 - the kernel no longer calls `System.MathF`, which Burst does not support. `JiggleMath.Sqrt`, `Abs` and `Floor`
   give the same bits (a test checks 40000 random inputs). `JiggleMath.IsNaN` and `IsFinite` replace the
   `System.Single` calls
-- an editor lab, Tools, MidMan Studio, Jiggle Lab: checks Burst and the native library, compares the three
+- an editor lab, MidManStudio, AllThingsJiggle, Jiggle Lab (called Tools, MidMan Studio, Jiggle Lab until 0.3.1): checks Burst and the native library, compares the three
   backends frame by frame and benchmarks them on the scenes of the Rust `scene_bench`
 - inspector and gizmos for `JiggleChain`
 - Rust: `benches/scene_bench.rs`, a table of twelve scenes at several thread counts with a CSV line per row,

@@ -15,7 +15,7 @@ namespace MidManStudio.AllThingsJiggle
     /// </summary>
     [DefaultExecutionOrder(10000)]
     [DisallowMultipleComponent]
-    [AddComponentMenu("MidMan Studio/Jiggle Manager")]
+    [AddComponentMenu("MidManStudio/AllThingsJiggle/Jiggle Manager")]
     public sealed unsafe class JiggleManager : MonoBehaviour
     {
         private static JiggleManager instance;

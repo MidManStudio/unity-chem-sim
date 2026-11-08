@@ -62,14 +62,14 @@ Later: a SIMD lane batch kernel that uses the vendored mid-math wide types.
 1. Install the package. It needs the Burst package (`com.unity.burst` 1.8.x on Unity
    2022.3), which the package manifest asks for.
 2. Pick the first bone that should move, for example the root of a strand of hair, and add
-   a **JiggleChain** to it (Add Component, MidMan Studio, Jiggle Chain). The parent of that
+   a **JiggleChain** to it (Add Component, MidManStudio, AllThingsJiggle, Jiggle Chain). The parent of that
    bone is the anchor that holds the chain. The chain runs down through the first child of
    each bone until a bone has no children, the end bone is reached or `maxBones` is reached.
    Chains that start at a scene root have no anchor and are refused with a warning.
 3. Press play. A **JiggleManager** appears by itself the first time a chain is enabled. To
    change gravity, the step rate, the backend and the other global settings, add the
    component to a scene object yourself and edit it there.
-4. Open **Tools, MidMan Studio, Jiggle Lab** to see the live numbers, to check that Burst
+4. Open **MidManStudio, AllThingsJiggle, Jiggle Lab** to see the live numbers, to check that Burst
    and the native library work, and to run the parity check and the benchmark.
 
 Two pose sources exist. **Bind** (the default) holds each chain to the pose its bones had when
@@ -102,6 +102,11 @@ Tests~/UnityStubs/                 the Unity layer compiled against Unity API st
 docs/                              this file
 Documentation~/                    a pointer for the Package Manager
 ```
+
+Menu rule, for this package and every MidManStudio package: every menu entry lives under the top level
+`MidManStudio` menu, as `MidManStudio/<Package>/<Item>`, and never under `Tools` or `Window`. That covers
+editor windows (`MenuItem`), `CreateAssetMenu`, `AddComponentMenu` and settings entries. Here that is
+`MidManStudio/AllThingsJiggle/Jiggle Lab`, `.../Jiggle Chain` and `.../Jiggle Manager`.
 
 The namespace of every public type is `MidManStudio.AllThingsJiggle`, in all assemblies. The
 editor code is in `MidManStudio.AllThingsJiggle.EditorTools`, because a namespace called
@@ -475,7 +480,7 @@ sine and cosine with the Rust libm, so its checksum is not the lab's either.
 
 ## Editor/Lab/JiggleLabWindow.cs
 
-Tools, MidMan Studio, Jiggle Lab. Three tabs:
+MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Three tabs:
 
 - **Live** checks that Burst compiles the jobs and that the native library loads with this package's
   interface version, and in play mode shows the manager: the backend (editable), the backend that runs, the
@@ -710,6 +715,12 @@ No root level scripts are used.
   chain, which is why that assertion is there.
 - Two deliberate one bit changes to the managed field and collider code made the
   tests fail, and the change was reverted. The tests do see single bit differences.
+
+### Editor/Lab/JiggleLabWindow.cs, Runtime/Unity/JiggleChain.cs, JiggleManager.cs
+
+- The lab was under `Tools/MidMan Studio` and the two components under `MidMan Studio` in the Add Component
+  menu. The house rule is a top level `MidManStudio` menu with a sub menu per package, so the paths are now
+  `MidManStudio/AllThingsJiggle/...`. Found by Su after the first drop, not by a build.
 
 ### Tests~/UnityStubs
 

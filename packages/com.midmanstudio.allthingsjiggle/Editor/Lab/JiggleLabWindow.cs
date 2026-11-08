@@ -44,7 +44,7 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
 
         private GUIStyle mono;
 
-        [MenuItem("Tools/MidMan Studio/Jiggle Lab")]
+        [MenuItem("MidManStudio/AllThingsJiggle/Jiggle Lab")]
         public static void Open()
         {
             GetWindow<JiggleLabWindow>("Jiggle Lab");

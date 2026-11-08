@@ -14,7 +14,7 @@ What it does today:
 - **Three backends over the same flat buffers.** Burst jobs (the default), the Rust
   library `jiggle_core` through a C interface, and a managed C# kernel. The managed kernel
   and the Rust library give the same bits. Burst is checked to a tolerance of 1e-4 meters
-- **A lab in the editor** (Tools, MidMan Studio, Jiggle Lab) that checks Burst and the native
+- **A lab in the editor** (MidManStudio, AllThingsJiggle, Jiggle Lab) that checks Burst and the native
   library, compares the three backends frame by frame and benchmarks them on the same scenes
   as the Rust `scene_bench`
 - verlet solving per bone with a pull to the animated shape, a pull to the bone
@@ -72,7 +72,7 @@ binaries. The managed backend works without them. The native backend throws
 In the editor:
 
 1. Select the first bone that should move, for example the root of a strand of hair.
-2. Add Component, MidMan Studio, Jiggle Chain. The parent of that bone is the anchor.
+2. Add Component, MidManStudio, AllThingsJiggle, Jiggle Chain. The parent of that bone is the anchor.
 3. Press play. A Jiggle Manager is created by itself. Add one to the scene yourself to change gravity,
    the step rate or the backend.
 

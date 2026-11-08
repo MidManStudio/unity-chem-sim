@@ -470,6 +470,26 @@ Two threads gave 1.8 to 2.1 times the speed on the larger scenes. The four threa
 informative here because the machine has two cores. As with the step bench, read them as a size of the
 cost. They are not a promise and the CI bench job gives numbers from its own hardware.
 
+The first CI bench run (GitHub runner with 4 cores, run 6 on 2026-11-08, scale 1) gave, with the wall time of
+one frame at one thread and at four, and the speed up:
+
+| Scene | 1 thread | 4 threads | Speed up | ns per particle (1 thread) |
+| --- | --- | --- | --- | --- |
+| `hair-1k` | 1.91 ms | 0.66 ms | 2.9 | 184 |
+| `hair-10k` | 19.1 ms | 6.3 ms | 3.0 | 184 |
+| `long-64` | 1.16 ms | 0.40 ms | 2.9 | 172 |
+| `collide-1k` | 2.65 ms | 0.92 ms | 2.9 | 259 |
+| `fields-1k` | 2.66 ms | 0.88 ms | 3.0 | 259 |
+| `coupled-1k-p4` | 4.15 ms | 1.37 ms | 3.0 | 408 |
+| `asleep-1k` | 0.15 ms | 0.08 ms | 1.8 | 10 |
+| `full-1k` | 5.74 ms | 1.92 ms | 3.0 | 566 |
+
+The step bench gave 1.6 to 2.6 us per rig step there (600 rigs of 6 bones: 1.6 one way, 1.9 coupled with one
+pass, 2.8 with three). The call overhead of the C interface came out between minus 0.2 and plus 0.1 us per
+extra call for 4 to 63 calls, which is noise, and 0.018 us per extra call at 1000 calls. Every thread
+count gave the same checksum as one thread in every scene. The CPU time of the step goes up at four threads
+(for example 1.17 ms to 1.43 ms for `hair-1k`), which is the shared cores and caches of a hosted runner.
+
 **How it relates to the Unity lab.** The Unity package builds the same scene table, the same geometry
 and the same motion in `Editor/Lab/JiggleBenchScenes.cs` and runs it on the Burst, native (this crate) and
 managed backends in `Editor/Lab/JiggleLabRunner.cs`. That run is the like for like comparison: one
