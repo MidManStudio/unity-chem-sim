@@ -14,10 +14,19 @@ name: Jiggle core
 # the same bits, struct layouts are checked field by field, and a golden scene
 # ties the C# world to the Rust world.
 #
+# The unity-stubs job is the only check of the Unity layer that can run
+# without Unity. It compiles Runtime/Unity, Editor and the editor tests against
+# a hand written subset of the Unity 2022.3 API, one project per asmdef, so a
+# wrong member, a missing using or a Core internal used from another assembly
+# fails here. It cannot say how the real engine behaves. Burst, the transform
+# jobs and the lab run only inside Unity.
+#
 # The benchmark job is manual: Actions -> Jiggle core -> Run workflow, then
-# tick "bench". Results land in that run's Job Summary. GitHub-hosted runners
-# are shared hardware, so read them as "did anything change a lot between two
-# runs", not as absolute speed.
+# tick "bench". It runs the step bench and the scene bench, and the results
+# land in that run's Job Summary. GitHub-hosted runners are shared hardware, so
+# read them as "did anything change a lot between two runs", not as absolute
+# speed. The comparison with Burst is made by the Jiggle Lab inside Unity on
+# one machine, not by comparing this summary with a Unity run.
 on:
   push:
     paths:
@@ -117,6 +126,53 @@ jobs:
         working-directory: /tmp/floor
         run: cargo test
 
+  # The Unity layer compiled against the Unity API stubs, one project per
+  # asmdef: the Core with no references at all (noEngineReferences), then
+  # Runtime/Unity, Editor and the tests with only the references their asmdefs
+  # list. Also two repository rules a Unity build would only break on later.
+  unity-stubs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Compile Core, Runtime/Unity, Editor and the tests against the stubs
+        run: |
+          cd packages/com.midmanstudio.allthingsjiggle/Tests~/UnityStubs
+          dotnet build Tests.csproj -c Release -o /tmp/stub-out
+          dotnet build Editor.csproj -c Release -o /tmp/stub-out
+
+      # Burst rejects System.MathF. The Core kernel uses the helpers of
+      # JiggleMath, which give the same bits. Only JiggleParams.Bake, which
+      # runs once on the main thread and never inside a job, may use MathF.
+      - name: No MathF in the code Burst compiles
+        run: |
+          if grep -rnE 'MathF\.[A-Z]' packages/com.midmanstudio.allthingsjiggle/Runtime/Core --include=*.cs \
+              | grep -v 'JiggleParams.cs' | grep -vE ':[0-9]+:[[:space:]]*//'; then
+            echo "::error::MathF in Runtime/Core. Use JiggleMath.Sqrt, Abs or Floor (Burst does not support MathF)."
+            exit 1
+          fi
+
+      # A package that is not embedded in a project is read only, and Unity
+      # ignores an asset that has no .meta file next to it. Folders ending in
+      # a tilde (Tests~, Documentation~) are not imported and need none.
+      - name: Every asset has a .meta file
+        run: |
+          cd packages/com.midmanstudio.allthingsjiggle
+          missing=0
+          while IFS= read -r f; do
+            if [ ! -f "$f.meta" ]; then
+              echo "::error file=packages/com.midmanstudio.allthingsjiggle/${f#./}::no .meta file"
+              missing=1
+            fi
+          done < <(find . -mindepth 1 -name '*~' -prune -o ! -name '*.meta' -print | sort)
+          exit $missing
+
   bench:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.bench }}
     runs-on: ubuntu-latest
@@ -127,12 +183,16 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # --bench step_bench runs only the harness. Without it cargo also runs
-      # the library's unit tests in bench mode and prints them ahead of the
-      # table. Only stdout goes to the file, so compile output stays in the log.
-      - name: Run benchmarks
+      # --bench NAME runs only that harness. Without it cargo also runs the
+      # library's unit tests in bench mode and prints them ahead of the table.
+      # Only stdout goes to the files, so compile output stays in the log.
+      - name: Run the step bench
         shell: bash
         run: cargo bench -p jiggle_core --bench step_bench > bench-output.txt
+
+      - name: Run the scene bench
+        shell: bash
+        run: cargo bench -p jiggle_core --bench scene_bench > scene-bench-output.txt
 
       - name: Write job summary
         if: always()
@@ -141,12 +201,16 @@ jobs:
             echo "## jiggle_core bench - $(date -u +'%Y-%m-%d %H:%M UTC')"
             echo
             echo "Commit: \`${{ github.sha }}\`"
-            echo
-            echo '```'
-            if [ -f bench-output.txt ]; then
-              cat bench-output.txt
-            else
-              echo "No bench output: the benchmark step did not produce a file."
-            fi
-            echo '```'
+            for f in bench-output.txt scene-bench-output.txt; do
+              echo
+              echo "### $f"
+              echo
+              echo '```'
+              if [ -f "$f" ]; then
+                cat "$f"
+              else
+                echo "No output: the step that writes $f did not produce a file."
+              fi
+              echo '```'
+            done
           } >> "$GITHUB_STEP_SUMMARY"
