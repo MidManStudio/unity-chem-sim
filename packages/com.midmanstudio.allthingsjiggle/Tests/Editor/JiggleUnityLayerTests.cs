@@ -10,7 +10,8 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
 {
     /// <summary>
     /// Tests of the Unity layer that need the editor: the settings of a chain and the Burst compiled solver against
-    /// the managed one. The transform jobs need a scene and are tried in the lab (Tools, MidMan Studio, Jiggle Lab).
+    /// the managed one, and the components of drop 2b. The transform jobs need a scene and are tried in the lab
+    /// (MidManStudio, AllThingsJiggle, Jiggle Lab).
     /// </summary>
     public sealed unsafe class JiggleUnityLayerTests
     {
@@ -137,6 +138,181 @@ namespace MidManStudio.AllThingsJiggle.EditorTests
                     split.EndFrame();
                 }
                 Assert.AreEqual(0.0f, MaxDifference(both, split), "the same code in two jobs gives the same result");
+            }
+        }
+
+        [Test]
+        public void NewSettingsBakeToTheCoreAndDefaultToTheCoreDefaults()
+        {
+            JiggleChainSettings s = new JiggleChainSettings();
+            JiggleParams d = JiggleParams.Default();
+            JiggleParams p = s.ToParams(0, 3);
+            Assert.AreEqual(d.Collide, p.Collide);
+            Assert.AreEqual(d.SegmentCollision, p.SegmentCollision);
+            Assert.AreEqual(d.CollisionRadius, p.CollisionRadius, 1e-6f);
+            Assert.AreEqual(d.WindResponse, p.WindResponse, 1e-6f);
+            Assert.AreEqual(d.ImpulseResponse, p.ImpulseResponse, 1e-6f);
+
+            s.collide = true;
+            s.segmentCollision = true;
+            s.collisionRadius = 0.2f;
+            s.windResponse = 0.5f;
+            s.impulseResponse = 2.0f;
+            JiggleParams[] all = s.ToParams(3);
+            for (int i = 0; i < all.Length; i++)
+            {
+                Assert.IsTrue(all[i].Collide);
+                Assert.IsTrue(all[i].SegmentCollision);
+                Assert.AreEqual(0.2f, all[i].CollisionRadius, 1e-6f);
+                Assert.AreEqual(0.5f, all[i].WindResponse, 1e-6f);
+                Assert.AreEqual(2.0f, all[i].ImpulseResponse, 1e-6f);
+            }
+            JiggleParticleDef def = all[0].Bake(0, 0u);
+            Assert.AreNotEqual(0u, def.Flags & JiggleConst.FlagCollide, "the collide setting reaches the baked flag");
+            Assert.AreNotEqual(0u, def.Flags & JiggleConst.FlagSegment);
+        }
+
+        [Test]
+        public void ChainLodModesResolveToTheLimitsTheyPromise()
+        {
+            JiggleLodSettings manager = new JiggleLodSettings();
+            manager.CollisionDistance = 10f;
+            manager.CullDistance = 30f;
+            manager.CullOffscreen = true;
+            manager.OffscreenDelay = 1f;
+            manager.Hysteresis = 3f;
+
+            JiggleChainLod lod = new JiggleChainLod();
+            JiggleLodSettings inherited = lod.Resolve(manager, 3f);
+            Assert.AreEqual(10f, inherited.CollisionDistance, 0f);
+            Assert.AreEqual(30f, inherited.CullDistance, 0f);
+            Assert.IsTrue(inherited.CullOffscreen);
+
+            lod.mode = JiggleLodMode.AlwaysSimulate;
+            JiggleLodSettings always = lod.Resolve(manager, 3f);
+            Assert.AreEqual(0f, always.CollisionDistance, 0f);
+            Assert.AreEqual(0f, always.CullDistance, 0f);
+            Assert.IsFalse(always.CullOffscreen);
+
+            lod.mode = JiggleLodMode.Custom;
+            lod.collisionDistance = 4f;
+            lod.cullDistance = 8f;
+            lod.cullOffscreen = false;
+            lod.offscreenDelay = 0.25f;
+            JiggleLodSettings own = lod.Resolve(manager, 3f);
+            Assert.AreEqual(4f, own.CollisionDistance, 0f);
+            Assert.AreEqual(8f, own.CullDistance, 0f);
+            Assert.IsFalse(own.CullOffscreen);
+            Assert.AreEqual(0.25f, own.OffscreenDelay, 0f);
+            Assert.AreEqual(3f, own.Hysteresis, 0f, "a custom chain takes the hysteresis of the manager");
+        }
+
+        [Test]
+        public void ColliderShapeBuildsTheSolverShapeFromItsTransform()
+        {
+            GameObject go = new GameObject("jiggle collider test");
+            try
+            {
+                JiggleColliderShape s = go.AddComponent<JiggleColliderShape>();
+                go.transform.position = new Vector3(1f, 2f, 3f);
+                go.transform.localScale = new Vector3(2f, 2f, 2f);
+                s.shape = JiggleShapeKind.Sphere;
+                s.radius = 0.25f;
+                JiggleCollider sphere = s.Peek();
+                Assert.AreEqual(JiggleConst.ColliderSphere, sphere.Kind);
+                Assert.AreEqual(0.5f, sphere.Radius, 1e-5f, "the radius follows the scale");
+                Assert.AreEqual(1f, sphere.Center.X, 1e-5f);
+                Assert.AreEqual(2f, sphere.Center.Y, 1e-5f);
+                Assert.AreEqual(3f, sphere.Center.Z, 1e-5f);
+
+                go.transform.localScale = new Vector3(1f, 1f, 1f);
+                s.shape = JiggleShapeKind.Capsule;
+                s.axis = JiggleShapeAxis.Y;
+                s.height = 1f;
+                s.radius = 0.1f;
+                JiggleCollider capsule = s.Peek();
+                Assert.AreEqual(JiggleConst.ColliderCapsule, capsule.Kind);
+                Assert.AreEqual(0.4f, capsule.HalfHeight, 1e-5f, "half of the height minus the cap");
+                Assert.AreEqual(0.1f, capsule.Radius, 1e-5f);
+                Assert.AreEqual(1f, capsule.Axis.Y, 1e-5f);
+
+                s.shape = JiggleShapeKind.Box;
+                s.size = new Vector3(1f, 2f, 3f);
+                s.radius = 0f;
+                JiggleCollider box = s.Peek();
+                Assert.AreEqual(JiggleConst.ColliderBox, box.Kind);
+                Assert.AreEqual(0.5f, box.Extents.X, 1e-5f);
+                Assert.AreEqual(1f, box.Extents.Y, 1e-5f);
+                Assert.AreEqual(1.5f, box.Extents.Z, 1e-5f);
+
+                s.shape = JiggleShapeKind.Plane;
+                JiggleCollider plane = s.Peek();
+                Assert.AreEqual(JiggleConst.ColliderPlane, plane.Kind);
+                Assert.AreEqual(1f, plane.Axis.Y, 1e-5f, "the normal is the up direction");
+
+                s.shape = JiggleShapeKind.InsideSphere;
+                s.radius = 3f;
+                Assert.AreEqual(JiggleConst.ColliderInsideSphere, s.Peek().Kind);
+                Assert.AreEqual(3f, s.Peek().Radius, 1e-5f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void ColliderShapeReportsMovementOnlyWhenItMovesAndStaticShapesAreBuiltOnce()
+        {
+            GameObject go = new GameObject("jiggle collider move test");
+            try
+            {
+                JiggleColliderShape s = go.AddComponent<JiggleColliderShape>();
+                bool moved;
+                s.Build(out moved);
+                Assert.IsTrue(moved, "the first build counts as moved");
+                s.Build(out moved);
+                Assert.IsFalse(moved, "nothing changed");
+                go.transform.position = new Vector3(0f, 1f, 0f);
+                s.Build(out moved);
+                Assert.IsTrue(moved, "the shape moved");
+                s.Peek();
+                s.Build(out moved);
+                Assert.IsFalse(moved, "looking at the shape does not change what counts as moved");
+
+                s.staticShape = true;
+                s.Build(out moved);
+                go.transform.position = new Vector3(5f, 5f, 5f);
+                JiggleCollider cached = s.Build(out moved);
+                Assert.IsFalse(moved, "a static shape is not watched");
+                Assert.AreEqual(1f, cached.Center.Y, 1e-5f, "and it keeps the shape it was built with");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void ChainThatIsNotSimulatedRefusesHitsAndAnswersQuietly()
+        {
+            GameObject go = new GameObject("jiggle chain test");
+            try
+            {
+                JiggleChain c = go.AddComponent<JiggleChain>();
+                Assert.IsFalse(c.IsSimulating);
+                Assert.IsFalse(c.IsAsleep);
+                Assert.AreEqual(JiggleLodLevel.Full, c.LodLevel);
+                Assert.IsFalse(c.AddImpulse(new Vector3(1f, 0f, 0f)));
+                Assert.IsFalse(c.AddImpulseAt(Vector3.zero, new Vector3(1f, 0f, 0f), 1f));
+                c.Wake();
+                Assert.IsNotNull(c.lod);
+                Assert.IsTrue(c.allowSleep, "chains may sleep unless told not to");
+                Assert.AreEqual(0, c.ignoreLayers.value, "a chain collides with every layer by default");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
             }
         }
 

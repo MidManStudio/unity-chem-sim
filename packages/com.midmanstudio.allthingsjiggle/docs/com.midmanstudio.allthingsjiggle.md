@@ -2,11 +2,12 @@
 
 All Things Jiggle is a Unity package for jiggle physics on chains of bones. It has
 the solver (a managed kernel, bindings to the Rust library and the proof that the
-two agree, with two way coupling), and since drop 2 the runtime: a `JiggleChain`
+two agree, with two way coupling), since drop 2 the runtime (a `JiggleChain`
 component for each chain, a manager that simulates all of them once a frame with
 Burst jobs, and an editor lab that runs the same scenes on the Burst, native and
-managed backends. Colliders and fields are in the solver but not yet wired to Unity
-objects. That is the next drop. The Rust half is documented in
+managed backends) and since drop 2b the scene side: collider and force field
+components, hit impulses, level of detail and sleep controls. Nothing here has run
+inside Unity yet (see Known limits). The Rust half is documented in
 `rust_lib/jiggle_core/docs/jiggle_core.md`, including how a frame runs, the records,
 the C interface and the known limits of the solver itself. This file covers the C#
 half.
@@ -19,14 +20,17 @@ half.
 - Runtime/Core: JiggleConst.cs, JiggleMath.cs, JiggleStructs.cs, JiggleCollide.cs,
   JiggleFields.cs, JiggleKernel.cs, JiggleSolver.cs, JiggleNative.cs,
   JiggleParams.cs, JiggleChainBuild.cs, JiggleClock.cs, JigglePose.cs,
-  JiggleHost.cs, JiggleWorld.cs, AssemblyInfo.cs
+  JiggleHost.cs, JiggleColliderSet.cs, JiggleFieldQueue.cs, JiggleImpulse.cs,
+  JiggleLod.cs, JiggleWorld.cs, AssemblyInfo.cs
 - Runtime/Unity: JiggleRuntimeTypes.cs, JiggleChainSettings.cs, JiggleChain.cs,
-  JiggleManager.cs, JiggleRuntime.cs, JiggleJobs.cs, JiggleBurstSolver.cs,
-  JiggleMem.cs
-- Editor: JiggleChainEditor.cs, Lab/JiggleBenchScenes.cs, Lab/JiggleLabRunner.cs,
-  Lab/JiggleLabWindow.cs
+  JiggleChainLod.cs, JiggleColliderShape.cs, JiggleForceField.cs, JiggleManager.cs,
+  JiggleRuntime.cs, JiggleJobs.cs, JiggleBurstSolver.cs, JiggleMem.cs
+- Editor: JiggleChainEditor.cs, JiggleShapeEditors.cs, Lab/JiggleBenchScenes.cs,
+  Lab/JiggleLabRunner.cs, Lab/JiggleLabScene.cs, Lab/JiggleColliderLab.cs,
+  Lab/JiggleFieldLab.cs, Lab/JiggleLodLab.cs, Lab/JiggleLabWindow.cs
 - Assembly definitions
 - Tests/Editor/JiggleParityTests.cs
+- Tests/Editor/JiggleFeatureTests.cs
 - Tests/Editor/JiggleUnityLayerTests.cs
 - Tests~/DotnetHarness
 - Tests~/UnityStubs
@@ -42,15 +46,16 @@ half.
    **1.5 Two way coupling.** Per bone mass, `StepConfig.CouplingPasses`, interface
    version 2, in both kernels, before the Burst port so the Burst kernel is written
    once against the final solver.
-2. **Unity runtime (this drop).** Burst jobs, reading and writing transforms through
+2. **Unity runtime.** Burst jobs, reading and writing transforms through
    `TransformAccessArray`, the backend switch (Burst by default, Rust selectable,
    managed as the fallback), `JiggleChain` and `JiggleManager`, the editor lab and the
    benchmark comparison, and the stub compile job in CI.
-   **2b Colliders, fields and level of detail.** The collider broadphase in C# with
-   collider layers in the style of the group and mask bits found in the MMD rig study,
-   fields and hit impulses from Unity objects, sleeping controls, level of detail and
-   culling. The solver and the host already store colliders and fields. What is missing
-   is the Unity side that fills them each frame.
+   **2b Colliders, fields and level of detail (this drop, 0.4.0).** The collider
+   broadphase in C# (a list of near colliders for each chain, filtered by layer),
+   collider components, force field components and hit impulses, sleeping controls,
+   level of detail and culling by distance and by the camera, and one lab tab for each
+   feature. The layer rule is the one of the MMD rig study with the sense that Unity
+   uses for it: a set bit in a chain's `ignoreLayers` means no collision.
 3. **Extras and presets.** Body colliders from the rig, presets (hair strand, tail, ear,
    chest) from the technique level ranges of the study, and the Grand Theft Grimoire chest
    adapter.
@@ -84,6 +89,33 @@ after most scripts. It writes the local rotation of every bone and nothing else.
 are never written, so a bone does not stretch on screen even when the solver lets the particle
 stretch. `JiggleManager.Simulate(dt)` runs one frame by hand.
 
+**Colliders.** Add a **Jiggle Collider** (Add Component, MidManStudio, AllThingsJiggle, Jiggle Collider) to any
+object: a sphere, capsule, box, plane or inside sphere that follows the transform. It is not a Unity collider and
+costs nothing in the physics engine, so it can stand for a body part that is only a transform. A chain tests the
+colliders near it, and only while `Collide` is on in its settings (it is off by default). The layer of a collider is
+the layer of its object (0 to 31). A chain has `ignoreLayers`, and **a set bit means no collision with that layer**:
+the default of 0 collides with everything. Tick `staticShape` on a shape that never moves, turns or changes.
+
+**Force fields.** Add a **Jiggle Force Field**: directional (along the forward of the transform), radial or vortex
+(around its up), pushing as an acceleration while it is enabled, with a radius, a falloff and gusts. `Fire()` gives
+every chain in reach one shove shaped like the field. A chain scales the push of fields with `windResponse` in its
+settings.
+
+**Hits.** From code: `chain.AddImpulse(dv)` shoves a whole chain, `chain.AddImpulseAt(point, dv, radius, falloff)`
+shoves the bones near a point, `JiggleManager.AddBurst(point, radius, dv)` pushes everything near a point away from it
+and `AddShove(dv, center, radius)` pushes everything (a radius of 0 reaches everywhere). `dv` is a change of velocity in
+meters per second. A chain scales it with `impulseResponse`. A chain that is not simulated (not built yet, switched
+off by the level of detail, disabled, or about to snap to its pose) refuses a hit and `AddImpulse` returns false.
+
+**Level of detail.** The manager has `lodCollisionDistance` (chains farther than this stop testing colliders),
+`lodCullDistance` (chains farther than this are not simulated and show their pose), `lodHysteresis`,
+`lodCullOffscreen` with `lodOffscreenDelay`, and `lodCamera` (empty means the main camera). A distance of 0 turns that
+limit off, and with no camera every chain is simulated in full. A chain's `lod` is Inherit (the manager's limits),
+AlwaysSimulate or Custom (its own distances). A chain that comes back from Off snaps to its pose.
+
+**Sleep.** `sleepFrames` on the manager above 0 turns sleeping on. A chain with `allowSleep` off never sleeps.
+`IsAsleep` and `Wake()` are on the chain. A hit wakes a chain, and so does a collider that moves up to it.
+
 ## Layout and conventions
 
 The package follows the other packages of this repository: Unity assets have
@@ -106,7 +138,8 @@ Documentation~/                    a pointer for the Package Manager
 Menu rule, for this package and every MidManStudio package: every menu entry lives under the top level
 `MidManStudio` menu, as `MidManStudio/<Package>/<Item>`, and never under `Tools` or `Window`. That covers
 editor windows (`MenuItem`), `CreateAssetMenu`, `AddComponentMenu` and settings entries. Here that is
-`MidManStudio/AllThingsJiggle/Jiggle Lab`, `.../Jiggle Chain` and `.../Jiggle Manager`.
+`MidManStudio/AllThingsJiggle/Jiggle Lab`, `.../Jiggle Chain`, `.../Jiggle Manager`, `.../Jiggle Collider` and
+`.../Jiggle Force Field`.
 
 The namespace of every public type is `MidManStudio.AllThingsJiggle`, in all assemblies. The
 editor code is in `MidManStudio.AllThingsJiggle.EditorTools`, because a namespace called
@@ -168,6 +201,11 @@ inside sphere, with the same branches in the same order.
 
 `JiggleFields.Push` and the hash noise, the port of `field.rs`. The hash uses
 `unchecked` unsigned arithmetic so the wrap around matches Rust's `wrapping_mul`.
+
+`Weight(distance, radius, power)` is new in 0.4.0 and is not in the Rust crate: it is the falloff factor of a
+point at a distance from the center, 1 when the radius is not positive (no edge), else the falloff of
+`distance / radius` by the power. `JiggleImpulse.HitAt` uses it, so a hit fades the way a field does. It does not
+touch `Push`, so the parity of the solver is not affected.
 
 ## Runtime/Core/JiggleKernel.cs
 
@@ -269,6 +307,15 @@ until the next call that adds something, so nothing may be added while a frame r
 - `AddCollider`, `AddField` and `SetColliderList` fill the collider, field and index arrays.
   `Colliders`, `Refs` and `Fields` are public so a caller can rewrite them every frame. The lists
   sit one after the other in `Refs`.
+- To rewrite them every frame (0.4.0): `ClearColliders()` drops every collider and every list,
+  `ClearColliderLists()` drops only the lists (it zeroes the offset and count of every rig, because a stale range
+  past the end of `Refs` is `ErrBadRig`, which a test documents), `ClearFields()` drops the fields,
+  `SetCollider(index, collider)` replaces one collider in place and refuses an index that does not exist, and
+  `SetColliderList(rig, pointer, count)` is the pointer form of the list call, so a caller that keeps its own
+  buffer copies nothing. `SetColliderList(rig, uint[])` calls it.
+- `IsAsleep(rig)`, `IsDisabled(rig)`, `SetDisabled(rig, bool)` and `Wake(rig)` read and set the flags. Enabling a
+  rig again sets `RigReset`, so it snaps to its pose and never shows the state it had when it was switched off.
+  `Wake` clears `RigAsleep` and the sleep counter.
 - `CopyRigRuntime(source, from, to)` carries the state of one rig over to a rig of a rebuilt
   host, and `CopyClock(source)` carries the clock, so a rebuild loses neither a swing nor a
   partial step.
@@ -285,6 +332,82 @@ until the next call that adds something, so nothing may be added while a frame r
 
 The host is not thread safe. It has no finalizer-free path: `Dispose` frees everything, and the
 finalizer frees it if the owner forgot.
+
+## Runtime/Core/JiggleColliderSet.cs
+
+The collider broadphase, in C# and with no Unity references. Two classes.
+
+`JiggleShapes` builds the solver records in world space: `Sphere`, `Capsule(center, axis, halfHeight, radius)`,
+`Box(center, halfExtents, rotation, rounding)`, `Plane(point, normal)`, `InsideSphere`, `Field(kind, mode, center,
+direction, gustScale, strength, radius, power, turbulence, frequency)` (the direction is normalized and the gust
+scale goes in `Dir.W`) and `Burst(point, radius, velocityChange, power)`, a radial impulse field. Input that is not
+finite is replaced by something harmless instead of reaching the solver.
+
+`JiggleColliderSet` holds the shapes of a scene for one frame. `Clear()` then `Add(shape, layer, hasMoved)` for each
+shape, then `Write(host, anchors, ignore)`:
+
+1. the host's colliders and lists are cleared and the shapes written;
+2. each rig gets a list of the shapes that can reach it. A shape is listed when its layer bit is not set in the
+   rig's `ignore` mask and `Near` says it is within reach. The reach of a rig is its `Extent` plus the largest
+   collision radius among its particles that collide, plus `Margin` (0.25 m by default, which covers bones that
+   stretch and the move of the chain since the extent was measured);
+3. `Near` uses the edge of the shape (a sphere is its radius, a capsule its half height plus its radius, a box the
+   length of its half extents plus its rounding) against the current anchor passed by the manager. A plane and an
+   inside sphere have no edge and are always near;
+4. a rig with no particle that collides gets no list, and an `ignore` mask of `uint.MaxValue` gets none either;
+5. a sleeping rig is woken when a shape on its list has moved. The solver does not wake a sleeper for a moving
+   collider, so without this a chain asleep under a moving shape would stay asleep.
+
+It returns the number of indices written. A layer outside 0 to 31 counts as layer 0. Layers are kept managed side
+because the native record has no slot for one: no native binary has to change for them, and both backends see the
+same lists.
+
+Cost: building the lists is O(rigs x shapes) on the main thread. That is fine for the hundreds of chains and tens of
+colliders of a character and is not for thousands of each. See the known limits.
+
+## Runtime/Core/JiggleFieldQueue.cs
+
+The fields of a frame. Standing fields (the force field components, rebuilt every frame) and impulses that wait to be
+given once. `Clear()` and `Add(field)` take the standing fields, `Enqueue(field)` queues an impulse (it forces the
+mode to `FieldImpulse`), `Write(host)` replaces the host's fields with the standing ones and then the waiting
+impulses, and `Commit(steps)` is called after the frame with the number of fixed steps it ran.
+
+An impulse field acts on the first step of a frame only, so a frame with no step would lose it. `Commit` therefore
+removes the waiting impulses only when `steps > 0`; with no step they stay for the next frame. If the solver reports an
+error the manager commits 0 steps, so nothing is lost on a failed frame. At most `MaxPending` (256) impulses wait, and
+the oldest is dropped when there are more. `DropPending()` empties the queue.
+
+## Runtime/Core/JiggleImpulse.cs
+
+Hits on one rig, written straight into the state: `Hit(host, rig, dv)` for the whole chain and `HitAt(host, rig,
+point, radius, power, dv)` with the fade of `JiggleFields.Weight`. For each particle that is not kinematic it does
+`Prev -= dv * (FixedDt * weight * ImpulseResponse)`, because velocity is `Pos - Prev` in meters per step and the state
+is relative to the anchor. A hit then clears `RigAsleep` and the sleep counter.
+
+- With no drag and no air drag a hit equals a directional impulse field that covers the rig (a test checks it to
+  2e-5 m). With drag it differs, because a field acts inside the step and a hit is already in the velocity.
+- A hit refuses (returns false, changes nothing) for a rig that is disabled or about to reset, because the solver
+  would discard it, and for a velocity or a point that is not finite. `HitAt` returns whether any particle was hit.
+- A hit survives a frame with no step, which a field impulse does not, because it is written into the state at once
+  and not given on a step. A test checks that both backends agree.
+- Call it before the frame runs. It does not lock anything. `JiggleChain.AddImpulse` and `AddImpulseAt` call it on the
+  host of the running build.
+
+## Runtime/Core/JiggleLod.cs
+
+The level of detail rules as pure functions, so they are tested outside Unity.
+
+- `JiggleLodLevel`: `Full`, `NoCollision` (simulated, but tests no colliders) and `Off` (not simulated, switched off
+  with `SetDisabled`, shows its pose).
+- `JiggleLodSettings`: `CollisionDistance`, `CullDistance` (0 means that limit is off), `Hysteresis` (meters),
+  `CullOffscreen` and `OffscreenDelay` (seconds). `Always()` is no limits.
+- `JiggleLodTracker`: what a chain remembers between frames, its level and how long the camera has not seen it.
+- `Decide(settings, ref tracker, distance, visible, dt)`: a chain goes to a lower level at the limit and back
+  `Hysteresis` meters inside it, so a chain on the limit does not flicker. A distance that is not finite keeps the
+  level. A chain the camera has not seen for `OffscreenDelay` seconds is Off. Seeing it again resets the time.
+- `SphereInFrustum(planes, count, center, radius)`: Unity's plane convention, `dot(normal, point) + w` with normals
+  pointing inward. A bad sphere or no planes count as seen, so a chain is never culled because of bad input.
+
 
 ## Runtime/Core/JiggleWorld.cs
 
@@ -329,7 +452,9 @@ bindings directly.
 `JiggleRuntimeBackend` (Burst, Native, Managed), `JigglePoseSource` (Bind, Animated, described in
 Using the package) and `JiggleFrameStats`, a plain struct with what the last frame did: rigs,
 particles, steps, the frame time in milliseconds, the backend that ran, the solver status and
-the number of rebuilds.
+the number of rebuilds. Since 0.4.0 it also has `Colliders` (shapes written), `ColliderRefs` (collider tests listed
+over all rigs), `Fields` (fields written, impulses included), `LodNoCollision`, `LodOff` and `Asleep` (counts of
+chains).
 
 ## Runtime/Unity/JiggleChainSettings.cs
 
@@ -341,8 +466,10 @@ tip. `ToParams(bone, bones)` and `ToParams(bones)` make the `JiggleParams` for e
 chain of one bone reads the curve at 0. The defaults are those of `JiggleParams.Default()`, and a
 test checks that they bake to the same values. A missing curve means no scaling.
 
-The collision, wind and impulse values are not exposed yet. They come with 2b, when something
-feeds them.
+Since 0.4.0 it also has `collide` (off by default, so a chain only tests colliders when asked), `collisionRadius`
+(0.1 m), `segmentCollision` (the whole bone, not only its end), `windResponse` and `impulseResponse` (both 1), all
+baked by `ToParams`. Their defaults are the Core's, and a test checks it. Before this, a chain could not collide at
+all, because the settings never turned collision on.
 
 ## Runtime/Unity/JiggleChain.cs
 
@@ -365,6 +492,17 @@ The component. Add it to the first bone. It keeps its settings, the pose source,
   it) and `TryGetParticle(i, out p)` gives the simulated world position of the anchor (0), a bone
   (1 to `BoneCount`) or the virtual end (the one after).
 
+Since 0.4.0 it also has:
+
+- `ignoreLayers` (a `LayerMask`): the layers of colliders the chain does not collide with, a set bit meaning no
+  collision. Layers are read when the manager builds the collider lists, so a change is seen the next frame;
+- `allowSleep` (default on): off keeps the chain awake. The manager wakes it each frame before the solver runs. With a
+  manager `sleepFrames` of 1 the solver can still snap it to its pose at the end of a frame, which looks the same;
+- `lod` (`JiggleChainLod`), and `LodLevel`, `IsAsleep` and `Wake()` to read and change what the manager decided;
+- `AddImpulse(dv)` and `AddImpulseAt(point, dv, radius, falloff)`, which hit the bones at once (so they work in a frame
+  with no step too) and return false when the chain is not simulated. `AddBurst` and `AddShove` of the manager are
+  different: they are queued as impulse fields and given on the first step of the next frame that runs one.
+
 Not supported, and documented as limits: bones that are reparented or a first child that is
 added at run time (call `Rebind`), non uniform scale on the chain, a bone that belongs to two
 chains (the second is refused with a warning), and a chain whose anchor is the bone of another
@@ -378,19 +516,71 @@ fields: the backend, gravity, the step rate (`fixedHz`, default 60), `maxSteps`,
 `teleportDistance`, the sleep values (`sleepFrames`, `sleepSpeed`, `sleepDeviation`, `wakeMotion`)
 and `rigsPerBatch`. Sleeping is off until `sleepFrames` is above 0.
 
+Since 0.4.0 it also has `colliderMargin` (0 to 2 m, default 0.25), `lodCamera`, `lodCollisionDistance`,
+`lodCullDistance` (both 0 by default, which is off), `lodHysteresis` (2 m), `lodCullOffscreen` (off) and
+`lodOffscreenDelay` (0.5 s). `ColliderShapeCount`, `ForceFieldCount` and `PendingImpulses` count what it holds,
+`GetChains(list)` copies the chains, and `AddBurst` and `AddShove` queue a push of everything in reach. The collider
+and field components register themselves in `OnEnable`.
+
 Each frame (`Simulate(dt)`, called from `LateUpdate`) does this:
 
 1. If chains came or went, rebuild: a new `JiggleRuntime` is built from all registered chains and the old
    one is disposed after the state of the chains that stayed was copied over.
 2. Bake the settings of the chains that changed, apply the manager settings to the host, and
    apply the reset requests.
-3. Run the frame on the backend asked for. Native falls back to Burst when the library does not
+3. Prepare the rigs. Read each anchor (the transform of the chain's anchor, or the chain's own if there is none),
+   decide the level of detail of each chain from the distance to the camera and whether the camera sees it, set or
+   clear the disabled flag (switching a chain on again resets it), wake the chains that may not sleep, and build the
+   `ignore` mask of each rig. A chain that is NoCollision or Off gets the mask with every bit set.
+4. Write the scene: the collider lists (`JiggleColliderSet.Write`) and the fields (`JiggleFieldQueue.Write`).
+5. Run the frame on the backend asked for. Native falls back to Burst when the library does not
    load or does not have this package's interface version, with one warning. This is what happens
    until the build workflow has refreshed the committed binaries.
-4. Record `Stats`.
+6. Commit the impulses with the number of steps that ran (0 if the solver reported an error), so impulses wait through
+   a frame that had no step.
+7. Record `Stats`.
+
+The distance of a chain is measured from the camera to its anchor, and the sphere tested against the view is the
+extent of the rig plus 0.5 m. Culled chains still run the read and write jobs, because the jobs are built once for
+all chains (see the known limits).
 
 Chains that cannot be simulated are logged once per rebuild and left out. `ActiveBackend` is
 the backend that really runs and `NativeError` says why Native was not used.
+## Runtime/Unity/JiggleChainLod.cs
+
+`JiggleLodMode` (Inherit, AlwaysSimulate, Custom) and the serializable `JiggleChainLod` of a chain: the mode, and for
+Custom its own `collisionDistance`, `cullDistance`, `cullOffscreen` and `offscreenDelay`. `Resolve(managerLimits,
+hysteresis)` gives the `JiggleLodSettings` the manager uses for the chain: the manager's own for Inherit, none for
+AlwaysSimulate, the chain's own values and the manager's hysteresis for Custom.
+
+## Runtime/Unity/JiggleColliderShape.cs
+
+The collider component (`MidManStudio/AllThingsJiggle/Jiggle Collider`). `shape` (sphere, capsule, box, plane, inside
+sphere), `center`, `radius`, `height` and `axis` (a capsule), `size` (a box, edge to edge, with `radius` as its
+rounding) and `staticShape`. The shape is built from the transform each frame: center, axes and `lossyScale` of the
+object. A capsule's half height is `height * scale along the axis * 0.5 - radius` and its radius takes the larger of
+the two scales across the axis, a sphere, an inside sphere and the rounding of a box take the largest scale, and a box
+scales each edge by its own axis. A plane is solid on the side its up direction points away from.
+
+`Build(out moved)` is what the manager calls: it says whether the shape moved since the last build, which wakes
+sleeping chains near it. A static shape is built once and then reused. `Peek()` builds the shape with no side effect,
+for the gizmos and the tests. A shape that changes while `staticShape` is on is not noticed, and a static shape does
+not wake sleepers.
+
+Not a Unity collider: no physics, no trigger, no rigidbody, and a chain does not push a shape.
+
+## Runtime/Unity/JiggleForceField.cs
+
+The force field component (`MidManStudio/AllThingsJiggle/Jiggle Force Field`). `shape` (Directional, Radial,
+Vortex), `strength` (m/s^2, negative pulls a radial field in), `radius` (0 reaches everywhere for a directional
+field, and a radial or vortex field needs one), `falloff` (0 to 4), `turbulence`, `frequency` and `gustScale` (gusts),
+and `impulseStrength`. The direction is the forward of the transform, and for a vortex its up.
+
+`Build()` gives the acceleration field the manager writes every frame while the component is enabled. `Fire()` queues
+one impulse of `impulseStrength` with the same shape and returns false when there is no manager (outside play mode).
+It works on a disabled component. The chain scales the push with `windResponse` for the acceleration and
+`impulseResponse` for the impulse.
+
 
 ## Runtime/Unity/JiggleRuntime.cs
 
@@ -443,8 +633,17 @@ data.
 
 The inspector of `JiggleChain`: the default fields, a line saying which anchor and which bones the chain
 walks, errors for a missing anchor or an end bone that is not on the way down, and in play mode
-buttons for `ResetSimulation` and `Rebind`. `JiggleChainGizmos` draws the bones of a selected
+buttons for `ResetSimulation` and `Rebind`. Since 0.4.0 it also shows the level of detail and the sleep state in
+play mode, with Wake and "Hit sideways" buttons. `JiggleChainGizmos` draws the bones of a selected
 chain in blue and the simulated particles in orange while the game runs.
+
+## Editor/JiggleShapeEditors.cs
+
+The inspectors of `JiggleColliderShape` and `JiggleForceField` (the default fields, with help boxes for what is
+missing, such as a radial field without a radius, and in play mode a Fire button on the field), and
+`JiggleShapeGizmos`, which draws a selected shape or field: the sphere, capsule, box, plane or inside sphere, the
+direction and radius of a field. The drawing uses the Core's own vector math on the same records the solver
+gets, so what the gizmo shows is the shape the solver uses.
 
 ## Editor/Lab/JiggleBenchScenes.cs
 
@@ -478,13 +677,46 @@ lab run: they are different machines and different clocks. The checksum is equal
 only for native and managed. Burst can differ in the last bits, and the Rust bench computes its
 sine and cosine with the Rust libm, so its checksum is not the lab's either.
 
+## Editor/Lab/JiggleLabScene.cs
+
+The builders the three feature labs share: `Root(name)` (an empty object, selected), `Chain(parent, name, position,
+bones, spacing, settings)` (an anchor, then bones hanging down, with the component on the first bone), `Tip(chain, out
+position)` and `Remove(root)`. The labs build in play mode only, so what they make is gone when play mode ends and
+the scene of the project is never touched.
+
+## Editor/Lab/JiggleColliderLab.cs
+
+A chain that collides, a ball that sweeps through it and a floor. Controls: sweep on and off, range and speed, whether
+the chain ignores the ball's layer (the ball is on layer 2, Ignore Raycast, which every project has, so ignoring it
+does not also ignore the floor), segment collision, whether the chain may sleep, the manager's sleep frames and
+collider margin. It shows the colliders written, the collider tests listed over all rigs, whether the chain sleeps and
+the closest bone to the ball's surface. The ball is moved from `EditorApplication.update`, so it moves while the window
+is not drawn.
+
+## Editor/Lab/JiggleFieldLab.cs
+
+A chain and a wind field, and a button for every way to push: a hit on the chain, a hit at the tip, a fired field
+impulse, a burst under the tip, and a shove of every chain. It has sliders for the wind (shape, strength, radius,
+falloff, gusts), the two responses of the chain and the sleep settings, and shows the fields written, the impulses
+waiting and how far the tip travelled since the last push, so the ways to push can be compared.
+
+## Editor/Lab/JiggleLodLab.cs
+
+Edits the manager's level of detail limits and builds a row of twelve chains in front of the main camera, 3 to 47 m
+away. It lists each chain with its distance, level and sleep state, and the counts of chains that are NoCollision,
+Off and asleep. It needs a camera and says so when there is none.
+
 ## Editor/Lab/JiggleLabWindow.cs
 
-MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Three tabs:
+MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Six tabs:
 
 - **Live** checks that Burst compiles the jobs and that the native library loads with this package's
   interface version, and in play mode shows the manager: the backend (editable), the backend that runs, the
-  counts, the steps, the frame time and the status.
+  counts (with the collider, field, level of detail and sleep counts since 0.4.0), the steps, the frame time and the
+  status.
+- **Colliders**, **Fields and hits** and **LOD** draw the three labs above. The window repaints Live and these
+  three tabs while the editor runs, subscribes a tick to `EditorApplication.update` in `OnEnable` (so the ball moves
+  and the tip is followed between draws) and unsubscribes it in `OnDisable`.
 - **Parity** runs the comparison above on a scene and says what it found.
 - **Bench** runs the chosen scenes on the chosen backends and thread counts, shows the table and copies or
   saves the CSV. It blocks the editor while it runs and has a cancel button. Editor numbers include the
@@ -552,12 +784,31 @@ The random scenes use `Math.Sin`, which is fine: both backends read the same
 generated pose. The golden scene does not, because there the C# and the Rust sides
 build the inputs separately and must agree.
 
+## Tests/Editor/JiggleFeatureTests.cs
+
+23 tests of the 0.4.0 features, in the same shared file style as the parity tests: no UnityEngine, so the .NET
+harness runs them on the managed backend and, where it matters, on both.
+
+- the host: clearing and replacing colliders, a stale list range giving `ErrBadRig`, switching a rig off and on again,
+  `Wake`;
+- hits: a hit against a directional impulse field (2e-5 m), the fade of `HitAt`, `ImpulseResponse`, the refusals, a hit
+  across a frame with no step on both backends;
+- the field queue: standing fields and impulses, the cap, and an impulse kept through a zero step frame;
+- a burst on both backends, and the layout of what `JiggleShapes` builds;
+- the collider set: `Near`, the lists by layer, by reach and by anchor, the margin, the wake rules, rewriting without
+  growth, and colliders and layers through the solver;
+- level of detail: distance, hysteresis, zero and NaN distances, the offscreen delay, both rules together, and the
+  frustum convention.
+
 ## Tests/Editor/JiggleUnityLayerTests.cs
 
-Five tests for the Unity layer that need the editor: the default settings bake to the defaults
+Ten tests for the Unity layer that need the editor. The first five: the default settings bake to the defaults
 of the Core, the stiffness curve scales along the chain, the Burst solver stays within 1e-4 meters of
 the managed kernel over 120 frames of 40 rigs (with and without coupling), the step and the resolve
-as two jobs give the same bits as one job, and the probe and an empty host do not throw. They run
+as two jobs give the same bits as one job, and the probe and an empty host do not throw. Since 0.4.0: the new
+settings bake and default to the Core's, the three chain level of detail modes resolve to the limits they promise, a
+collider component builds the solver shape from its transform, it reports movement only when it moves (and a static
+shape is built once), and a chain that is not simulated refuses a hit and answers quietly. They run
 in the Unity Test Runner. They need Burst, so the .NET harness does not run them. They are
 compiled in CI.
 
@@ -578,7 +829,8 @@ with a message, so the same file compiles under real NUnit in Unity.
 
 The folder name ends in a tilde, so Unity ignores it.
 
-The harness runs `JiggleParityTests.cs` only. It does not compile the Unity layer.
+The harness runs `JiggleParityTests.cs` (30 tests) and `JiggleFeatureTests.cs` (23), 53 in all. It does not compile
+the Unity layer.
 
 Running it by hand needs the release library:
 
@@ -599,6 +851,10 @@ and five projects compile the package against it, one for each assembly:
 - `Editor.csproj` compiles `Editor` with the Core, the Unity assembly and the stubs.
 - `Tests.csproj` compiles the editor tests with the NUnit stand in of the harness.
 - `UnityApiStubs.csproj` is the stubs.
+
+The stubs grew with 0.4.0: `Camera` (and `Camera.main`), `Plane`, `GeometryUtility.CalculateFrustumPlanes`,
+`LayerMask`, `GameObject.layer` and `transform`, more of `Transform` and `Vector3`, `Object.DestroyImmediate`,
+`Quaternion.Euler`, more of `Mathf`, and in the editor `EditorApplication` and `Selection`.
 
 Because each assembly is its own project, using an `internal` of the Core from the Unity layer fails
 with CS0122, as it would in Unity. This was tried on purpose when the projects were written.
@@ -645,8 +901,22 @@ No root level scripts are used.
   never stretches on screen. The chain does not follow a non uniform scale exactly.
 - A chain is a path: each bone is the first child of the one above. The solver supports trees, but the
   component does not build them yet.
-- Colliders, fields, hit impulses, level of detail and culling are not wired to Unity objects. The solver
-  and the host support them, and the next drop adds the Unity side.
+- Collider lists are built O(rigs x colliders) on the main thread each frame. That suits hundreds of chains and tens
+  of colliders and not thousands of each. A spatial grid would be the fix, and nothing here needs one yet.
+- A chain that is Off (level of detail) is not solved, but the transform read and write jobs still run for it, because
+  the jobs cover all chains of a build. The saving is the solver, not the transforms.
+- Level of detail has one camera and no lower step rate for chains that are far but not culled.
+- A chain with `allowSleep` off, when the manager's `sleepFrames` is 1, can still be snapped to its pose at the end of
+  the frame. It is woken every frame, so it looks the same.
+- A hit on a chain that is not simulated yet (just enabled, not built) returns false and is lost. Hits wait only
+  through frames with no step.
+- Static shapes are not watched. Turn `staticShape` off for a shape that may move. Only the shapes that move wake
+  sleeping chains.
+- Collider layers are the layers of `GameObject.layer` (0 to 31) with a `LayerMask ignoreLayers` on the chain and the
+  rule "a set bit means no collision". This is a choice and not a requirement of the solver: the lists are filtered in
+  managed code, so another scheme needs no native change.
+- Nothing about the features of 0.4.0 has run inside Unity. They are tested under .NET 8 (the Core, 23 tests) and
+  compiled against stubs (the Unity layer and the labs).
 - The transform jobs complete in the same `LateUpdate` that schedules them, so the main thread waits for
   them. There is no frame of delay to hide the cost behind.
 - Changing the bones of a running chain (reparenting, adding a first child) is not noticed. Call
@@ -722,12 +992,40 @@ No root level scripts are used.
   menu. The house rule is a top level `MidManStudio` menu with a sub menu per package, so the paths are now
   `MidManStudio/AllThingsJiggle/...`. Found by Su after the first drop, not by a build.
 
+### Runtime/Unity/JiggleChainSettings.cs, JiggleManager.cs (0.4.0)
+
+- Found while writing the collider tests: a chain could not collide at all. `JiggleChainSettings` never set `Collide`
+  or a collision radius, so the baked parameters had colliders off whatever the scene held. The settings now have
+  `collide` and the values that go with it, with the Core's defaults.
+- A stale collider list range gives `ErrBadRig`, so rewriting the colliders each frame with only `ColliderCount = 0`
+  would break any rig whose list pointed past the new end. `ClearColliders` zeroes every rig's range, and a test keeps
+  that documented.
+- The solver does not wake a sleeping chain for a collider that moves up to it, so `JiggleColliderSet.Write` wakes it
+  when a shape on its list has moved.
+- An impulse field acts on the first step of a frame only, so a frame with no step would have lost it. The queue now
+  commits impulses only when `steps > 0`, and a hit (written into the state) is kept by construction.
+- A chain that is switched off by the level of detail snaps to its pose when it comes back. Enabling a rig sets
+  `RigReset`, so it never shows the state it had when it was switched off.
+- The layer system was a choice: the native record has no slot for a layer, so the lists are filtered in managed code
+  by `GameObject.layer` and `ignoreLayers`, a set bit meaning no collision. No native binary changes.
+
+### Tests/Editor/JiggleFeatureTests.cs (0.4.0)
+
+- Corrected before the first run: an arithmetic assertion on the number of indices written that was nonsense (the
+  right value is 6), a wrong "the first bone takes 0" assertion, a state read after a step through `WorldPos` (which
+  reads the output, so a helper reads the state before any step), the rest position in the hit parity test, and the
+  frustum "first two planes" assertion.
+- The harness stand in lacked `IsFalse(bool, string)`, `IsNotNull(object)` and `IsNotNull(object, string)`. They were
+  added with the NUnit signatures.
+
 ### Tests~/UnityStubs
 
 - The first draft of the stub for `TransformAccessArray` did not assign its two properties in the
   constructors and stopped the build with CS0843. The stub was fixed.
 - The `.gitignore` rule `*.csproj` would have kept the five stub projects out of the commit, the same
   failure the harness had. A negation for this folder was added.
+- 0.4.0: the stub of the `LayerMask` conversion left a struct unassigned (CS0165), and the editor and unity builds
+  needed `GameObject.transform`, `Vector3 +` and `Vector3 *`. All were added to the stubs.
 
 ### Tests~/DotnetHarness
 

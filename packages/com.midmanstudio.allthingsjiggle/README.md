@@ -21,21 +21,28 @@ What it does today:
   length, an optional angle limit, drag, air drag, gravity and a root spring
 - two way coupling: give bones a mass and a bone pulls its parent back, so a weight on
   a strand drags it down. Bones without a mass stay one way
-- colliders (sphere, capsule, plane, box, inside sphere, optional bone segment test) and
-  force fields (directional, radial, vortex, as an acceleration or a hit impulse) in the
-  solver and in `JiggleHost`. Wiring them to Unity objects is the next drop
+- **Colliders from the scene.** A `JiggleColliderShape` (sphere, capsule, box, plane, inside sphere) on any
+  object. A chain tests the ones near it when `Collide` is on in its settings. The layer is the object's layer, and
+  the chain's `ignoreLayers` is a mask where **a set bit means no collision**
+- **Force fields and hits.** A `JiggleForceField` (directional, radial, vortex, with falloff and gusts) pushes all
+  the time. `JiggleChain.AddImpulse` and `AddImpulseAt`, and `JiggleManager.AddBurst` and `AddShove`, push once
+- **Level of detail.** By distance, and by what the camera sees: chains farther than a limit stop testing
+  colliders, farther than another (or out of view) they are not simulated and show their pose. A chain can inherit
+  the manager's limits, always simulate, or have its own
+- **Sleep controls.** `allowSleep`, `IsAsleep`, `Wake()`. A hit and a collider that moves up to a sleeping chain wake it
 - sleep and wake, teleport and reset, and a fixed step accumulator
 
 ## State of this release
 
-Version 0.3.0 is the runtime drop. **Nothing in it has run inside Unity yet.** The C# Core is
+Version 0.4.0 is drop 2b: colliders, fields, hits, level of detail and sleep controls from scene objects.
+**Nothing in it, or in 0.3.0 before it, has run inside Unity yet.** The C# Core is
 tested under .NET 8 against the Rust library. The Unity layer, the editor lab and the Unity
 tests are compiled against stubs of the Unity API in CI, which proves they are well formed and
 nothing more. Burst compiling the kernel, the transform jobs and the lab are untried. Run the lab
-in your project first, and read the known limits in `docs/com.midmanstudio.allthingsjiggle.md`.
+in your project first (it has a tab for colliders, one for fields and hits and one for the level of
+detail), and read the known limits in `docs/com.midmanstudio.allthingsjiggle.md`.
 
-Not in this drop: colliders, fields and hit impulses from scene objects, level of detail and
-culling (drop 2b), and body colliders, presets and the chest adapter (drop 3).
+Not in this drop: body colliders from the rig, presets and the chest adapter (drop 3).
 
 Only local rotations are written, so a bone never stretches on screen. A chain is a path: each
 bone is the first child of the one above. A bone can be driven by one chain only.
@@ -76,11 +83,16 @@ In the editor:
 3. Press play. A Jiggle Manager is created by itself. Add one to the scene yourself to change gravity,
    the step rate or the backend.
 
+To collide, turn on `Collide` in the settings of the chain and add a **Jiggle Collider** (Add Component, MidManStudio,
+AllThingsJiggle, Jiggle Collider) to an object. For wind add a **Jiggle Force Field**. For the level of detail set
+`lodCollisionDistance` and `lodCullDistance` on the manager (0 is off).
+
 `poseSource` is **Bind** by default: the chain holds the pose its bones had when it was enabled, carried
 along by the anchor. Use **Animated** for bones that an Animator rewrites every frame.
 
 From code, `JiggleManager.TryGet()` gives the running manager, `Stats` what the last frame did and
-`Simulate(dt)` runs a frame by hand. Without Unity components the solver is a library:
+`Simulate(dt)` runs a frame by hand. `chain.AddImpulse(new Vector3(2f, 0f, 0f))` hits a chain once, and
+`JiggleManager.TryGet().AddBurst(point, 1f, 4f)` pushes everything near a point away from it. Without Unity components the solver is a library:
 
 ```csharp
 using MidManStudio.AllThingsJiggle;
@@ -110,14 +122,16 @@ on them directly. Both take the same arguments and give the same status codes.
 
 ## Tests
 
-`Tests/Editor/JiggleParityTests.cs` (30 tests) runs in the Unity Test Runner (Edit Mode). CI runs the same
-file under .NET 8 against the freshly built library. It checks every struct offset field by field, every
+`Tests/Editor/JiggleParityTests.cs` (30 tests) and `Tests/Editor/JiggleFeatureTests.cs` (23 tests, for colliders,
+fields, hits and the level of detail) run in the Unity Test Runner (Edit Mode). CI runs the same
+files under .NET 8 against the freshly built library. The parity file checks every struct offset field by field, every
 exported function, random scenes of every feature (with and without masses) bit for bit between the two
 backends, the error codes, threaded batches, the host against the world, and two golden scenes, one way and
-coupled, whose hashes the Rust tests assert too.
+coupled, whose hashes the Rust tests assert too. The feature file checks the collider lists and layers, the field
+queue, hits, the level of detail rules and the sleep rules.
 
-`Tests/Editor/JiggleUnityLayerTests.cs` (5 tests) needs the editor: the settings bake, Burst against the
-managed kernel within 1e-4 meters, and the step and resolve as two jobs. CI compiles it against the Unity
+`Tests/Editor/JiggleUnityLayerTests.cs` (10 tests) needs the editor: the settings bake, Burst against the
+managed kernel within 1e-4 meters, the step and resolve as two jobs, and the components of this drop. CI compiles it against the Unity
 stubs in `Tests~/UnityStubs` but cannot run it.
 
 See `docs/com.midmanstudio.allthingsjiggle.md` for the design and the known problems.

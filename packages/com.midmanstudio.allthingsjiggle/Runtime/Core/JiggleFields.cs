@@ -63,6 +63,20 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
+        /// How much of a push reaches something at the given distance from the center of a region of the given radius:
+        /// 1 at the center, falling to 0 at the radius by the power, as the fields do. A radius that is not positive
+        /// has no edge, so the weight is 1 everywhere.
+        /// </summary>
+        public static float Weight(float distance, float radius, uint power)
+        {
+            if (!(radius > 0.0f))
+            {
+                return 1.0f;
+            }
+            return Falloff(distance / radius, power);
+        }
+
+        /// <summary>
         /// The push of field f at a particle. centerRel is the field center and pRel the particle position, both in
         /// the rig frame. pWorld is the particle in world space and time the time in seconds, used only for gusts.
         /// </summary>

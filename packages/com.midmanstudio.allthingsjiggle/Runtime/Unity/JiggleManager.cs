@@ -10,7 +10,8 @@ namespace MidManStudio.AllThingsJiggle
 {
     /// <summary>
     /// Simulates every enabled <see cref="JiggleChain"/> once a frame, in LateUpdate after the animation, and holds
-    /// the settings that apply to all chains. There is one. A chain that is enabled finds the one in the scene or
+    /// the settings that apply to all chains: the solver, sleeping, the level of detail, and the colliders and force
+    /// fields of the scene, which register themselves. There is one. A chain that is enabled finds the one in the scene or
     /// makes one, so a scene only needs to place it to change the settings.
     /// </summary>
     [DefaultExecutionOrder(10000)]
@@ -20,6 +21,9 @@ namespace MidManStudio.AllThingsJiggle
     {
         private static JiggleManager instance;
         private static bool quitting;
+
+        // How much bigger than the rig the volume is that is tested against the view of the camera, in meters.
+        private const float VisibleMargin = 0.5f;
 
         /// <summary>Which solver runs the chains. Native falls back to Burst when the library does not load.</summary>
         public JiggleRuntimeBackend backend = JiggleRuntimeBackend.Burst;
@@ -54,9 +58,44 @@ namespace MidManStudio.AllThingsJiggle
         /// <summary>Rigs one Burst job index handles. Smaller spreads better over threads, larger costs less to schedule.</summary>
         [Range(1, 256)] public int rigsPerBatch = 8;
 
+        /// <summary>
+        /// How far past its reach a collider still counts as near a chain, in meters. It covers bones that stretch past the
+        /// pose. Raise it for chains that stretch a lot.
+        /// </summary>
+        [Range(0f, 2f)] public float colliderMargin = 0.25f;
+
+        /// <summary>The camera the level of detail measures from. Empty uses the main camera. With no camera there is no level of detail.</summary>
+        public Camera lodCamera;
+
+        /// <summary>Farther than this from the camera chains stop testing colliders. 0 means never.</summary>
+        [Min(0f)] public float lodCollisionDistance = 0f;
+
+        /// <summary>Farther than this from the camera chains are not simulated and show their pose. 0 means never.</summary>
+        [Min(0f)] public float lodCullDistance = 0f;
+
+        /// <summary>
+        /// How much closer than a distance limit a chain has to come before it goes back to its higher level, in meters.
+        /// It keeps a chain on a limit from flickering between two levels.
+        /// </summary>
+        [Min(0f)] public float lodHysteresis = 2f;
+
+        /// <summary>Whether chains the camera does not see are not simulated.</summary>
+        public bool lodCullOffscreen = false;
+
+        /// <summary>How long the camera must not see a chain before it is not simulated, in seconds.</summary>
+        [Min(0f)] public float lodOffscreenDelay = 0.5f;
+
         private readonly List<JiggleChain> chains = new List<JiggleChain>();
         private readonly List<JiggleChain> changed = new List<JiggleChain>();
         private readonly List<JiggleChain> resets = new List<JiggleChain>();
+        private readonly List<JiggleColliderShape> colliders = new List<JiggleColliderShape>();
+        private readonly List<JiggleForceField> fields = new List<JiggleForceField>();
+        private readonly JiggleColliderSet colliderSet = new JiggleColliderSet();
+        private readonly JiggleFieldQueue fieldQueue = new JiggleFieldQueue();
+        private JVec3[] anchors = new JVec3[16];
+        private uint[] ignore = new uint[16];
+        private readonly Plane[] viewPlanes = new Plane[6];
+        private readonly JVec4[] viewPlaneData = new JVec4[6];
         private JiggleRuntime runtime;
         private bool dirty;
         private JiggleFrameStats stats;
@@ -121,6 +160,61 @@ namespace MidManStudio.AllThingsJiggle
             get { return chains.Count; }
         }
 
+        /// <summary>The number of <see cref="JiggleColliderShape"/> components that are enabled.</summary>
+        public int ColliderShapeCount
+        {
+            get { return colliders.Count; }
+        }
+
+        /// <summary>The number of <see cref="JiggleForceField"/> components that are enabled.</summary>
+        public int ForceFieldCount
+        {
+            get { return fields.Count; }
+        }
+
+        /// <summary>Number of one shot impulses waiting for a frame that runs a fixed step.</summary>
+        public int PendingImpulses
+        {
+            get { return fieldQueue.PendingCount; }
+        }
+
+        /// <summary>Copies the registered chains into <paramref name="into"/>, which is cleared first. For tools that list them.</summary>
+        public void GetChains(List<JiggleChain> into)
+        {
+            into.Clear();
+            into.AddRange(chains);
+        }
+
+        /// <summary>
+        /// Gives every chain within <paramref name="radius"/> of <paramref name="point"/> a single shove away from it, a change
+        /// of velocity of up to <paramref name="velocityChange"/> meters per second that fades to nothing at the edge by
+        /// <paramref name="falloff"/> (0 does not fade, 1 is linear). A negative value pulls toward the point. The shove is
+        /// given on the first fixed step of the next frame that runs one. Chains scale it by their impulse response.
+        /// </summary>
+        public void AddBurst(Vector3 point, float radius, float velocityChange, int falloff = 1)
+        {
+            fieldQueue.Enqueue(JiggleShapes.Burst(
+                new JVec3(point.x, point.y, point.z), radius, velocityChange, (uint)Mathf.Clamp(falloff, 0, 4)));
+        }
+
+        /// <summary>
+        /// Gives every chain a single shove along <paramref name="velocityChange"/>, in meters per second. With a
+        /// <paramref name="radius"/> above 0 only chains within it of <paramref name="center"/> take it, fading to the edge
+        /// by <paramref name="falloff"/>. The shove is given on the first fixed step of the next frame that runs one.
+        /// </summary>
+        public void AddShove(Vector3 velocityChange, Vector3 center, float radius = 0f, int falloff = 1)
+        {
+            JVec3 v = new JVec3(velocityChange.x, velocityChange.y, velocityChange.z);
+            float speed = v.Length();
+            if (!(speed > 0f) || float.IsInfinity(speed))
+            {
+                return;
+            }
+            fieldQueue.Enqueue(JiggleShapes.Field(
+                JiggleConst.FieldDirectional, JiggleConst.FieldImpulse, new JVec3(center.x, center.y, center.z), v, 0f, speed,
+                radius, (uint)Mathf.Clamp(falloff, 0, 4), 0f, 0f));
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
         {
@@ -179,6 +273,37 @@ namespace MidManStudio.AllThingsJiggle
             {
                 dirty = true;
             }
+        }
+
+        internal void Register(JiggleColliderShape shape)
+        {
+            if (!colliders.Contains(shape))
+            {
+                colliders.Add(shape);
+            }
+        }
+
+        internal void Unregister(JiggleColliderShape shape)
+        {
+            colliders.Remove(shape);
+        }
+
+        internal void Register(JiggleForceField field)
+        {
+            if (!fields.Contains(field))
+            {
+                fields.Add(field);
+            }
+        }
+
+        internal void Unregister(JiggleForceField field)
+        {
+            fields.Remove(field);
+        }
+
+        internal void Enqueue(JiggleField impulse)
+        {
+            fieldQueue.Enqueue(impulse);
         }
 
         internal void NotifyChanged(JiggleChain chain)
@@ -283,16 +408,172 @@ namespace MidManStudio.AllThingsJiggle
             resets.Clear();
         }
 
+        // ------------------------------------------------------------------ per frame scene work
+
+        private void EnsureRigArrays(int rigs)
+        {
+            if (anchors.Length < rigs)
+            {
+                int n = anchors.Length;
+                while (n < rigs)
+                {
+                    n *= 2;
+                }
+                anchors = new JVec3[n];
+                ignore = new uint[n];
+            }
+        }
+
+        private static float Distance(Vector3 camera, JVec3 point)
+        {
+            float dx = camera.x - point.X;
+            float dy = camera.y - point.Y;
+            float dz = camera.z - point.Z;
+            return JiggleMath.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        private void ReadViewPlanes(Camera cam)
+        {
+            GeometryUtility.CalculateFrustumPlanes(cam, viewPlanes);
+            for (int i = 0; i < 6; i++)
+            {
+                Vector3 n = viewPlanes[i].normal;
+                viewPlaneData[i] = new JVec4(n.x, n.y, n.z, viewPlanes[i].distance);
+            }
+        }
+
+        // Reads the anchors, decides the level of detail of every rig, switches rigs off and on, keeps chains that must not sleep
+        // awake and fills the layers each rig ignores. Runs before the colliders are written, because it decides who tests them.
+        private void PrepareRigs(JiggleRuntime rt, float frameDt)
+        {
+            JiggleHost h = rt.Host;
+            int rigs = h.RigCount;
+            EnsureRigArrays(rigs);
+            Camera cam = lodCamera != null ? lodCamera : Camera.main;
+            Vector3 camPos = cam != null ? cam.transform.position : Vector3.zero;
+            bool planesRead = false;
+            JiggleLodSettings limits = new JiggleLodSettings();
+            limits.CollisionDistance = lodCollisionDistance;
+            limits.CullDistance = lodCullDistance;
+            limits.Hysteresis = lodHysteresis;
+            limits.CullOffscreen = lodCullOffscreen;
+            limits.OffscreenDelay = lodOffscreenDelay;
+
+            int noCollision = 0;
+            int off = 0;
+            for (int r = 0; r < rigs; r++)
+            {
+                JiggleChain c = rt.Chains[r];
+                Transform anchorTransform = c.Anchor;
+                Vector3 ap = anchorTransform != null ? anchorTransform.position : c.transform.position;
+                anchors[r] = new JVec3(ap.x, ap.y, ap.z);
+
+                JiggleLodLevel level = JiggleLodLevel.Full;
+                JiggleLodSettings own = c.ResolveLod(limits, lodHysteresis);
+                bool limited = own.CollisionDistance > 0f || own.CullDistance > 0f || own.CullOffscreen;
+                if (cam != null && limited)
+                {
+                    bool visible = true;
+                    if (own.CullOffscreen)
+                    {
+                        if (!planesRead)
+                        {
+                            ReadViewPlanes(cam);
+                            planesRead = true;
+                        }
+                        visible = JiggleLod.SphereInFrustum(viewPlaneData, 6, anchors[r], h.Rigs[r].Extent + VisibleMargin);
+                    }
+                    level = JiggleLod.Decide(own, ref c.LodTracker, Distance(camPos, anchors[r]), visible, frameDt);
+                }
+                else
+                {
+                    c.LodTracker = new JiggleLodTracker();
+                }
+
+                // The flag in the host is the truth, so a rebuild that copied it and a level that changed agree.
+                bool isOff = h.IsDisabled(r);
+                if (level == JiggleLodLevel.Off && !isOff)
+                {
+                    h.SetDisabled(r, true);
+                }
+                else if (level != JiggleLodLevel.Off && isOff)
+                {
+                    h.SetDisabled(r, false);
+                }
+                if (level == JiggleLodLevel.Off)
+                {
+                    off++;
+                }
+                else if (level == JiggleLodLevel.NoCollision)
+                {
+                    noCollision++;
+                }
+                ignore[r] = level == JiggleLodLevel.Full ? unchecked((uint)c.ignoreLayers.value) : uint.MaxValue;
+
+                if (!c.allowSleep)
+                {
+                    h.Wake(r);
+                }
+            }
+            stats.LodNoCollision = noCollision;
+            stats.LodOff = off;
+        }
+
+        // Writes the colliders and the fields of the scene, and the one shot impulses, into the host.
+        private void WriteScene(JiggleRuntime rt)
+        {
+            JiggleHost h = rt.Host;
+            colliderSet.Clear();
+            colliderSet.Margin = colliderMargin;
+            for (int i = 0; i < colliders.Count; i++)
+            {
+                JiggleColliderShape s = colliders[i];
+                if (s == null || !s.isActiveAndEnabled)
+                {
+                    continue;
+                }
+                bool moved;
+                JiggleCollider c = s.Build(out moved);
+                colliderSet.Add(c, s.gameObject.layer, moved);
+            }
+            colliderSet.Write(h, anchors, ignore);
+
+            fieldQueue.Clear();
+            for (int i = 0; i < fields.Count; i++)
+            {
+                JiggleForceField f = fields[i];
+                if (f == null || !f.isActiveAndEnabled)
+                {
+                    continue;
+                }
+                fieldQueue.Add(f.Build());
+            }
+            fieldQueue.Write(h);
+        }
+
+        private int CountAsleep(JiggleHost h)
+        {
+            int asleep = 0;
+            for (int r = 0; r < h.RigCount; r++)
+            {
+                if ((h.Rigs[r].Flags & JiggleConst.RigAsleep) != 0)
+                {
+                    asleep++;
+                }
+            }
+            return asleep;
+        }
+
         private void LateUpdate()
         {
             Simulate(Time.deltaTime);
         }
 
         /// <summary>
-        /// Runs one frame for frameDt seconds now: rebuilds if chains came or went, bakes edited settings, reads the
-        /// transforms, solves and writes the bone rotations. The manager calls it every LateUpdate with the frame
-        /// time. A script that wants to step by hand, for a replay or a test, calls it too and does not rely on the
-        /// LateUpdate of that frame.
+        /// Runs one frame for frameDt seconds now: rebuilds if chains came or went, bakes edited settings, decides the level
+        /// of detail, writes the colliders and fields of the scene, reads the transforms, solves and writes the bone
+        /// rotations. The manager calls it every LateUpdate with the frame time. A script that wants to step by hand, for a
+        /// replay or a test, calls it too and does not rely on the LateUpdate of that frame.
         /// </summary>
         public void Simulate(float frameDt)
         {
@@ -315,20 +596,35 @@ namespace MidManStudio.AllThingsJiggle
                 stats.Particles = 0;
                 stats.Steps = 0;
                 stats.FrameMs = 0f;
+                stats.Colliders = 0;
+                stats.ColliderRefs = 0;
+                stats.Fields = 0;
+                stats.LodNoCollision = 0;
+                stats.LodOff = 0;
+                stats.Asleep = 0;
                 return;
             }
             ApplySettings(rt.Host);
             ApplyResets();
+            PrepareRigs(rt, frameDt);
+            WriteScene(rt);
             JiggleRuntimeBackend active = ActiveBackend;
+            rt.Host.Cfg->Steps = 0;
             long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             int code = rt.Frame(frameDt, active, rigsPerBatch);
             long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            // An impulse is given on the first step of a frame, so a frame that ran none, or failed, keeps it for the next.
+            fieldQueue.Commit(code == JiggleConst.Ok ? rt.Host.Cfg->Steps : 0u);
             stats.Rigs = rt.Host.RigCount;
             stats.Particles = rt.Host.ParticleCount;
             stats.Steps = rt.Host.Cfg->Steps;
             stats.FrameMs = (float)((double)(t1 - t0) * 1000.0 / (double)System.Diagnostics.Stopwatch.Frequency);
             stats.Backend = active;
             stats.Status = code;
+            stats.Colliders = rt.Host.ColliderCount;
+            stats.ColliderRefs = rt.Host.RefCount;
+            stats.Fields = rt.Host.FieldCount;
+            stats.Asleep = CountAsleep(rt.Host);
             if (code != JiggleConst.Ok && code != lastLoggedStatus)
             {
                 Debug.LogError("The jiggle solver refused a frame with status " + code + ". The chains keep their last result.", this);

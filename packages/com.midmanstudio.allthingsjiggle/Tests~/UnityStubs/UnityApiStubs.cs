@@ -21,6 +21,7 @@ namespace UnityEngine
         public static bool operator !=(Object a, Object b) { return !ReferenceEquals(a, b); }
         public static implicit operator bool(Object o) { return !ReferenceEquals(o, null); }
         public static void Destroy(Object obj) { }
+        public static void DestroyImmediate(Object obj) { }
         public static void DontDestroyOnLoad(Object target) { }
         public static T FindFirstObjectByType<T>() where T : Object { return null; }
     }
@@ -44,15 +45,24 @@ namespace UnityEngine
     public sealed class GameObject : Object
     {
         public GameObject(string name) { }
+        public Transform transform { get; }
+        public int layer { get; set; }
         public T AddComponent<T>() where T : Component { return null; }
     }
 
     public sealed class Transform : Component
     {
         public Vector3 position { get; set; }
+        public Vector3 localPosition { get; set; }
+        public Vector3 localScale { get; set; }
+        public Vector3 lossyScale { get; }
+        public Vector3 right { get; }
+        public Vector3 up { get; }
+        public Vector3 forward { get; }
         public Quaternion rotation { get; set; }
         public Quaternion localRotation { get; set; }
         public Transform parent { get; set; }
+        public void SetParent(Transform parent, bool worldPositionStays) { }
         public int childCount { get; }
         public Matrix4x4 localToWorldMatrix { get; }
         public Transform GetChild(int index) { return null; }
@@ -74,6 +84,9 @@ namespace UnityEngine
         public float z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 zero { get { return new Vector3(0f, 0f, 0f); } }
+        public static float Distance(Vector3 a, Vector3 b) { return 0f; }
+        public static Vector3 operator +(Vector3 a, Vector3 b) { return a; }
+        public static Vector3 operator *(Vector3 a, float d) { return a; }
     }
 
     public struct Quaternion
@@ -85,6 +98,7 @@ namespace UnityEngine
         public Quaternion(float x, float y, float z, float w) { this.x = x; this.y = y; this.z = z; this.w = w; }
         public static Quaternion identity { get { return new Quaternion(0f, 0f, 0f, 1f); } }
         public static Quaternion Inverse(Quaternion rotation) { return rotation; }
+        public static Quaternion Euler(float x, float y, float z) { return identity; }
         public static Quaternion operator *(Quaternion lhs, Quaternion rhs) { return lhs; }
     }
 
@@ -108,6 +122,32 @@ namespace UnityEngine
         public static int Clamp(int value, int min, int max) { return value < min ? min : (value > max ? max : value); }
         public static float Clamp(float value, float min, float max) { return value < min ? min : (value > max ? max : value); }
         public static float Clamp01(float value) { return value < 0f ? 0f : (value > 1f ? 1f : value); }
+        public static float Abs(float f) { return f < 0f ? -f : f; }
+        public static float Max(float a, float b) { return a > b ? a : b; }
+        public static float Sin(float f) { return (float)Math.Sin(f); }
+    }
+
+    public class Camera : Behaviour
+    {
+        public static Camera main { get { return null; } }
+    }
+
+    public struct Plane
+    {
+        public Vector3 normal { get; set; }
+        public float distance { get; set; }
+    }
+
+    public static class GeometryUtility
+    {
+        public static void CalculateFrustumPlanes(Camera camera, Plane[] planes) { }
+    }
+
+    public struct LayerMask
+    {
+        public int value { get; set; }
+        public static implicit operator int(LayerMask mask) { return mask.value; }
+        public static implicit operator LayerMask(int intVal) { LayerMask l = new LayerMask(); l.value = intVal; return l; }
     }
 
     public sealed class AnimationCurve
@@ -441,6 +481,18 @@ namespace UnityEditor
     public static class EditorGUIUtility
     {
         public static string systemCopyBuffer { get; set; }
+    }
+
+    public static class EditorApplication
+    {
+        public delegate void CallbackFunction();
+        public static CallbackFunction update;
+        public static double timeSinceStartup { get { return 0.0; } }
+    }
+
+    public static class Selection
+    {
+        public static UnityEngine.GameObject activeGameObject { get; set; }
     }
 
     public static class EditorUtility

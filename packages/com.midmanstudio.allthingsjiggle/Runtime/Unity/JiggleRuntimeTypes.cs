@@ -48,5 +48,17 @@ namespace MidManStudio.AllThingsJiggle
         public int Status;
         /// <summary>How many times the arrays were rebuilt because chains came or went.</summary>
         public int Rebuilds;
+        /// <summary>Colliders written to the solver in the last frame.</summary>
+        public int Colliders;
+        /// <summary>Collider indices in the lists of all rigs: how many collider tests a particle may make per step, summed over rigs.</summary>
+        public int ColliderRefs;
+        /// <summary>Force fields written to the solver in the last frame, one shot impulses included.</summary>
+        public int Fields;
+        /// <summary>Rigs that were not testing colliders because of their level of detail.</summary>
+        public int LodNoCollision;
+        /// <summary>Rigs that were not simulated because of their level of detail.</summary>
+        public int LodOff;
+        /// <summary>Rigs that were asleep after the last frame.</summary>
+        public int Asleep;
     }
 }

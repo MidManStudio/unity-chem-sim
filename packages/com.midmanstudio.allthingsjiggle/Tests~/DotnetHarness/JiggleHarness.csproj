@@ -27,6 +27,7 @@
   <ItemGroup>
     <Compile Include="../../Runtime/Core/**/*.cs" />
     <Compile Include="../../Tests/Editor/JiggleParityTests.cs" />
+    <Compile Include="../../Tests/Editor/JiggleFeatureTests.cs" />
     <Compile Include="NUnitStubs.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

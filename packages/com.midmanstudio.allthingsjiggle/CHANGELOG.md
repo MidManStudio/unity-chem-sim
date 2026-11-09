@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0
+
+Drop 2b: colliders, force fields, hit impulses, level of detail and sleep, from scene objects.
+Nothing in this drop has run inside Unity either: the Core is tested under .NET 8, the Unity layer and
+the editor labs are only compiled against stubs of the Unity API. Body colliders from the rig, presets and the
+chest adapter (drop 3) are still to come.
+
+- **Colliders.** `JiggleColliderShape` (menu `MidManStudio/AllThingsJiggle/Jiggle Collider`): a sphere, capsule,
+  box, plane or inside sphere that registers with the manager and follows its transform. A chain tests the
+  colliders that are near it, and only while `Collide` is on in its settings. Static shapes are built once
+- **Layers.** A collider's layer is `GameObject.layer`. A chain has `ignoreLayers`, and a set bit means NO
+  collision with that layer. There is no layer slot in the native struct, so the lists are filtered in managed
+  code when they are built, and no native binary has to change
+- **Force fields.** `JiggleForceField` (menu `MidManStudio/AllThingsJiggle/Jiggle Force Field`): a directional,
+  radial or vortex field in the scene, with a radius, a falloff, gusts and a `Fire()` that sends one impulse
+- **Hits.** `JiggleChain.AddImpulse` and `AddImpulseAt`, and `JiggleManager.AddBurst` and `AddShove`. A hit changes
+  the velocity of the bones once. With no drag it gives the same motion as a directional impulse field. A hit
+  wakes a sleeping chain. A chain that is not simulated refuses the hit and returns false
+- **Level of detail.** Each chain is Full, NoCollision (too far to test colliders) or Off (too far or out of the
+  camera's view, so it shows its pose and costs no solver time). The manager has the limits and one camera
+  (`lodCamera`, else the main camera). A chain can inherit them, always simulate, or have its own (`lod`).
+  Hysteresis stops chains flickering at a limit. A chain that comes back from Off snaps to its pose
+- **Sleep.** `JiggleChain.allowSleep`, `IsAsleep` and `Wake()`. A moving collider that a sleeping chain is near wakes it
+- chain settings gain `collide`, `collisionRadius`, `segmentCollision`, `windResponse` and `impulseResponse`. Before
+  this, a chain could not collide at all because the settings never turned it on. The defaults are the Core's
+- Core: `JiggleColliderSet`, `JiggleShapes`, `JiggleFieldQueue`, `JiggleImpulse`, `JiggleLod`. New in `JiggleHost`:
+  `SetColliderList` with a pointer, `SetCollider`, `ClearColliders`, `ClearColliderLists`, `ClearFields`, `IsAsleep`,
+  `IsDisabled`, `SetDisabled`, `Wake`. New in `JiggleFields`: `Weight`. The solver and the native interface did not
+  change: the interface version stays 2
+- `JiggleFrameStats` gains `Colliders`, `ColliderRefs`, `Fields`, `LodNoCollision`, `LodOff` and `Asleep`
+- the manager's frame is now: rebuild, apply changes and settings, apply resets, prepare the rigs (anchors, level of
+  detail, flags, layer masks), write the scene (collider lists, fields), step, then commit the impulses
+- impulses that the solver did not step on (a frame with no steps) stay queued for the next frame. Impulse fields act
+  on the first step of a frame only
+- the editor lab has three new tabs, Colliders, Fields and hits, and LOD, each building its own test setup in play
+  mode. Inspectors and gizmos for the two new components. The chain inspector shows the level and the sleep state in
+  play mode and has Wake and hit buttons
+- `Tests/Editor/JiggleFeatureTests.cs`: 23 tests, in the shared harness. `Tests/Editor/JiggleUnityLayerTests.cs` has 10
+  tests (5 new). The harness runs 53
+- 13 new `.meta` files
+- **Known limits, new:** building the collider lists is O(chains x colliders) on the main thread. The transform jobs still
+  run for chains that are Off. There is one LOD camera and no lower step rate for far chains. A chain with
+  `allowSleep` off, when the manager's `sleepFrames` is 1, can still be snapped to its pose at the end of the frame, which
+  looks the same. Static shapes are not watched, so move one by turning `staticShape` off. See the docs
+- the Rust crate version stays 0.0.1 and the interface version stays 2. The native binaries under
+  `Runtime/Plugins/Native` are still interface version 1 until the build workflow has run
+
 ## 0.3.1
 
 - menu paths follow the house rule (a top level `MidManStudio` menu, never `Tools` or `Window`): the lab is

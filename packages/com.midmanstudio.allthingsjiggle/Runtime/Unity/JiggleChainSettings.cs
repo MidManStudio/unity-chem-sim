@@ -42,6 +42,19 @@ namespace MidManStudio.AllThingsJiggle
         [Range(0f, 1f)] public float ignoreRootMotion = 0f;
         /// <summary>Relative mass for two way coupling, 0 for none. Only ratios between neighbouring bones matter.</summary>
         [Min(0f)] public float mass = 0f;
+        /// <summary>
+        /// Whether the bones collide with the <see cref="JiggleColliderShape"/> components of the scene. Off by default: a
+        /// chain that collides with nothing costs nothing for it.
+        /// </summary>
+        public bool collide = false;
+        /// <summary>How thick a bone is for collisions, in meters.</summary>
+        [Min(0f)] public float collisionRadius = 0.1f;
+        /// <summary>Whether the whole bone, and not only its end, is tested against colliders. Costs more.</summary>
+        public bool segmentCollision = false;
+        /// <summary>Multiplier on the acceleration of <see cref="JiggleForceField"/> components, wind first of all.</summary>
+        [Min(0f)] public float windResponse = 1f;
+        /// <summary>Multiplier on hits and impulses: <see cref="JiggleChain.AddImpulse"/>, bursts and fired fields.</summary>
+        [Min(0f)] public float impulseResponse = 1f;
 
         /// <summary>Settings equal to <see cref="JiggleParams.Default"/>.</summary>
         public JiggleChainSettings()
@@ -67,6 +80,11 @@ namespace MidManStudio.AllThingsJiggle
             p.Blend = blend;
             p.IgnoreRootMotion = ignoreRootMotion;
             p.Mass = mass;
+            p.Collide = collide;
+            p.CollisionRadius = collisionRadius;
+            p.SegmentCollision = segmentCollision;
+            p.WindResponse = windResponse;
+            p.ImpulseResponse = impulseResponse;
             return p;
         }
 

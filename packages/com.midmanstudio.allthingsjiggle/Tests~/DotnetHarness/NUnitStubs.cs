@@ -47,9 +47,24 @@ namespace NUnit.Framework
             }
         }
 
+        public static void IsNotNull(object value)
+        {
+            IsNotNull(value, "expected a value that is not null");
+        }
+
+        public static void IsNotNull(object value, string message)
+        {
+            IsTrue(value != null, message);
+        }
+
         public static void IsFalse(bool condition)
         {
-            IsTrue(!condition, "expected false");
+            IsFalse(condition, "expected false");
+        }
+
+        public static void IsFalse(bool condition, string message)
+        {
+            IsTrue(!condition, message);
         }
 
         public static void AreEqual(object expected, object actual)

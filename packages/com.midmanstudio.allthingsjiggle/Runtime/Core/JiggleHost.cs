@@ -313,22 +313,145 @@ namespace MidManStudio.AllThingsJiggle
         /// <summary>
         /// Gives a rig the colliders it should test, by index into <see cref="Colliders"/>. Lists sit one after the
         /// other in <see cref="Refs"/>, so a rig can be given a list once, and the lists are kept when rigs are added.
+        /// Giving a rig a second list leaves the first one in <see cref="Refs"/> unused, so a host that rewrites its
+        /// lists calls <see cref="ClearColliderLists"/> first.
         /// </summary>
         public void SetColliderList(int rig, uint[] list)
         {
-            CheckRig(rig);
             if (list == null)
             {
                 throw new ArgumentException("the list is missing");
             }
-            ReserveRefs(RefCount + list.Length);
-            for (int i = 0; i < list.Length; i++)
+            fixed (uint* p = list)
+            {
+                SetColliderList(rig, p, list.Length);
+            }
+        }
+
+        /// <summary>
+        /// The same as <see cref="SetColliderList(int, uint[])"/> for a list in memory the caller owns, so a host that
+        /// builds a list every frame does not allocate. The list is copied. A count of 0 gives the rig no colliders.
+        /// </summary>
+        public void SetColliderList(int rig, uint* list, int count)
+        {
+            CheckRig(rig);
+            if (count < 0 || (count > 0 && list == null))
+            {
+                throw new ArgumentException("the list is missing");
+            }
+            ReserveRefs(RefCount + count);
+            for (int i = 0; i < count; i++)
             {
                 Refs[RefCount + i] = list[i];
             }
             Rigs[rig].RefOffset = (uint)RefCount;
-            Rigs[rig].RefCount = (uint)list.Length;
-            RefCount += list.Length;
+            Rigs[rig].RefCount = (uint)count;
+            RefCount += count;
+        }
+
+        /// <summary>
+        /// Replaces collider <paramref name="index"/>, which must exist. The lists of the rigs are kept, so a collider
+        /// that moves is written here and nothing else changes.
+        /// </summary>
+        public void SetCollider(int index, in JiggleCollider c)
+        {
+            if (disposed)
+            {
+                throw new ObjectDisposedException("JiggleHost");
+            }
+            if (index < 0 || index >= ColliderCount)
+            {
+                throw new ArgumentException("the collider does not exist");
+            }
+            Colliders[index] = c;
+        }
+
+        /// <summary>
+        /// Removes every collider and every rig's list of them, so the scene can write its colliders again. The memory
+        /// is kept.
+        /// </summary>
+        public void ClearColliders()
+        {
+            ClearColliderLists();
+            ColliderCount = 0;
+        }
+
+        /// <summary>
+        /// Gives every rig an empty list again and forgets all the lists, without removing colliders. The memory is kept.
+        /// </summary>
+        public void ClearColliderLists()
+        {
+            if (disposed)
+            {
+                throw new ObjectDisposedException("JiggleHost");
+            }
+            for (int r = 0; r < RigCount; r++)
+            {
+                Rigs[r].RefOffset = 0;
+                Rigs[r].RefCount = 0;
+            }
+            RefCount = 0;
+        }
+
+        /// <summary>Removes every field, so the scene can write its fields again. The memory is kept.</summary>
+        public void ClearFields()
+        {
+            if (disposed)
+            {
+                throw new ObjectDisposedException("JiggleHost");
+            }
+            FieldCount = 0;
+        }
+
+        /// <summary>Whether the solver put the rig to sleep, so its output is the pose.</summary>
+        public bool IsAsleep(int rig)
+        {
+            CheckRig(rig);
+            return (Rigs[rig].Flags & JiggleConst.RigAsleep) != 0;
+        }
+
+        /// <summary>Whether the rig is switched off, so the solver skips it and its output is the pose.</summary>
+        public bool IsDisabled(int rig)
+        {
+            CheckRig(rig);
+            return (Rigs[rig].Flags & JiggleConst.RigDisabled) != 0;
+        }
+
+        /// <summary>
+        /// Switches a rig off or on. A rig that is off costs nothing in the solver and outputs its pose. Switching it
+        /// on again makes it snap to its pose on the next step, because its state is as old as the day it was
+        /// switched off and would swing from there.
+        /// </summary>
+        public void SetDisabled(int rig, bool disabled)
+        {
+            CheckRig(rig);
+            uint f = Rigs[rig].Flags;
+            bool was = (f & JiggleConst.RigDisabled) != 0;
+            if (disabled == was)
+            {
+                return;
+            }
+            if (disabled)
+            {
+                f |= JiggleConst.RigDisabled;
+            }
+            else
+            {
+                f &= ~JiggleConst.RigDisabled;
+                f |= JiggleConst.RigReset;
+            }
+            Rigs[rig].Flags = f;
+        }
+
+        /// <summary>
+        /// Wakes a sleeping rig, so the next step simulates it. The state of a sleeping rig is its pose, so it carries
+        /// on from there. Does nothing to a rig that is awake, except to start its time at rest again.
+        /// </summary>
+        public void Wake(int rig)
+        {
+            CheckRig(rig);
+            Rigs[rig].Flags &= ~JiggleConst.RigAsleep;
+            Rigs[rig].SleepCounter = 0;
         }
 
         private void ReserveColliders(int count)

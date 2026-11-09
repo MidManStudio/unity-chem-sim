@@ -35,6 +35,23 @@ namespace MidManStudio.AllThingsJiggle
         /// </summary>
         [Min(0.01f)] public float tipScale = 1f;
 
+        /// <summary>
+        /// Layers whose <see cref="JiggleColliderShape"/> objects the bones do not collide with. A set bit means no
+        /// collision, so the default, nothing set, collides with every layer. Only matters while
+        /// <see cref="JiggleChainSettings.collide"/> is on.
+        /// </summary>
+        public LayerMask ignoreLayers;
+
+        /// <summary>
+        /// Whether the chain may fall asleep when it is at rest, which costs nothing while it lasts. Sleeping also has to be
+        /// turned on in the manager (its sleep frames). Turn this off for a chain that must always be simulated, for example
+        /// one that is read back by a script every frame.
+        /// </summary>
+        public bool allowSleep = true;
+
+        /// <summary>How the chain is simulated at a distance and when it is not seen. Follows the manager by default.</summary>
+        public JiggleChainLod lod = new JiggleChainLod();
+
         private Transform[] bones = new Transform[0];
         private Vector3[] bindPos = new Vector3[0];
         private Quaternion[] bindRot = new Quaternion[0];
@@ -45,6 +62,9 @@ namespace MidManStudio.AllThingsJiggle
 
         // The pose source the rig was built with, so a change in the inspector is noticed and the rig is built again.
         internal JigglePoseSource BuiltSource;
+
+        // What the level of detail remembers about this chain. It stays with the chain when the arrays are rebuilt.
+        internal JiggleLodTracker LodTracker;
 
         /// <summary>The transform that holds the chain, the parent of this one. Null when there is none.</summary>
         public Transform Anchor
@@ -62,6 +82,18 @@ namespace MidManStudio.AllThingsJiggle
         public bool IsSimulating
         {
             get { return runtime != null && rig >= 0; }
+        }
+
+        /// <summary>How much of the chain the manager simulates now. See <see cref="lod"/>.</summary>
+        public JiggleLodLevel LodLevel
+        {
+            get { return LodTracker.Level; }
+        }
+
+        /// <summary>Whether the chain is asleep: at rest and not simulated until something moves it. See <see cref="allowSleep"/>.</summary>
+        public bool IsAsleep
+        {
+            get { return IsSimulating && runtime.Host.IsAsleep(rig); }
         }
 
         /// <summary>The bone with the given index, 0 for the first, or null outside the chain.</summary>
@@ -95,6 +127,12 @@ namespace MidManStudio.AllThingsJiggle
             get { return bindRot; }
         }
 
+        // The limits this chain runs with, given the limits and the hysteresis of the manager.
+        internal JiggleLodSettings ResolveLod(JiggleLodSettings managerLimits, float hysteresis)
+        {
+            return lod == null ? managerLimits : lod.Resolve(managerLimits, hysteresis);
+        }
+
         internal void Attach(JiggleRuntime owner, int rigIndexInOwner)
         {
             runtime = owner;
@@ -109,6 +147,7 @@ namespace MidManStudio.AllThingsJiggle
 
         private void OnEnable()
         {
+            LodTracker = new JiggleLodTracker();
             JiggleManager m = JiggleManager.Instance;
             if (m != null)
             {
@@ -129,6 +168,10 @@ namespace MidManStudio.AllThingsJiggle
 
         private void OnValidate()
         {
+            if (lod == null)
+            {
+                lod = new JiggleChainLod();
+            }
             maxBones = Mathf.Clamp(maxBones, 1, JiggleConst.MaxParticles - 2);
             if (tipScale < 0.01f)
             {
@@ -164,6 +207,46 @@ namespace MidManStudio.AllThingsJiggle
             {
                 m.RequestReset(this);
             }
+        }
+
+        /// <summary>Wakes the chain if it is asleep, so it is simulated from the next frame. Does nothing while it is not simulated.</summary>
+        public void Wake()
+        {
+            if (IsSimulating)
+            {
+                runtime.Host.Wake(rig);
+            }
+        }
+
+        /// <summary>
+        /// Hits the whole chain: changes the velocity of every bone by <paramref name="velocityChange"/>, in meters per second,
+        /// times the impulse response of the chain. Right for a shove, a footstep, a landing. A sleeping chain wakes. The hit
+        /// is given at once, so it also works in a frame that runs no fixed step. Returns false and does nothing when the chain
+        /// is not simulated, is switched off by its level of detail, or is about to snap to its pose after a reset.
+        /// </summary>
+        public bool AddImpulse(Vector3 velocityChange)
+        {
+            if (!IsSimulating)
+            {
+                return false;
+            }
+            return JiggleImpulse.Hit(runtime.Host, rig, new JVec3(velocityChange.x, velocityChange.y, velocityChange.z));
+        }
+
+        /// <summary>
+        /// Hits the bones near a point in world space: full at the point, fading to nothing at <paramref name="radius"/>,
+        /// by <paramref name="falloff"/> as the force fields do (0 does not fade, 1 is linear). A radius of 0 hits the whole
+        /// chain. Returns whether any bone was hit, with the same refusals as <see cref="AddImpulse"/>.
+        /// </summary>
+        public bool AddImpulseAt(Vector3 point, Vector3 velocityChange, float radius, int falloff = 1)
+        {
+            if (!IsSimulating)
+            {
+                return false;
+            }
+            return JiggleImpulse.HitAt(
+                runtime.Host, rig, new JVec3(point.x, point.y, point.z), radius, (uint)Mathf.Clamp(falloff, 0, 4),
+                new JVec3(velocityChange.x, velocityChange.y, velocityChange.z));
         }
 
         /// <summary>

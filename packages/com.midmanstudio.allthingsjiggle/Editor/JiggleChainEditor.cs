@@ -40,6 +40,8 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
                 return;
             }
             EditorGUILayout.LabelField("Simulated", chain.IsSimulating ? "yes" : "no");
+            EditorGUILayout.LabelField("Level of detail", chain.LodLevel.ToString());
+            EditorGUILayout.LabelField("Asleep", chain.IsAsleep ? "yes" : "no");
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("Reset simulation"))
             {
@@ -48,6 +50,17 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
             if (GUILayout.Button("Rebind to current pose"))
             {
                 chain.Rebind();
+            }
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Wake"))
+            {
+                chain.Wake();
+            }
+            if (GUILayout.Button("Hit sideways"))
+            {
+                Vector3 side = chain.Anchor.right;
+                chain.AddImpulse(new Vector3(side.x * 3f, side.y * 3f, side.z * 3f));
             }
             EditorGUILayout.EndHorizontal();
         }

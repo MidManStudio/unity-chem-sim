@@ -13,13 +13,14 @@ using UnityEngine;
 namespace MidManStudio.AllThingsJiggle.EditorTools
 {
     /// <summary>
-    /// The lab of the runtime. Live shows the manager and checks that Burst and the native library work. Parity runs
-    /// a scene on all three backends frame for frame and compares them. Bench times the scene table on the three
-    /// backends on this machine, which is the comparison the Rust bench cannot make on its own.
+    /// The lab of the runtime. Live shows the manager and checks that Burst and the native library work. Colliders,
+    /// Fields and hits, and LOD each build a small scene in play mode to try one feature. Parity runs a scene on all
+    /// three backends frame for frame and compares them. Bench times the scene table on the three backends on this
+    /// machine, which is the comparison the Rust bench cannot make on its own.
     /// </summary>
     public sealed class JiggleLabWindow : EditorWindow
     {
-        private static readonly string[] TabNames = { "Live", "Parity", "Bench" };
+        private static readonly string[] TabNames = { "Live", "Colliders", "Fields and hits", "LOD", "Parity", "Bench" };
 
         private int tab;
         private Vector2 scroll;
@@ -52,6 +53,8 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
 
         private void OnEnable()
         {
+            EditorApplication.update -= Tick;
+            EditorApplication.update += Tick;
             scenes = JiggleBenchScenes.All();
             sceneNames = new string[scenes.Length];
             sceneOn = new bool[scenes.Length];
@@ -62,9 +65,21 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
             }
         }
 
+        private void OnDisable()
+        {
+            EditorApplication.update -= Tick;
+        }
+
+        // Runs every editor frame, so a sweeping ball and the tip tracking keep going while the window is not being drawn.
+        private static void Tick()
+        {
+            JiggleColliderLab.Tick();
+            JiggleFieldLab.Tick();
+        }
+
         private void OnInspectorUpdate()
         {
-            if (tab == 0 && Application.isPlaying)
+            if (tab <= 3 && Application.isPlaying)
             {
                 Repaint();
             }
@@ -91,6 +106,18 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
                 DrawLive();
             }
             else if (tab == 1)
+            {
+                JiggleColliderLab.Draw();
+            }
+            else if (tab == 2)
+            {
+                JiggleFieldLab.Draw();
+            }
+            else if (tab == 3)
+            {
+                JiggleLodLab.Draw();
+            }
+            else if (tab == 4)
             {
                 DrawParity();
             }
@@ -149,6 +176,10 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
             EditorGUILayout.LabelField("Frame time", st.FrameMs.ToString("F3", CultureInfo.InvariantCulture) + " ms");
             EditorGUILayout.LabelField("Solver status", st.Status.ToString());
             EditorGUILayout.LabelField("Rebuilds", st.Rebuilds.ToString());
+            EditorGUILayout.LabelField("Colliders / tests listed", st.Colliders + " / " + st.ColliderRefs);
+            EditorGUILayout.LabelField("Fields", st.Fields.ToString());
+            EditorGUILayout.LabelField("Asleep", st.Asleep.ToString());
+            EditorGUILayout.LabelField("LOD: not colliding / not simulated", st.LodNoCollision + " / " + st.LodOff);
         }
 
         // ------------------------------------------------------------------ parity
