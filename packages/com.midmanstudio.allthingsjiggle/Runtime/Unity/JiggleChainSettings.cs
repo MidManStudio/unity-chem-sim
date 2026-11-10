@@ -88,6 +88,46 @@ namespace MidManStudio.AllThingsJiggle
             return p;
         }
 
+        /// <summary>
+        /// Sets every value to the preset. The two frictions of a preset are given per second and become the per step drag here,
+        /// for a solver that steps <paramref name="fixedHz"/> times a second, so apply the preset again after the step rate of
+        /// the manager changes. The stiffness at the tip becomes a straight line in <see cref="stiffnessAlong"/>. Values out of
+        /// their range are clamped the way <see cref="JigglePresets.ToParams(in JigglePresetValues, int, int, float)"/> clamps
+        /// them. The tip scale is not a setting but a field of the chain: <see cref="JiggleChain.ApplyPreset(in JigglePresetValues)"/>
+        /// sets it as well.
+        /// </summary>
+        public void ApplyPreset(in JigglePresetValues values, float fixedHz)
+        {
+            JiggleParams p = JigglePresets.ToParams(values, 0, 1, fixedHz);
+            stiffness = p.Stiffness;
+            float tip = JiggleMath.IsFinite(values.StiffnessAtTip) && values.StiffnessAtTip > 0f ? values.StiffnessAtTip : 0f;
+            stiffnessAlong = Mathf.Abs(tip - 1f) < 1e-6f ? AnimationCurve.Constant(0f, 1f, 1f) : AnimationCurve.Linear(0f, 1f, 1f, tip);
+            soften = p.Soften;
+            rootStretch = p.RootStretch;
+            angleLimited = p.AngleLimited;
+            angleLimit = p.AngleLimit;
+            angleLimitSoften = p.AngleLimitSoften;
+            stretch = p.Stretch;
+            drag = p.Drag;
+            airDrag = p.AirDrag;
+            gravity = p.Gravity;
+            blend = p.Blend;
+            ignoreRootMotion = p.IgnoreRootMotion;
+            mass = p.Mass;
+            collide = p.Collide;
+            collisionRadius = p.CollisionRadius;
+            segmentCollision = p.SegmentCollision;
+            windResponse = p.WindResponse;
+            impulseResponse = p.ImpulseResponse;
+        }
+
+        /// <summary>Sets every value to a built in preset. See <see cref="ApplyPreset(in JigglePresetValues, float)"/>.</summary>
+        public void ApplyPreset(JigglePresetKind kind, float fixedHz)
+        {
+            JigglePresetValues v = JigglePresets.Get(kind);
+            ApplyPreset(v, fixedHz);
+        }
+
         /// <summary>The parameters of every bone of a chain.</summary>
         public JiggleParams[] ToParams(int bones)
         {

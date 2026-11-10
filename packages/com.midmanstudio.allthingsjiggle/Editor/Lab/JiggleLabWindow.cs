@@ -14,13 +14,13 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
 {
     /// <summary>
     /// The lab of the runtime. Live shows the manager and checks that Burst and the native library work. Colliders,
-    /// Fields and hits, and LOD each build a small scene in play mode to try one feature. Parity runs a scene on all
+    /// Fields and hits, LOD, Presets and Body each build a small scene in play mode to try one feature. Parity runs a scene on all
     /// three backends frame for frame and compares them. Bench times the scene table on the three backends on this
     /// machine, which is the comparison the Rust bench cannot make on its own.
     /// </summary>
     public sealed class JiggleLabWindow : EditorWindow
     {
-        private static readonly string[] TabNames = { "Live", "Colliders", "Fields and hits", "LOD", "Parity", "Bench" };
+        private static readonly string[] TabNames = { "Live", "Colliders", "Fields and hits", "LOD", "Presets", "Body", "Parity", "Bench" };
 
         private int tab;
         private Vector2 scroll;
@@ -75,11 +75,13 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
         {
             JiggleColliderLab.Tick();
             JiggleFieldLab.Tick();
+            JigglePresetLab.Tick();
+            JiggleBodyLab.Tick();
         }
 
         private void OnInspectorUpdate()
         {
-            if (tab <= 3 && Application.isPlaying)
+            if (tab <= 5 && Application.isPlaying)
             {
                 Repaint();
             }
@@ -118,6 +120,14 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
                 JiggleLodLab.Draw();
             }
             else if (tab == 4)
+            {
+                JigglePresetLab.Draw();
+            }
+            else if (tab == 5)
+            {
+                JiggleBodyLab.Draw();
+            }
+            else if (tab == 6)
             {
                 DrawParity();
             }

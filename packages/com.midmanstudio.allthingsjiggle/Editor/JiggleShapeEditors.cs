@@ -85,8 +85,14 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
         private static void DrawCollider(JiggleColliderShape shape, GizmoType type)
         {
             JiggleCollider c = shape.Peek();
+            Shape(c, c.Kind == JiggleConst.ColliderInsideSphere ? new Color(0.9f, 0.6f, 0.2f) : new Color(0.2f, 0.9f, 0.4f));
+        }
+
+        /// <summary>Draws a solver shape in world space in the given color. The body colliders use it for their preview.</summary>
+        internal static void Shape(in JiggleCollider c, Color color)
+        {
             JVec3 center = At(c.Center);
-            Gizmos.color = c.Kind == JiggleConst.ColliderInsideSphere ? new Color(0.9f, 0.6f, 0.2f) : new Color(0.2f, 0.9f, 0.4f);
+            Gizmos.color = color;
             switch (c.Kind)
             {
                 case JiggleConst.ColliderCapsule:

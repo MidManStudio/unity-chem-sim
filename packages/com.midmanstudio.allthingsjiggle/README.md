@@ -30,19 +30,27 @@ What it does today:
   colliders, farther than another (or out of view) they are not simulated and show their pose. A chain can inherit
   the manager's limits, always simulate, or have its own
 - **Sleep controls.** `allowSleep`, `IsAsleep`, `Wake()`. A hit and a collider that moves up to a sleeping chain wake it
+- **Presets.** Hair, tail, ear, chest, horn and wing, applied from the chain inspector or with `chain.ApplyPreset`,
+  or kept as `JigglePreset` assets. Their frictions are per second, so they mean the same at any step rate
+- **Body colliders.** `JiggleBodyColliders` fits spheres and capsules to the joints of a humanoid or hand set rig, so hair
+  and tails stay out of the body without placing colliders by hand
 - sleep and wake, teleport and reset, and a fixed step accumulator
 
 ## State of this release
 
-Version 0.4.0 is drop 2b: colliders, fields, hits, level of detail and sleep controls from scene objects.
-**Nothing in it, or in 0.3.0 before it, has run inside Unity yet.** The C# Core is
+Version 0.5.0 is drop 3: presets and body colliders from the rig, on top of the colliders, fields, hits, level of detail
+and sleep controls of 0.4.0. **Nothing in it, or in the drops before it, has run inside Unity yet.** The C# Core is
 tested under .NET 8 against the Rust library. The Unity layer, the editor lab and the Unity
 tests are compiled against stubs of the Unity API in CI, which proves they are well formed and
 nothing more. Burst compiling the kernel, the transform jobs and the lab are untried. Run the lab
-in your project first (it has a tab for colliders, one for fields and hits and one for the level of
-detail), and read the known limits in `docs/com.midmanstudio.allthingsjiggle.md`.
+in your project first (it has a tab for colliders, one for fields and hits, one for the level of
+detail, one for the presets and one for the body colliders), and read the known limits in
+`docs/com.midmanstudio.allthingsjiggle.md`.
 
-Not in this drop: body colliders from the rig, presets and the chest adapter (drop 3).
+The numbers of the presets are starting points that nobody has judged by eye. Tune them in the Presets tab.
+
+Not in this drop: the Grand Theft Grimoire chest adapter, which waits for access to that repository. A lattice
+modifier for unskinned meshes (props and enemies) is planned as 0.6.0.
 
 Only local rotations are written, so a bone never stretches on screen. A chain is a path: each
 bone is the first child of the one above. A bone can be driven by one chain only.

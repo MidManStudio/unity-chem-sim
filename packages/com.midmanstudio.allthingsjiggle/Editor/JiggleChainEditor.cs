@@ -8,16 +8,20 @@ using UnityEngine;
 
 namespace MidManStudio.AllThingsJiggle.EditorTools
 {
-    /// <summary>The inspector of a chain: the settings, what the chain would walk, and the buttons for play mode.</summary>
+    /// <summary>The inspector of a chain: the settings, the presets, what the chain would walk, and the buttons for play mode.</summary>
     [CustomEditor(typeof(JiggleChain))]
     public sealed class JiggleChainEditor : UnityEditor.Editor
     {
         private readonly List<Transform> walk = new List<Transform>();
+        private JigglePresetKind kind = JigglePresetKind.Hair;
+        private JigglePreset asset;
 
         public override void OnInspectorGUI()
         {
             DrawDefaultInspector();
             JiggleChain chain = (JiggleChain)target;
+            EditorGUILayout.Space();
+            DrawPresets(chain);
             EditorGUILayout.Space();
             if (chain.Anchor == null)
             {
@@ -63,6 +67,30 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
                 chain.AddImpulse(new Vector3(side.x * 3f, side.y * 3f, side.z * 3f));
             }
             EditorGUILayout.EndHorizontal();
+        }
+
+        private void DrawPresets(JiggleChain chain)
+        {
+            EditorGUILayout.LabelField("Presets");
+            EditorGUILayout.BeginHorizontal();
+            kind = JigglePresetGui.KindPopup("Built in", kind);
+            if (GUILayout.Button("Apply"))
+            {
+                Undo.RecordObject(chain, "Apply jiggle preset");
+                chain.ApplyPreset(kind);
+                EditorUtility.SetDirty(chain);
+            }
+            EditorGUILayout.EndHorizontal();
+            asset = (JigglePreset)EditorGUILayout.ObjectField("Preset asset", asset, typeof(JigglePreset), false);
+            if (asset != null && GUILayout.Button("Apply the asset"))
+            {
+                Undo.RecordObject(chain, "Apply jiggle preset");
+                chain.ApplyPreset(asset);
+                EditorUtility.SetDirty(chain);
+            }
+            EditorGUILayout.HelpBox(
+                "A preset replaces the settings and the tip scale of this chain and keeps the rest. Its frictions are per second and become per step for the step rate of the manager, 60 while there is none, so apply it again after you change the rate. The numbers are starting points: tune them in the Presets tab of the Jiggle Lab.",
+                MessageType.None);
         }
     }
 

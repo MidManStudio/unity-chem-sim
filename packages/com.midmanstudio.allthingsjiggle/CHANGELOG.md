@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.0
+
+Drop 3: presets, and body colliders from the rig. No Rust and no native change: the interface version stays 2.
+Nothing in this drop has run inside Unity: the Core part is tested under .NET 8 (16 new tests, 69 in the harness), the
+Unity layer, the inspectors, the labs and the eight new Edit Mode tests are only compiled against stubs of the Unity API.
+The Grand Theft Grimoire chest adapter is not in this drop, and the lattice modifier is planned as 0.6.0.
+
+- **Presets.** `JigglePresetKind` (Hair, Tail, Ear, Chest, Horn, Wing), `JigglePresetValues` and `JigglePresets` in the
+  Core. Hair and chest follow the technique level findings of the rig study (a swing limit near 20 degrees and a damping
+  of 0.999 a second for hair, a low limit and a strong pull to the pose for the chest). The other four are reasoned.
+  None of the numbers has been judged by eye, so tune them in the lab
+- **Frictions per second.** A preset gives its drag and air drag as the share lost in a second, and
+  `JiggleDamping.PerStep` turns that into the solver's per step value for the step rate. Hair at 0.999 is 0.1088 a
+  step at 60 Hz and 0.2056 at 30 Hz. Stiffness and coupling stay per step, so the tail and the chest are tuned for 60 Hz
+- `JiggleChain.ApplyPreset` (a kind, a `JigglePreset` asset or values) and `JiggleChainSettings.ApplyPreset`. A preset
+  replaces the settings and the tip scale and keeps the rest of the chain. The chain inspector has a Presets part
+  with Apply and an asset field
+- `JigglePreset` (menu `MidManStudio/AllThingsJiggle/Jiggle Preset` in the Create menu): a preset kept as an asset, with
+  an inspector that starts from a built in kind
+- **Body colliders.** `JiggleBodyColliders` (menu `MidManStudio/AllThingsJiggle/Jiggle Body Colliders`) fits
+  `JiggleColliderShape` objects to the joints of a rig: a sphere for the head and the hands, capsules for the neck, the
+  trunk, the arms, the legs and the feet, as children of the joints so they follow the animation. Joints come from a
+  humanoid `Animator` or are set by hand. `scale`, `height`, `parts` and `colliderLayer` control it. The inspector
+  previews the plan in the scene view, and builds, rebuilds and removes with undo
+- Core: `JiggleBodyFit` (the proportions of an average adult as radius fractions of the height, a height from the
+  head joint and the ankles or from the hips, capsules whose caps overlap at joints, a head sphere, a trunk that ends at
+  the neck, a hand past the wrist) and `JiggleDamping`
+- the lab has two new tabs, Presets (one chain per built in preset moved the same way, plus a tuned chain, with peak
+  sway, a way to send the values to the selected chain and to save them as an asset) and Body (a test figure with the
+  body colliders and a hair strand swept across it)
+- `JiggleShapeGizmos.Shape` draws one solver shape in a given color, shared by the body preview
+- `Tests/Editor/JigglePresetTests.cs` (8) and `JiggleBodyFitTests.cs` (8) run in the shared harness.
+  `Tests/Editor/JigglePresetUnityTests.cs` has 8 Edit Mode tests
+- the Unity stubs gain `ScriptableObject`, `Animator`, `HumanBodyBones`, `Undo`, `AssetDatabase` and a few more members.
+  The placeholder base class of the editor types is replaced by the real `ScriptableObject`
+
 ## 0.4.0
 
 Drop 2b: colliders, force fields, hit impulses, level of detail and sleep, from scene objects.

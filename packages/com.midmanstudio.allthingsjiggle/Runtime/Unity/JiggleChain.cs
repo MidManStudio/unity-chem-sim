@@ -197,6 +197,40 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
+        /// Sets the settings and the tip scale to a built in preset, and tells the manager. Everything else of the chain stays:
+        /// the pose source, the end bone, the layers, sleeping and the level of detail. The drag is converted for the step rate
+        /// of the manager, or for 60 steps a second when there is none yet, so apply the preset again after the rate changes.
+        /// </summary>
+        public void ApplyPreset(JigglePresetKind kind)
+        {
+            JigglePresetValues v = JigglePresets.Get(kind);
+            ApplyPreset(v);
+        }
+
+        /// <summary>Sets the settings and the tip scale to the values of a preset asset. A null asset does nothing. See <see cref="ApplyPreset(JigglePresetKind)"/>.</summary>
+        public void ApplyPreset(JigglePreset asset)
+        {
+            if (asset == null)
+            {
+                return;
+            }
+            ApplyPreset(asset.values);
+        }
+
+        /// <summary>Sets the settings and the tip scale to the given values. See <see cref="ApplyPreset(JigglePresetKind)"/>.</summary>
+        public void ApplyPreset(in JigglePresetValues values)
+        {
+            if (settings == null)
+            {
+                settings = new JiggleChainSettings();
+            }
+            JiggleManager m = JiggleManager.TryGet();
+            settings.ApplyPreset(values, m != null ? m.fixedHz : JiggleDamping.DefaultHz);
+            tipScale = Mathf.Max(0.01f, JigglePresets.CleanTipScale(values));
+            SettingsChanged();
+        }
+
+        /// <summary>
         /// Makes the chain snap to its pose on the next frame, without a swing. Use it after moving the chain
         /// somewhere without the anchor travelling there, for example when an object is recycled.
         /// </summary>

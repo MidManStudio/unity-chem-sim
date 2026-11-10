@@ -30,6 +30,8 @@ namespace UnityEngine
     {
         public Transform transform { get; }
         public GameObject gameObject { get; }
+        public T GetComponent<T>() { return default; }
+        public T GetComponentInChildren<T>() { return default; }
     }
 
     public class Behaviour : Component
@@ -42,12 +44,31 @@ namespace UnityEngine
     {
     }
 
+    public class ScriptableObject : Object
+    {
+        public static T CreateInstance<T>() where T : ScriptableObject { return null; }
+    }
+
+    public enum HumanBodyBones
+    {
+        Hips, LeftUpperLeg, RightUpperLeg, LeftLowerLeg, RightLowerLeg, LeftFoot, RightFoot, Spine, Chest, UpperChest,
+        Neck, Head, LeftShoulder, RightShoulder, LeftUpperArm, RightUpperArm, LeftLowerArm, RightLowerArm,
+        LeftHand, RightHand, LeftToes, RightToes, LeftEye, RightEye, Jaw, LastBone,
+    }
+
+    public class Animator : Behaviour
+    {
+        public bool isHuman { get; }
+        public Transform GetBoneTransform(HumanBodyBones humanBoneId) { return null; }
+    }
+
     public sealed class GameObject : Object
     {
         public GameObject(string name) { }
         public Transform transform { get; }
         public int layer { get; set; }
         public T AddComponent<T>() where T : Component { return null; }
+        public T GetComponent<T>() { return default; }
     }
 
     public sealed class Transform : Component
@@ -84,6 +105,7 @@ namespace UnityEngine
         public float z;
         public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
         public static Vector3 zero { get { return new Vector3(0f, 0f, 0f); } }
+        public static Vector3 up { get { return new Vector3(0f, 1f, 0f); } }
         public static float Distance(Vector3 a, Vector3 b) { return 0f; }
         public static Vector3 operator +(Vector3 a, Vector3 b) { return a; }
         public static Vector3 operator *(Vector3 a, float d) { return a; }
@@ -99,6 +121,7 @@ namespace UnityEngine
         public static Quaternion identity { get { return new Quaternion(0f, 0f, 0f, 1f); } }
         public static Quaternion Inverse(Quaternion rotation) { return rotation; }
         public static Quaternion Euler(float x, float y, float z) { return identity; }
+        public static Quaternion FromToRotation(Vector3 fromDirection, Vector3 toDirection) { return identity; }
         public static Quaternion operator *(Quaternion lhs, Quaternion rhs) { return lhs; }
     }
 
@@ -234,6 +257,24 @@ namespace UnityEngine
     public sealed class MinAttribute : Attribute
     {
         public MinAttribute(float min) { }
+    }
+
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class SerializeField : Attribute
+    {
+    }
+
+    [AttributeUsage(AttributeTargets.Field)]
+    public sealed class HideInInspector : Attribute
+    {
+    }
+
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class CreateAssetMenuAttribute : Attribute
+    {
+        public string fileName { get; set; }
+        public string menuName { get; set; }
+        public int order { get; set; }
     }
 
     [AttributeUsage(AttributeTargets.Class)]
@@ -400,13 +441,13 @@ namespace Unity.Burst
 
 namespace UnityEditor
 {
-    public class EditorWindow : UnityEngine.ScriptableObjectStub
+    public class EditorWindow : UnityEngine.ScriptableObject
     {
         public static T GetWindow<T>(string title) where T : EditorWindow { return null; }
         public void Repaint() { }
     }
 
-    public class Editor : UnityEngine.ScriptableObjectStub
+    public class Editor : UnityEngine.ScriptableObject
     {
         public UnityEngine.Object target { get; }
         public virtual void OnInspectorGUI() { }
@@ -460,10 +501,12 @@ namespace UnityEditor
         public static void LabelField(string label) { }
         public static void LabelField(string label, string label2, params UnityEngine.GUILayoutOption[] options) { }
         public static void HelpBox(string message, MessageType type) { }
+        public static UnityEngine.Object ObjectField(string label, UnityEngine.Object obj, Type objType, bool allowSceneObjects, params UnityEngine.GUILayoutOption[] options) { return obj; }
         public static Enum EnumPopup(string label, Enum selected, params UnityEngine.GUILayoutOption[] options) { return selected; }
         public static int Popup(string label, int selectedIndex, string[] displayedOptions, params UnityEngine.GUILayoutOption[] options) { return selectedIndex; }
         public static int IntSlider(string label, int value, int leftValue, int rightValue, params UnityEngine.GUILayoutOption[] options) { return value; }
         public static float Slider(string label, float value, float leftValue, float rightValue, params UnityEngine.GUILayoutOption[] options) { return value; }
+        public static float FloatField(string label, float value, params UnityEngine.GUILayoutOption[] options) { return value; }
         public static bool ToggleLeft(string label, bool value, params UnityEngine.GUILayoutOption[] options) { return value; }
         public static string TextField(string label, string text, params UnityEngine.GUILayoutOption[] options) { return text; }
         public static string TextArea(string text, UnityEngine.GUIStyle style, params UnityEngine.GUILayoutOption[] options) { return text; }
@@ -490,6 +533,23 @@ namespace UnityEditor
         public static double timeSinceStartup { get { return 0.0; } }
     }
 
+    public static class Undo
+    {
+        public static void RecordObject(UnityEngine.Object objectToUndo, string name) { }
+        public static void RegisterCreatedObjectUndo(UnityEngine.Object objectToUndo, string name) { }
+        public static void DestroyObjectImmediate(UnityEngine.Object objectToUndo) { }
+        public static void IncrementCurrentGroup() { }
+        public static int GetCurrentGroup() { return 0; }
+        public static void SetCurrentGroupName(string name) { }
+        public static void CollapseUndoOperations(int groupIndex) { }
+    }
+
+    public static class AssetDatabase
+    {
+        public static void CreateAsset(UnityEngine.Object asset, string path) { }
+        public static void SaveAssets() { }
+    }
+
     public static class Selection
     {
         public static UnityEngine.GameObject activeGameObject { get; set; }
@@ -501,12 +561,8 @@ namespace UnityEditor
         public static bool DisplayCancelableProgressBar(string title, string info, float progress) { return false; }
         public static void ClearProgressBar() { }
         public static string SaveFilePanel(string title, string directory, string defaultName, string extension) { return ""; }
+        public static string SaveFilePanelInProject(string title, string defaultName, string extension, string message) { return ""; }
+        public static void SetDirty(UnityEngine.Object target) { }
     }
 }
 
-namespace UnityEngine
-{
-    public class ScriptableObjectStub : Object
-    {
-    }
-}

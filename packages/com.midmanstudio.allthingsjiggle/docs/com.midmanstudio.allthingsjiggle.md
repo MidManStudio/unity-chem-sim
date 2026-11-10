@@ -6,8 +6,9 @@ two agree, with two way coupling), since drop 2 the runtime (a `JiggleChain`
 component for each chain, a manager that simulates all of them once a frame with
 Burst jobs, and an editor lab that runs the same scenes on the Burst, native and
 managed backends) and since drop 2b the scene side: collider and force field
-components, hit impulses, level of detail and sleep controls. Nothing here has run
-inside Unity yet (see Known limits). The Rust half is documented in
+components, hit impulses, level of detail and sleep controls, and since drop 3 the
+authoring side: presets for the usual kinds of chain and body colliders fitted to a rig.
+Nothing here has run inside Unity yet (see Known limits). The Rust half is documented in
 `rust_lib/jiggle_core/docs/jiggle_core.md`, including how a frame runs, the records,
 the C interface and the known limits of the solver itself. This file covers the C#
 half.
@@ -21,17 +22,24 @@ half.
   JiggleFields.cs, JiggleKernel.cs, JiggleSolver.cs, JiggleNative.cs,
   JiggleParams.cs, JiggleChainBuild.cs, JiggleClock.cs, JigglePose.cs,
   JiggleHost.cs, JiggleColliderSet.cs, JiggleFieldQueue.cs, JiggleImpulse.cs,
-  JiggleLod.cs, JiggleWorld.cs, AssemblyInfo.cs
+  JiggleLod.cs, JiggleWorld.cs, JiggleDamping.cs, JigglePresets.cs, JiggleBodyFit.cs,
+  AssemblyInfo.cs
 - Runtime/Unity: JiggleRuntimeTypes.cs, JiggleChainSettings.cs, JiggleChain.cs,
-  JiggleChainLod.cs, JiggleColliderShape.cs, JiggleForceField.cs, JiggleManager.cs,
-  JiggleRuntime.cs, JiggleJobs.cs, JiggleBurstSolver.cs, JiggleMem.cs
-- Editor: JiggleChainEditor.cs, JiggleShapeEditors.cs, Lab/JiggleBenchScenes.cs,
-  Lab/JiggleLabRunner.cs, Lab/JiggleLabScene.cs, Lab/JiggleColliderLab.cs,
-  Lab/JiggleFieldLab.cs, Lab/JiggleLodLab.cs, Lab/JiggleLabWindow.cs
+  JiggleChainLod.cs, JiggleColliderShape.cs, JigglePreset.cs, JiggleBodyColliders.cs,
+  JiggleForceField.cs, JiggleManager.cs, JiggleRuntime.cs, JiggleJobs.cs,
+  JiggleBurstSolver.cs, JiggleMem.cs
+- Editor: JiggleChainEditor.cs, JiggleShapeEditors.cs, JigglePresetEditors.cs,
+  JiggleBodyEditors.cs, Lab/JiggleBenchScenes.cs, Lab/JiggleLabRunner.cs,
+  Lab/JiggleLabScene.cs, Lab/JiggleColliderLab.cs, Lab/JiggleFieldLab.cs,
+  Lab/JiggleLodLab.cs, Lab/JigglePresetLab.cs, Lab/JiggleBodyLab.cs,
+  Lab/JiggleLabWindow.cs
 - Assembly definitions
 - Tests/Editor/JiggleParityTests.cs
 - Tests/Editor/JiggleFeatureTests.cs
+- Tests/Editor/JigglePresetTests.cs
+- Tests/Editor/JiggleBodyFitTests.cs
 - Tests/Editor/JiggleUnityLayerTests.cs
+- Tests/Editor/JigglePresetUnityTests.cs
 - Tests~/DotnetHarness
 - Tests~/UnityStubs
 - Native libraries
@@ -50,15 +58,22 @@ half.
    `TransformAccessArray`, the backend switch (Burst by default, Rust selectable,
    managed as the fallback), `JiggleChain` and `JiggleManager`, the editor lab and the
    benchmark comparison, and the stub compile job in CI.
-   **2b Colliders, fields and level of detail (this drop, 0.4.0).** The collider
+   **2b Colliders, fields and level of detail (0.4.0).** The collider
    broadphase in C# (a list of near colliders for each chain, filtered by layer),
    collider components, force field components and hit impulses, sleeping controls,
    level of detail and culling by distance and by the camera, and one lab tab for each
    feature. The layer rule is the one of the MMD rig study with the sense that Unity
    uses for it: a set bit in a chain's `ignoreLayers` means no collision.
-3. **Extras and presets.** Body colliders from the rig, presets (hair strand, tail, ear,
-   chest) from the technique level ranges of the study, and the Grand Theft Grimoire chest
-   adapter.
+3. **Presets and body colliders (this drop, 0.5.0).** Presets for hair, tail, ear, chest,
+   horn and wing, from the technique level findings of the rig study where it has them and from
+   reasoning where it does not, with the frictions given per second so they mean the same at any
+   step rate. Body colliders fitted to the joints of a rig, a humanoid one or one assigned by hand.
+   A lab tab for each. No Rust and no interface change. The Grand Theft Grimoire chest adapter
+   is not in this drop: it waits for access to that repository.
+4. **Lattice modifier (planned, 0.6.0).** A free form deformation of unskinned meshes, for props and
+   enemies, whose control points pull their neighbours. It needs a tree builder in the Core (the
+   solver already takes trees) and a Burst job over mesh vertices, and no native change. It ships
+   in its own archive after this drop.
 
 Later: a SIMD lane batch kernel that uses the vendored mid-math wide types.
 
@@ -116,6 +131,25 @@ AlwaysSimulate or Custom (its own distances). A chain that comes back from Off s
 **Sleep.** `sleepFrames` on the manager above 0 turns sleeping on. A chain with `allowSleep` off never sleeps.
 `IsAsleep` and `Wake()` are on the chain. A hit wakes a chain, and so does a collider that moves up to it.
 
+**Presets.** In the inspector of a chain, pick a kind (Hair, Tail, Ear, Chest, Horn, Wing) and press Apply, or
+call `chain.ApplyPreset(JigglePresetKind.Hair)` from code. A preset replaces the settings and the tip scale of the
+chain and leaves the rest: the pose source, the end bone, the layers, sleeping and the level of detail stay. The
+frictions of a preset are per second, and Apply turns them into the per step drag of the manager's step rate (60 when
+there is no manager yet), so apply a preset again after you change `fixedHz`. To keep your own tuning, make a
+**Jiggle Preset** asset (Create, MidManStudio, AllThingsJiggle, Jiggle Preset), start it from a built in kind and edit
+it, then apply the asset from the chain inspector or with `chain.ApplyPreset(asset)`. The numbers of the built in
+kinds are starting points that nobody has judged by eye yet. The **Presets** tab of the lab shows all six side by side
+and has a seventh chain that takes the values you edit.
+
+**Body colliders.** Add a **Jiggle Body Colliders** (Add Component, MidManStudio, AllThingsJiggle, Jiggle Body
+Colliders) to the character, press "Fill empty joints from the Animator" for a humanoid rig, or set the joints by hand
+for any other, stand the character in its bind pose (a T pose or an A pose) and press Build. It makes a
+`JiggleColliderShape` under each joint: a sphere for the head and the hands, capsules between joints for the neck, the
+trunk, the arms, the legs and the feet. They follow the animation. Chains collide with them while `Collide` is on,
+except for the layers they ignore. `scale` multiplies every radius, `height` overrides the height of the body, and
+`parts` leaves parts out. The scene view draws what a build would make before you build it. The **Body** tab of the lab
+builds a test figure and sweeps a hair strand across it.
+
 ## Layout and conventions
 
 The package follows the other packages of this repository: Unity assets have
@@ -138,8 +172,8 @@ Documentation~/                    a pointer for the Package Manager
 Menu rule, for this package and every MidManStudio package: every menu entry lives under the top level
 `MidManStudio` menu, as `MidManStudio/<Package>/<Item>`, and never under `Tools` or `Window`. That covers
 editor windows (`MenuItem`), `CreateAssetMenu`, `AddComponentMenu` and settings entries. Here that is
-`MidManStudio/AllThingsJiggle/Jiggle Lab`, `.../Jiggle Chain`, `.../Jiggle Manager`, `.../Jiggle Collider` and
-`.../Jiggle Force Field`.
+`MidManStudio/AllThingsJiggle/Jiggle Lab`, `.../Jiggle Chain`, `.../Jiggle Manager`, `.../Jiggle Collider`,
+`.../Jiggle Force Field`, `.../Jiggle Preset` and `.../Jiggle Body Colliders`.
 
 The namespace of every public type is `MidManStudio.AllThingsJiggle`, in all assemblies. The
 editor code is in `MidManStudio.AllThingsJiggle.EditorTools`, because a namespace called
@@ -442,6 +476,87 @@ rig ranges through `Invoke`, as in the threaded test.
 Since drop 2 the world is built on `JiggleChainBuild`, `JigglePose` and `JiggleClock`. Nothing
 about its behaviour changed, and the golden hashes still match.
 
+## Runtime/Core/JiggleDamping.cs
+
+Converts a damping given per second into the share lost per fixed step, and back. The solver's `Drag` and
+`AirDrag` are per step, so the same number looks different at 30 and at 60 steps per second. A preset states its
+frictions per second and becomes per step only when it is turned into parameters.
+
+- `PerStep(perSecond, hz)` is `1 - (1 - perSecond) ^ (1 / hz)`, worked in double precision with `Math.Pow` and
+  clamped to 0 to 1. Hair at 0.999 a second is 0.1088 per step at 60 Hz and 0.2056 at 30 Hz.
+- `PerSecond(perStep, hz)` is the inverse.
+- `CleanHz(hz)`: a rate that is not finite or is below 1 counts as `DefaultHz`, 60. Values outside 0 to 1 and values
+  that are not numbers are clamped to 0 and 1 first, so no input gives a NaN.
+
+Only the two frictions are converted. Stiffness and coupling stay per step: see Known limits for why, and for what
+that means for the coupled presets.
+
+## Runtime/Core/JigglePresets.cs
+
+The six built in presets and what turns them into solver parameters. No Unity references.
+
+- `JigglePresetKind`: `Hair`, `Tail`, `Ear`, `Chest`, `Horn`, `Wing`. `JigglePresets.Count` is 6, `Name(kind)` is the
+  name the inspector shows, and a kind that does not exist gives the hair preset from `Get`.
+- `JigglePresetValues` (serializable, so Unity can keep it in an asset) has the fields of `JiggleParams` and four more:
+  the two frictions per second (`DampingPerSecond`, `AirDampingPerSecond`), `StiffnessAtTip` (a multiplier on the
+  stiffness of the last bone, with a straight line from the first bone) and `TipScale`.
+- `ToParams(values, bone, bones, fixedHz)` makes the parameters of one bone, and `ToParams(values, bones, fixedHz)` of
+  every bone. Every value is clamped into its range and a value that is not a number falls to a safe one, so a preset
+  with bad numbers still bakes into something the solver accepts. `CleanTipScale` gives the tip scale a chain takes,
+  with a value that is not a positive number counting as 1.
+
+The numbers, at 60 Hz. The swing limit is in the units of `AngleLimit`, where 1 is 90 degrees.
+
+| Kind | Stiffness | At tip | Swing limit | Damping a second | Air damping | Gravity | Mass | Collides |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Hair | 0.30 | 0.7 | 0.22 (20 degrees) | 0.999 | 0.5 | 1.4 | none | yes, 0.02 m |
+| Tail | 0.45 | 0.55 | 0.55 | 0.995 | 0.4 | 1.0 | 1 | yes, 0.04 m |
+| Ear | 0.70 | 0.8 | 0.35 | 0.99 | 0.3 | 0.6 | none | no |
+| Chest | 0.85 | 1.0 | 0.12 | 0.9995 | 0.3 | 0.5 | 1 | no |
+| Horn | 0.97 | 1.0 | 0.05 | 0.999 | 0.5 | 0.1 | none | no |
+| Wing | 0.40 | 0.6 | 0.60 | 0.995 | 0.6 | 0.8 | none | no |
+
+Where they come from. The hair and chest values follow the technique level findings of the MMD rig study in
+`rust_lib/jiggle_core/docs/jiggle_core.md` (section "What the MMD rig study taught the design"): hair swings inside a cone of
+about 20 degrees with a damping near 1 a second, and a chest is a short chain with a low swing limit and a strong pull
+to the pose. The hair gravity of 1.4 is a choice: in a one way solver the slow swing of a weighted strand is made with
+gravity and drag together. The tail, ear, horn and wing are reasoned from what the kind of chain does. The wind
+response of the wing (2) and of the horn and chest (0.1 and 0.2) are in the same class of guess. None of the numbers
+was judged by eye, and the tests check only that they are stable, finite, equal on both backends and bounded. Tune them
+in the lab. The chest and ear presets have `Collide` off because their bones sit inside the body shapes that
+`JiggleBodyFit` makes, and a bone inside a collider would only be pushed out.
+
+## Runtime/Core/JiggleBodyFit.cs
+
+Fits body colliders to the joints of a rig. It is the maths only, with no Unity references, so it is tested outside
+Unity. The component that applies it is `JiggleBodyColliders`.
+
+- `JiggleBodyPart` (head, neck, torso, upper arm, forearm, hand, thigh, shin, foot), `JiggleBodyShapeKind` (sphere,
+  capsule) and `JiggleBodyShape`: a shape in world space with its center, axis, length from end to end (caps
+  included) and radius. `ToCollider()` makes the solver's collider. A capsule's solver half height is
+  `Length * 0.5 - Radius`, which is the distance between the two joints over two.
+- `RadiusFraction(part)`: the radius of each part as a share of the body height. Head 0.05, neck 0.03, torso 0.085,
+  upper arm 0.028, forearm 0.022, hand 0.025, thigh 0.047, shin 0.032, foot 0.025. They are the proportions of an
+  average adult, so the caller scales them: `Radius(part, height, scale)` is the fraction times the height times the
+  scale, and 0 for a height or scale that is not a positive number.
+- Height. `Height(head, feet)` takes the distance from the head joint to the middle of the ankles and multiplies it by
+  1.2 (`HeightPerAnkleToHead`), because the head joint is at the base of the skull and the ankle is a few centimeters
+  above the sole. `HeightFromTorso(hips, head)` multiplies the distance from the hips to the head joint by 2.8, for a
+  rig with no feet. For an average adult the two land within a few percent of each other, and a test says so.
+- `Capsule(a, b, radius)` runs from joint to joint, so its caps reach one radius past each joint and two capsules that
+  meet at a joint overlap there and leave no gap a thin particle could slip through. `Sphere(center, radius)` is a ball.
+  Both refuse joints that are not finite or are closer than `MinLength` (0.1 mm), and a radius that is not positive,
+  and return false with an empty shape.
+- `Head(neck, head, height, scale)`: a sphere whose center is 0.9 of its radius above the head joint along the neck.
+- `Torso(hips, neck, height, scale)`: a capsule from the hips up to the neck joint. Its top cap ends at the neck joint
+  and does not reach past it, because a cap one radius above the neck would swallow the back of the head. When the hips
+  and the neck are closer than a radius the capsule runs joint to joint.
+- `Hand(elbow, wrist, height, scale)`: a sphere one radius past the wrist along the forearm.
+
+The head sphere is small on purpose. At 0.05 of the height it is about 8.5 cm in radius on a 1.7 m body, under the real
+size of a head, so that a hair strand rooted at the scalp is not inside it. The cost is that hair can pass through the
+outer part of a real head. Raise `scale` for the head with the body, or give hair a collision radius to taste.
+
 ## Runtime/Core/AssemblyInfo.cs
 
 Makes the internals visible to the editor test assembly, so the layout test can use the
@@ -470,6 +585,12 @@ Since 0.4.0 it also has `collide` (off by default, so a chain only tests collide
 (0.1 m), `segmentCollision` (the whole bone, not only its end), `windResponse` and `impulseResponse` (both 1), all
 baked by `ToParams`. Their defaults are the Core's, and a test checks it. Before this, a chain could not collide at
 all, because the settings never turned collision on.
+
+Since 0.5.0 it has `ApplyPreset(values, fixedHz)` and `ApplyPreset(kind, fixedHz)`. They set every value to the preset:
+the numbers come from `JigglePresets.ToParams` for one bone, so they are clamped the same way, the frictions become per
+step for `fixedHz`, and `StiffnessAtTip` becomes a straight line in `stiffnessAlong` (a constant when it is 1). A test
+checks that the baked parameters of every bone equal what the Core makes from the same preset, for all six kinds at 30,
+60 and 120 Hz and for chains of 1, 2 and 6 bones.
 
 ## Runtime/Unity/JiggleChain.cs
 
@@ -502,6 +623,11 @@ Since 0.4.0 it also has:
 - `AddImpulse(dv)` and `AddImpulseAt(point, dv, radius, falloff)`, which hit the bones at once (so they work in a frame
   with no step too) and return false when the chain is not simulated. `AddBurst` and `AddShove` of the manager are
   different: they are queued as impulse fields and given on the first step of the next frame that runs one.
+
+Since 0.5.0 it has `ApplyPreset(kind)`, `ApplyPreset(asset)` and `ApplyPreset(values)`. They replace the settings and
+the tip scale and keep everything else, convert the frictions for the manager's `fixedHz` (60 when there is no manager),
+and call `SettingsChanged`. A null asset does nothing. A tip scale that is not a positive number becomes 1, and the
+smallest tip scale a chain takes is 0.01.
 
 Not supported, and documented as limits: bones that are reparented or a first child that is
 added at run time (call `Rebind`), non uniform scale on the chain, a bone that belongs to two
@@ -569,6 +695,45 @@ not wake sleepers.
 
 Not a Unity collider: no physics, no trigger, no rigidbody, and a chain does not push a shape.
 
+## Runtime/Unity/JigglePreset.cs
+
+A preset kept as an asset (`MidManStudio/AllThingsJiggle/Jiggle Preset` in the Create menu). It holds one
+`JigglePresetValues`, which starts as the hair preset. `JigglePreset.Create(kind)` makes one in memory with the values of
+a built in kind, for scripts and tests. The built in kinds need no asset. The values struct has no Range attributes,
+because the Core has no Unity references, so the asset inspector draws sliders for every field.
+
+## Runtime/Unity/JiggleBodyColliders.cs
+
+The component that turns `JiggleBodyFit` into scene objects (`MidManStudio/AllThingsJiggle/Jiggle Body Colliders`).
+
+- `joints` (`JiggleBodyJoints`): the hips, the base of the neck, the head joint, and for each side the shoulder, elbow
+  and wrist, the hip joint, knee, ankle and toes. Left and right are those of the character, as in the humanoid rig.
+  `FillFrom(animator)` fills only the empty ones from a humanoid avatar and returns how many it filled. The neck and the
+  toes are optional bones in a humanoid rig and stay empty when the avatar does not map them: without a neck the trunk
+  runs 85 percent of the way from the hips to the head, and without toes there is no foot.
+- `animator` (empty means the first one on this object or below it), `parts` (a flags mask: head, neck, torso, arms,
+  hands, legs, feet), `scale` (a multiplier on every radius), `height` (0 takes it from the joints), `colliderLayer`
+  (the layer of the objects it makes, 0 to 31) and `buildOnAwake` (for characters made at run time that never had colliders
+  baked in).
+- `ResolveHeight()` is the height a build would use: `height` when it is set, else from the head joint and the ankles,
+  else from the hips and the head joint, else 0. With only one foot set, that foot stands for both.
+- `Plan(list, out problem)` works out what a build would make from the joints as they are now, without making anything or
+  changing the component. It is what the scene view draws and what `Build` follows. It returns false with the reason
+  when the height is unknown or no part can be made.
+- `Build()` removes the colliders it made before, fills the empty joints from the animator, plans, and makes one
+  `JiggleColliderShape` object for each planned shape, named `JiggleBody_<Side><Part>`, as a child of the first joint of
+  the part so it follows the animation. A capsule object is turned so its local Y axis runs along the shape and its
+  center is the middle of the two joints. The sizes are written in the local units of the new object and a uniform scale
+  of the joint is taken out of them, because `JiggleColliderShape` multiplies them by the scale again. It returns how many
+  it made, and 0 with a console warning when the joints give no body. `Clear()` removes what it made, `BuiltCount` and
+  `GetBuilt(list)` say what exists.
+- The list of what it made is serialized (hidden), so the editor can build once and the objects stay with the scene or the
+  prefab. At run time the objects are removed with `Destroy`, in the editor with `DestroyImmediate`.
+
+The build reads the pose the joints have at that moment. A character that is crouched or reaching builds a smaller or
+lopsided body, so build in the bind pose. A uniform scale on the joints is assumed. The generated shapes are not
+animated per frame: they are children of the joints, so they follow the bones, and nothing here reads the pose again.
+
 ## Runtime/Unity/JiggleForceField.cs
 
 The force field component (`MidManStudio/AllThingsJiggle/Jiggle Force Field`). `shape` (Directional, Radial,
@@ -635,7 +800,9 @@ The inspector of `JiggleChain`: the default fields, a line saying which anchor a
 walks, errors for a missing anchor or an end bone that is not on the way down, and in play mode
 buttons for `ResetSimulation` and `Rebind`. Since 0.4.0 it also shows the level of detail and the sleep state in
 play mode, with Wake and "Hit sideways" buttons. `JiggleChainGizmos` draws the bones of a selected
-chain in blue and the simulated particles in orange while the game runs.
+chain in blue and the simulated particles in orange while the game runs. Since 0.5.0 it has a Presets part above the
+walk: a popup of the built in kinds with Apply, a field for a preset asset with "Apply the asset", and a note about what a
+preset replaces. Apply records an undo step and marks the chain dirty.
 
 ## Editor/JiggleShapeEditors.cs
 
@@ -643,7 +810,26 @@ The inspectors of `JiggleColliderShape` and `JiggleForceField` (the default fiel
 missing, such as a radial field without a radius, and in play mode a Fire button on the field), and
 `JiggleShapeGizmos`, which draws a selected shape or field: the sphere, capsule, box, plane or inside sphere, the
 direction and radius of a field. The drawing uses the Core's own vector math on the same records the solver
-gets, so what the gizmo shows is the shape the solver uses.
+gets, so what the gizmo shows is the shape the solver uses. Since 0.5.0 the drawing of one solver shape is
+`JiggleShapeGizmos.Shape(collider, color)`, which the body colliders use for their preview.
+
+## Editor/JigglePresetEditors.cs
+
+`JigglePresetGui` holds what the asset inspector, the chain inspector and the preset lab share: a popup of the built in
+kinds, the step rate to show (the manager's in play mode, else 60) and `Values(ref values)`, which draws every field of a
+preset and returns whether one changed. The two frictions are number fields from 0 to 1 and not sliders, because the
+interesting values are near 1 (0.999) and a slider cannot be set that finely. Each shows the per step value it comes to
+at the current rate. `JigglePresetEditor` is the inspector of a preset asset: a "Start from" popup with Load, and the
+values. Every change records an undo step and marks the asset dirty.
+
+## Editor/JiggleBodyEditors.cs
+
+`JiggleBodyCollidersEditor` is the inspector of the body component: the default fields, what a build would make and
+how tall a body that is, how many colliders exist, and the buttons "Fill empty joints from the Animator", "Build" (or
+"Rebuild") and "Remove". Each button is one undo step: the old objects are destroyed with `Undo.DestroyObjectImmediate`,
+the new ones are registered with `Undo.RegisterCreatedObjectUndo`, and the group is collapsed. `JiggleBodyGizmos`
+draws the colliders in green when they exist and a preview of the plan in blue when they do not, while the component is
+selected.
 
 ## Editor/Lab/JiggleBenchScenes.cs
 
@@ -679,7 +865,7 @@ sine and cosine with the Rust libm, so its checksum is not the lab's either.
 
 ## Editor/Lab/JiggleLabScene.cs
 
-The builders the three feature labs share: `Root(name)` (an empty object, selected), `Chain(parent, name, position,
+The builders the feature labs share: `Root(name)` (an empty object, selected), `Chain(parent, name, position,
 bones, spacing, settings)` (an anchor, then bones hanging down, with the component on the first bone), `Tip(chain, out
 position)` and `Remove(root)`. The labs build in play mode only, so what they make is gone when play mode ends and
 the scene of the project is never touched.
@@ -706,16 +892,38 @@ Edits the manager's level of detail limits and builds a row of twelve chains in 
 away. It lists each chain with its distance, level and sleep state, and the counts of chains that are NoCollision,
 Off and asleep. It needs a camera and says so when there is none.
 
+## Editor/Lab/JigglePresetLab.cs
+
+One chain for each built in preset, hung side by side and given the same motion (the anchors move from side to side
+with a range and a speed you set), plus a seventh chain, "Tuned", that takes the values you edit. The kinds have their
+own length: hair 8 bones of 9 cm, tail 10 of 10 cm, ear 3 of 8 cm, chest 3 of 8 cm, horn 2 of 10 cm and wing 6 of 12 cm. It
+shows for every chain how far the tip is from where its pose puts it, now and at the peak since the last reset, and has
+a button that hits every chain sideways. The tuned chain follows the sliders at once. "Apply the tuned values to the
+selected chain" sends them to the chain you have selected, with an undo step, and "Save the tuned values as a preset
+asset" writes a `JigglePreset`. The anchors are moved and the peaks are tracked from `EditorApplication.update`, so they
+keep going while the window is not drawn. This is where the numbers of the presets get judged by eye.
+
+## Editor/Lab/JiggleBodyLab.cs
+
+Builds a standing figure of empty joints, 1.7 m tall, in a T pose, adds a `JiggleBodyColliders` with the joints set by
+hand and builds it, and hangs an eight bone hair strand from the back of the head with the hair preset, 12 cm behind the
+head joint, so its pose runs through the body below the shoulders and the colliders have to hold it out. The figure leans
+and turns from `EditorApplication.update` to sweep the strand across the back and the shoulders. Controls: the
+collider scale with a rebuild button, the motion on and off and its speed, and whether the strand collides. It shows the
+height the build used, how many colliders were made, and how close the closest bone of the strand is to the surface of
+any body collider, minus the radius of the bone, where below 0 means inside. The figure has no animator, so it does
+not try the humanoid path.
+
 ## Editor/Lab/JiggleLabWindow.cs
 
-MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Six tabs:
+MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Eight tabs:
 
 - **Live** checks that Burst compiles the jobs and that the native library loads with this package's
   interface version, and in play mode shows the manager: the backend (editable), the backend that runs, the
   counts (with the collider, field, level of detail and sleep counts since 0.4.0), the steps, the frame time and the
   status.
-- **Colliders**, **Fields and hits** and **LOD** draw the three labs above. The window repaints Live and these
-  three tabs while the editor runs, subscribes a tick to `EditorApplication.update` in `OnEnable` (so the ball moves
+- **Colliders**, **Fields and hits**, **LOD**, **Presets** and **Body** draw the five labs above. The window repaints
+  Live and these five tabs while the editor runs, subscribes a tick to `EditorApplication.update` in `OnEnable` (so the ball moves
   and the tip is followed between draws) and unsubscribes it in `OnDisable`.
 - **Parity** runs the comparison above on a scene and says what it found.
 - **Bench** runs the chosen scenes on the chosen backends and thread counts, shows the table and copies or
@@ -800,6 +1008,45 @@ harness runs them on the managed backend and, where it matters, on both.
 - level of detail: distance, hysteresis, zero and NaN distances, the offscreen delay, both rules together, and the
   frustum convention.
 
+## Tests/Editor/JigglePresetTests.cs
+
+Eight tests of the presets, in the shared style: no UnityEngine, so the .NET harness runs them.
+
+- the damping conversion is right and reverses, and its edges are clamped (a damping of 0 or 1, values that are not
+  numbers, a step rate that is below 1 or not finite);
+- every preset bakes into range for every bone and has a name, a kind that does not exist is the hair preset, and a tip
+  scale that is not a positive number counts as 1;
+- the stiffness runs in a straight line from the first bone to the tip by the tip factor, and one bone sits at the start;
+- the presets keep what this file promises: hair has a limit near 20 degrees and a damping of 0.999 a second, which is
+  0.1087 per step at 60 Hz, the chest swings less than hair and is pulled harder to its pose, only hair and tail collide,
+  only tail and chest are coupled, the horn swings least and is stiffest, the wing takes more wind than hair and the chest
+  little;
+- every preset runs 240 frames of a sway on both backends with the same bits, every position finite, and the tip never
+  farther from its pose than the length of the chain;
+- every chain settles, which is a tip that moved under 2 mm in the last 20 frames of 480, and sags under gravity by
+  under 0.2 m, and the horn swings under half as far as every other preset;
+- the swing of an uncoupled preset (hair, wing, ear, horn) at 30 Hz against 60 Hz, given the same sway in real time, is
+  within 15 percent plus a centimeter. It measured about 6 percent.
+
+## Tests/Editor/JiggleBodyFitTests.cs
+
+Eight tests of the body fit, also in the shared style.
+
+- a capsule between two joints has the right center, axis, length and solver half height, flat and slanted, and a sphere
+  the right solver shape;
+- what is not a shape is refused: the same joint, joints closer than the minimum, no radius, a negative or NaN radius,
+  joints that are not finite, no height and no scale for the head, and a refused shape is empty;
+- the height from the head and the ankles has its fifth added, the two ways to find the height agree within 6 percent on
+  an average figure, the radii follow the proportions and the scale, and the trunk is the thickest part;
+- the head sphere sits above the head joint, leans with the neck, and goes straight up when the neck and the head are at
+  one point;
+- the torso ends at the neck joint and reaches a radius below the hips, falls back to joint to joint when it is short and
+  refuses bad input, and the hand sits one radius past the wrist along the forearm or on the wrist without a forearm;
+- capsules that meet at a joint overlap there;
+- body shapes made from the joints of a standing figure (a head, a neck and a torso) keep a hair strand out of the body
+  on both backends for 300 frames, with the same bits, while the pose of the strand is bent into the torso and back, and
+  the strand does come close to the body, so the test is not passing because nothing touched.
+
 ## Tests/Editor/JiggleUnityLayerTests.cs
 
 Ten tests for the Unity layer that need the editor. The first five: the default settings bake to the defaults
@@ -815,6 +1062,24 @@ compiled in CI.
 The transform jobs need a scene and a running player loop. They are tried in the lab and by playing
 a scene, not by a test.
 
+## Tests/Editor/JigglePresetUnityTests.cs
+
+Eight Edit Mode tests of the Unity layer of drop 3. They need Unity, so the harness does not run them and the stub build
+only compiles them.
+
+- applying a preset to the settings bakes the same parameters as the Core makes from the same preset, for all six kinds,
+  at 30, 60 and 120 Hz, for chains of 1, 2 and 6 bones;
+- a chain takes the tip scale of a preset and keeps its bone count, its sleep flag and its layers, takes the values of an
+  asset, ignores a null asset, and treats a tip scale that is not a number as 1;
+- a preset asset made from a kind has the values and the name of that kind;
+- body colliders built from the joints of a standing figure under a root of scale 1, 2 and 0.5 have, for every planned
+  shape, the same kind, radius, half height, center and axis (up to its sign) as the fit says in world space, which is
+  what proves the scale handling of `Place`;
+- the layer is applied to every object, a second build replaces the first, `Clear` removes them, and none is static;
+- the part mask limits what is planned, and a mask of none is refused with a reason;
+- the height comes from the ankles, then the hips, and the given height wins;
+- a component with no joints plans nothing, fills nothing, builds nothing.
+
 ## Tests~/DotnetHarness
 
 `JiggleHarness.csproj` compiles `Runtime/Core`, the editor tests, a small `NUnitStubs.cs`
@@ -829,8 +1094,8 @@ with a message, so the same file compiles under real NUnit in Unity.
 
 The folder name ends in a tilde, so Unity ignores it.
 
-The harness runs `JiggleParityTests.cs` (30 tests) and `JiggleFeatureTests.cs` (23), 53 in all. It does not compile
-the Unity layer.
+The harness runs `JiggleParityTests.cs` (30 tests), `JiggleFeatureTests.cs` (23), `JigglePresetTests.cs` (8) and
+`JiggleBodyFitTests.cs` (8), 69 in all. It does not compile the Unity layer.
 
 Running it by hand needs the release library:
 
@@ -855,6 +1120,12 @@ and five projects compile the package against it, one for each assembly:
 The stubs grew with 0.4.0: `Camera` (and `Camera.main`), `Plane`, `GeometryUtility.CalculateFrustumPlanes`,
 `LayerMask`, `GameObject.layer` and `transform`, more of `Transform` and `Vector3`, `Object.DestroyImmediate`,
 `Quaternion.Euler`, more of `Mathf`, and in the editor `EditorApplication` and `Selection`.
+
+The stubs grew again with 0.5.0, checked against the scripting reference: `ScriptableObject` with `CreateInstance`
+(replacing a placeholder base class that the editor types used to have), `CreateAssetMenuAttribute`, `SerializeField`,
+`HideInInspector`, `Animator` (`isHuman` and `GetBoneTransform`) and `HumanBodyBones`, `Component.GetComponent` and
+`GetComponentInChildren`, `Vector3.up`, `Quaternion.FromToRotation`, and in the editor `Undo`, `AssetDatabase`,
+`EditorUtility.SetDirty` and `SaveFilePanelInProject`, `EditorGUILayout.ObjectField` and `FloatField`.
 
 Because each assembly is its own project, using an `internal` of the Core from the Unity layer fails
 with CS0122, as it would in Unity. This was tried on purpose when the projects were written.
@@ -917,6 +1188,27 @@ No root level scripts are used.
   managed code, so another scheme needs no native change.
 - Nothing about the features of 0.4.0 has run inside Unity. They are tested under .NET 8 (the Core, 23 tests) and
   compiled against stubs (the Unity layer and the labs).
+- Nothing about the features of 0.5.0 has run inside Unity either. The presets and the body fit are tested under .NET 8
+  (16 tests). The preset and body component, the inspectors, the two labs and the eight Edit Mode tests are compiled
+  against stubs only.
+- The numbers of the presets have not been judged by eye. What is tested is that they are stable, finite, the same on
+  both backends, bounded, that every chain settles, and that the horn moves least. Whether hair "looks like hair" is for
+  the lab.
+- Stiffness and coupling are per step, and the presets do not convert them for the step rate. The two frictions are
+  converted, and with that an uncoupled preset swings about the same at 30 and at 60 Hz (a test holds it to 15 percent
+  plus a centimeter). The tail and the chest are coupled, and a coupled chain at 30 Hz sags and swings differently: in
+  one try the 30 Hz tail sagged 0.28 m where the 60 Hz tail sagged 0.075 m. Treat those two as tuned for 60 Hz.
+- `ApplyPreset` converts the frictions for the step rate of the manager at that moment. Change `fixedHz` afterwards
+  and the drag stays what it was: apply the preset again.
+- Body colliders use the proportions of an average adult, from the distances between joints in the pose of the build.
+  They are not fitted to a mesh, and a stylised character with a big head, a long torso or thin limbs needs `scale` or
+  `height`, or the joints placed by hand. A uniform scale on the joints is assumed.
+- The humanoid path, `FillFrom` with an `Animator`, has never run against a real avatar: it is a list of
+  `GetBoneTransform` calls checked against the scripting reference. The test figure of the lab has no animator.
+- The head sphere is small on purpose (see `JiggleBodyFit`), so hair can pass through the outer part of a real head. The
+  torso stops at the neck joint, so hair that hangs between the neck and the head is held by the neck capsule only.
+- The body colliders are not animated by this package. They are children of the joints and follow them, and a joint that
+  is scaled non uniformly by an animation gives a collider that is wrong by the same amount.
 - The transform jobs complete in the same `LateUpdate` that schedules them, so the main thread waits for
   them. There is no frame of delay to hide the cost behind.
 - Changing the bones of a running chain (reparenting, adding a first child) is not noticed. Call
@@ -1039,3 +1331,41 @@ No root level scripts are used.
 - `dotnet build` could not reach the package feed from the sandbox, so the harness
   was built with an empty local feed there. CI restores from the normal feed, and the
   project has no package references.
+
+### Runtime/Core/JigglePresets.cs, JiggleDamping.cs (0.5.0)
+
+- A rescale of the stiffness for the step rate was tried and thrown away. A relaxation share rescale and then a
+  60 over rate spring rescale both made 30 Hz worse or stopped the motion altogether (the ear peaked at 0.004 m against
+  0.394 m at 60 Hz). Unscaled stiffness with per second frictions gave 30 Hz peaks within about 6 percent of the 60 Hz
+  ones, so the stiffness stays per step and only the frictions are converted. The scaling code and its helper were removed.
+- Ordering assertions between presets (which swings farther, ear or hair) were dropped: they depended on numbers that
+  nobody has judged and broke whenever one was moved. Only the horn is held to swing under half of the others.
+
+### Runtime/Core/JiggleBodyFit.cs (0.5.0)
+
+- The first draft used the distance from the head joint to the ankles as the height of the body, which makes every body a
+  fifth too small, because the head joint is at the base of the skull and the ankle is above the sole. Found when the
+  Unity layer was written and the two ways to find the height were compared, before any run. The factor is
+  `HeightPerAnkleToHead`, 1.2, with a test that the two ways agree.
+- The torso was the plain capsule from the hips to the neck joint, whose top cap reaches a radius above the neck and
+  swallows the back of the head. It is now `Torso`, which ends the cap at the neck joint.
+
+### Tests/Editor/JigglePresetTests.cs, JiggleBodyFitTests.cs (0.5.0)
+
+- Four of the 67 first tests failed and were corrected, not loosened without a reason:
+  - the tail "settled near its pose" test measured the sag under gravity, which is no ringing. It now measures how far
+    the tip moved in the last 20 frames, with a separate cap on the sag, over 480 frames because hair creeps under heavy
+    damping;
+  - the step rate test saw the coupled tail sag at 30 Hz, which is the limit above, so it now covers the uncoupled
+    presets only;
+  - the hair against head test had the wrong sign, and its root was pinned inside the head because the whole pose went
+    through the body. The scenario is a strand 0.2 m behind the body whose pose bends toward the torso with a ramp;
+  - the joint overlap test had its logic inverted: the cap of the near capsule reaches past the joint, so the distance is
+    greater, not less.
+- A leftover variable and an assertion that could not fail were removed from the hair against body test, and the test
+  that holds the horn to swing least was renamed to say that.
+
+### Tests~/UnityStubs (0.5.0)
+
+- The editor types had a placeholder base class, `ScriptableObjectStub`, instead of the real `ScriptableObject`. Drop 3
+  needs `ScriptableObject.CreateInstance`, so the placeholder was replaced by the real name.
