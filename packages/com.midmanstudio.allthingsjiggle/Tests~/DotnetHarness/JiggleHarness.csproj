@@ -30,6 +30,7 @@
     <Compile Include="../../Tests/Editor/JiggleFeatureTests.cs" />
     <Compile Include="../../Tests/Editor/JigglePresetTests.cs" />
     <Compile Include="../../Tests/Editor/JiggleBodyFitTests.cs" />
+    <Compile Include="../../Tests/Editor/JiggleLatticeTests.cs" />
     <Compile Include="NUnitStubs.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

@@ -57,6 +57,90 @@ namespace MidManStudio.AllThingsJiggle.EditorTools
             return chain != null && chain.IsSimulating && chain.TryGetParticle(chain.BoneCount, out tip);
         }
 
+        /// <summary>
+        /// A cube of side 2 * <paramref name="half"/> centred on the origin with <paramref name="cells"/> cells along each edge of every
+        /// face, so a lattice has vertices to bend. Each face has its own vertices and its flat normal, and the mesh is readable.
+        /// </summary>
+        internal static Mesh SubdividedCube(int cells, float half)
+        {
+            int n = cells < 1 ? 1 : cells;
+            int side = n + 1;
+            int perFace = side * side;
+            Vector3[] vertices = new Vector3[6 * perFace];
+            Vector3[] normals = new Vector3[6 * perFace];
+            int[] triangles = new int[6 * n * n * 6];
+            int t = 0;
+            for (int face = 0; face < 6; face++)
+            {
+                // The face is on the axis a, on the side s. b and c are the next two axes in a cycle, so b cross c points along a.
+                int a = face / 2;
+                float s = face % 2 == 0 ? 1f : -1f;
+                int b = (a + 1) % 3;
+                int c = (a + 2) % 3;
+                int first = face * perFace;
+                for (int j = 0; j < side; j++)
+                {
+                    for (int i = 0; i < side; i++)
+                    {
+                        float[] p = new float[3];
+                        float[] nrm = new float[3];
+                        p[a] = s * half;
+                        p[b] = -half + 2f * half * (float)i / (float)n;
+                        p[c] = -half + 2f * half * (float)j / (float)n;
+                        nrm[a] = s;
+                        vertices[first + i + side * j] = new Vector3(p[0], p[1], p[2]);
+                        normals[first + i + side * j] = new Vector3(nrm[0], nrm[1], nrm[2]);
+                    }
+                }
+                for (int j = 0; j < n; j++)
+                {
+                    for (int i = 0; i < n; i++)
+                    {
+                        int v00 = first + i + side * j;
+                        int v10 = v00 + 1;
+                        int v01 = v00 + side;
+                        int v11 = v01 + 1;
+                        if (s > 0f)
+                        {
+                            triangles[t++] = v00; triangles[t++] = v10; triangles[t++] = v01;
+                            triangles[t++] = v10; triangles[t++] = v11; triangles[t++] = v01;
+                        }
+                        else
+                        {
+                            triangles[t++] = v00; triangles[t++] = v01; triangles[t++] = v10;
+                            triangles[t++] = v10; triangles[t++] = v01; triangles[t++] = v11;
+                        }
+                    }
+                }
+            }
+            Mesh mesh = new Mesh();
+            mesh.name = "Jiggle Lab cube";
+            mesh.vertices = vertices;
+            mesh.normals = normals;
+            mesh.triangles = triangles;
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        /// <summary>
+        /// A cube made of <see cref="SubdividedCube"/> with the default material of the project, a child of
+        /// <paramref name="parent"/> at <paramref name="position"/>. It has no collider and no lattice.
+        /// </summary>
+        internal static GameObject CubeProp(Transform parent, string name, Vector3 position, int cells, float half)
+        {
+            GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            go.transform.position = position;
+            Collider collider = go.GetComponent<Collider>();
+            if (collider != null)
+            {
+                Object.DestroyImmediate(collider);
+            }
+            go.GetComponent<MeshFilter>().sharedMesh = SubdividedCube(cells, half);
+            return go;
+        }
+
         /// <summary>Removes a lab's objects. Safe to call with null.</summary>
         internal static void Remove(GameObject root)
         {

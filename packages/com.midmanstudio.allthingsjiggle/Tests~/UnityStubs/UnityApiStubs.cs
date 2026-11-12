@@ -24,6 +24,7 @@ namespace UnityEngine
         public static void DestroyImmediate(Object obj) { }
         public static void DontDestroyOnLoad(Object target) { }
         public static T FindFirstObjectByType<T>() where T : Object { return null; }
+        public static T Instantiate<T>(T original) where T : Object { return original; }
     }
 
     public class Component : Object
@@ -69,6 +70,21 @@ namespace UnityEngine
         public int layer { get; set; }
         public T AddComponent<T>() where T : Component { return null; }
         public T GetComponent<T>() { return default; }
+        public static GameObject CreatePrimitive(PrimitiveType type) { return null; }
+    }
+
+    public enum PrimitiveType
+    {
+        Sphere = 0,
+        Capsule = 1,
+        Cylinder = 2,
+        Cube = 3,
+        Plane = 4,
+        Quad = 5,
+    }
+
+    public class Collider : Component
+    {
     }
 
     public sealed class Transform : Component
@@ -123,6 +139,40 @@ namespace UnityEngine
         public static Quaternion Euler(float x, float y, float z) { return identity; }
         public static Quaternion FromToRotation(Vector3 fromDirection, Vector3 toDirection) { return identity; }
         public static Quaternion operator *(Quaternion lhs, Quaternion rhs) { return lhs; }
+    }
+
+    public struct Bounds
+    {
+        private Vector3 c;
+        private Vector3 e;
+        public Bounds(Vector3 center, Vector3 size) { c = center; e = new Vector3(size.x * 0.5f, size.y * 0.5f, size.z * 0.5f); }
+        public Vector3 center { get { return c; } set { c = value; } }
+        public Vector3 extents { get { return e; } set { e = value; } }
+        public Vector3 size { get { return new Vector3(e.x * 2f, e.y * 2f, e.z * 2f); } set { e = new Vector3(value.x * 0.5f, value.y * 0.5f, value.z * 0.5f); } }
+    }
+
+    public sealed class Mesh : Object
+    {
+        public Mesh() { }
+        public bool isReadable { get; }
+        public int vertexCount { get; }
+        public Vector3[] vertices { get; set; }
+        public Vector3[] normals { get; set; }
+        public int[] triangles { get; set; }
+        public Bounds bounds { get; set; }
+        public void MarkDynamic() { }
+        public void RecalculateBounds() { }
+        public void RecalculateNormals() { }
+        public void SetVertices<T>(Unity.Collections.NativeArray<T> inVertices, int start, int length, UnityEngine.Rendering.MeshUpdateFlags flags = UnityEngine.Rendering.MeshUpdateFlags.Default)
+            where T : struct { }
+        public void SetNormals<T>(Unity.Collections.NativeArray<T> inNormals, int start, int length, UnityEngine.Rendering.MeshUpdateFlags flags = UnityEngine.Rendering.MeshUpdateFlags.Default)
+            where T : struct { }
+    }
+
+    public sealed class MeshFilter : Component
+    {
+        public Mesh sharedMesh { get; set; }
+        public Mesh mesh { get; set; }
     }
 
     public struct Matrix4x4
@@ -203,6 +253,8 @@ namespace UnityEngine
     public static class Gizmos
     {
         public static Color color { get; set; }
+        public static Matrix4x4 matrix { get; set; }
+        public static void DrawWireCube(Vector3 center, Vector3 size) { }
         public static void DrawLine(Vector3 from, Vector3 to) { }
         public static void DrawSphere(Vector3 center, float radius) { }
         public static void DrawWireSphere(Vector3 center, float radius) { }
@@ -282,6 +334,12 @@ namespace UnityEngine
     {
     }
 
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
+    public sealed class RequireComponent : Attribute
+    {
+        public RequireComponent(Type requiredComponent) { }
+    }
+
     [AttributeUsage(AttributeTargets.Class)]
     public sealed class AddComponentMenu : Attribute
     {
@@ -292,6 +350,19 @@ namespace UnityEngine
     public sealed class DefaultExecutionOrder : Attribute
     {
         public DefaultExecutionOrder(int order) { }
+    }
+}
+
+namespace UnityEngine.Rendering
+{
+    [Flags]
+    public enum MeshUpdateFlags
+    {
+        Default = 0,
+        DontValidateIndices = 1,
+        DontResetBoneBounds = 2,
+        DontNotifyMeshUsers = 4,
+        DontRecalculateBounds = 8,
     }
 }
 
@@ -342,6 +413,7 @@ namespace Unity.Jobs
     public struct JobHandle
     {
         public void Complete() { }
+        public static JobHandle CombineDependencies(JobHandle job0, JobHandle job1) { return default; }
     }
 
     public interface IJob
@@ -387,6 +459,22 @@ namespace Unity.Collections
         TempJob = 3,
         Persistent = 4,
     }
+
+    public enum NativeArrayOptions
+    {
+        UninitializedMemory = 0,
+        ClearMemory = 1,
+    }
+
+    public struct NativeArray<T> : IDisposable where T : struct
+    {
+        public NativeArray(int length, Allocator allocator, NativeArrayOptions options = NativeArrayOptions.ClearMemory) { Length = length; IsCreated = true; }
+        public int Length { get; }
+        public bool IsCreated { get; }
+        public void Dispose() { }
+        public void CopyFrom(T[] array) { }
+        public T this[int index] { get { return default; } set { } }
+    }
 }
 
 namespace Unity.Collections.LowLevel.Unsafe
@@ -394,6 +482,11 @@ namespace Unity.Collections.LowLevel.Unsafe
     [AttributeUsage(AttributeTargets.Field)]
     public sealed class NativeDisableUnsafePtrRestrictionAttribute : Attribute
     {
+    }
+
+    public static unsafe class NativeArrayUnsafeUtility
+    {
+        public static void* GetUnsafePtr<T>(this Unity.Collections.NativeArray<T> nativeArray) where T : struct { return null; }
     }
 
     public static unsafe class UnsafeUtility

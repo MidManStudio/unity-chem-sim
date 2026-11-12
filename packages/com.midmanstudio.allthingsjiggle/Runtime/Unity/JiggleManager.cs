@@ -9,10 +9,10 @@ using UnityEngine;
 namespace MidManStudio.AllThingsJiggle
 {
     /// <summary>
-    /// Simulates every enabled <see cref="JiggleChain"/> once a frame, in LateUpdate after the animation, and holds
-    /// the settings that apply to all chains: the solver, sleeping, the level of detail, and the colliders and force
-    /// fields of the scene, which register themselves. There is one. A chain that is enabled finds the one in the scene or
-    /// makes one, so a scene only needs to place it to change the settings.
+    /// Simulates every enabled <see cref="JiggleChain"/> and <see cref="JiggleLattice"/> once a frame, in LateUpdate after the
+    /// animation, and holds the settings that apply to all of them: the solver, sleeping, the level of detail, and the
+    /// colliders and force fields of the scene, which register themselves. There is one. A chain or a lattice that is enabled
+    /// finds the one in the scene or makes one, so a scene only needs to place it to change the settings.
     /// </summary>
     [DefaultExecutionOrder(10000)]
     [DisallowMultipleComponent]
@@ -88,6 +88,9 @@ namespace MidManStudio.AllThingsJiggle
         private readonly List<JiggleChain> chains = new List<JiggleChain>();
         private readonly List<JiggleChain> changed = new List<JiggleChain>();
         private readonly List<JiggleChain> resets = new List<JiggleChain>();
+        private readonly List<JiggleLattice> lattices = new List<JiggleLattice>();
+        private readonly List<JiggleLattice> latticesChanged = new List<JiggleLattice>();
+        private readonly List<JiggleLattice> latticeResets = new List<JiggleLattice>();
         private readonly List<JiggleColliderShape> colliders = new List<JiggleColliderShape>();
         private readonly List<JiggleForceField> fields = new List<JiggleForceField>();
         private readonly JiggleColliderSet colliderSet = new JiggleColliderSet();
@@ -160,6 +163,12 @@ namespace MidManStudio.AllThingsJiggle
             get { return chains.Count; }
         }
 
+        /// <summary>The number of lattices that are registered, simulated or not.</summary>
+        public int LatticeCount
+        {
+            get { return lattices.Count; }
+        }
+
         /// <summary>The number of <see cref="JiggleColliderShape"/> components that are enabled.</summary>
         public int ColliderShapeCount
         {
@@ -183,6 +192,13 @@ namespace MidManStudio.AllThingsJiggle
         {
             into.Clear();
             into.AddRange(chains);
+        }
+
+        /// <summary>Copies the registered lattices into <paramref name="into"/>, which is cleared first. For tools that list them.</summary>
+        public void GetLattices(List<JiggleLattice> into)
+        {
+            into.Clear();
+            into.AddRange(lattices);
         }
 
         /// <summary>
@@ -253,6 +269,13 @@ namespace MidManStudio.AllThingsJiggle
                         runtime.Chains[i].Detach();
                     }
                 }
+                for (int i = 0; i < runtime.Lattices.Count; i++)
+                {
+                    if (runtime.Lattices[i] != null)
+                    {
+                        runtime.Lattices[i].Detach();
+                    }
+                }
                 runtime.Dispose();
                 runtime = null;
             }
@@ -270,6 +293,23 @@ namespace MidManStudio.AllThingsJiggle
         internal void Unregister(JiggleChain chain)
         {
             if (chains.Remove(chain))
+            {
+                dirty = true;
+            }
+        }
+
+        internal void Register(JiggleLattice lattice)
+        {
+            if (!lattices.Contains(lattice))
+            {
+                lattices.Add(lattice);
+                dirty = true;
+            }
+        }
+
+        internal void Unregister(JiggleLattice lattice)
+        {
+            if (lattices.Remove(lattice))
             {
                 dirty = true;
             }
@@ -322,6 +362,22 @@ namespace MidManStudio.AllThingsJiggle
             }
         }
 
+        internal void NotifyChanged(JiggleLattice lattice)
+        {
+            if (!latticesChanged.Contains(lattice))
+            {
+                latticesChanged.Add(lattice);
+            }
+        }
+
+        internal void RequestReset(JiggleLattice lattice)
+        {
+            if (!latticeResets.Contains(lattice))
+            {
+                latticeResets.Add(lattice);
+            }
+        }
+
         private bool EnsureNative()
         {
             if (!nativeChecked)
@@ -346,7 +402,7 @@ namespace MidManStudio.AllThingsJiggle
         {
             dirty = false;
             JiggleRuntime old = runtime;
-            runtime = JiggleRuntime.Build(chains, old);
+            runtime = JiggleRuntime.Build(chains, lattices, old);
             if (old != null)
             {
                 old.Dispose();
@@ -378,6 +434,26 @@ namespace MidManStudio.AllThingsJiggle
                 runtime.Host.SetTipScale(c.RigIndex, c.tipScale);
             }
             changed.Clear();
+
+            // A lattice whose mesh, box, grid or anchor changed is built again. One whose values changed is baked in place.
+            for (int i = 0; i < latticesChanged.Count; i++)
+            {
+                JiggleLattice l = latticesChanged[i];
+                if (l == null || !l.isActiveAndEnabled)
+                {
+                    continue;
+                }
+                string problem;
+                int stamp = l.BuildStamp;
+                bool wasSimulating = l.IsSimulating;
+                if (!l.Prepare(out problem) || !wasSimulating || l.BuildStamp != stamp || l.AttachedStamp != stamp)
+                {
+                    dirty = true;
+                    continue;
+                }
+                runtime.Host.SetTreeParams(l.RigIndex, l.settings.ToParams(l.Tree.Count - 1));
+            }
+            latticesChanged.Clear();
         }
 
         // The settings of the manager go into the host before each frame, so a change in the inspector shows at once.
@@ -406,6 +482,15 @@ namespace MidManStudio.AllThingsJiggle
                 }
             }
             resets.Clear();
+            for (int i = 0; i < latticeResets.Count; i++)
+            {
+                JiggleLattice l = latticeResets[i];
+                if (l != null && l.IsSimulating && object.ReferenceEquals(l.Runtime, runtime))
+                {
+                    runtime.Host.Reset(l.RigIndex);
+                }
+            }
+            latticeResets.Clear();
         }
 
         // ------------------------------------------------------------------ per frame scene work
@@ -442,8 +527,49 @@ namespace MidManStudio.AllThingsJiggle
             }
         }
 
-        // Reads the anchors, decides the level of detail of every rig, switches rigs off and on, keeps chains that must not sleep
-        // awake and fills the layers each rig ignores. Runs before the colliders are written, because it decides who tests them.
+        // Decides the level of detail of rig r from the limits of its owner and its tracker, and switches the rig off or on to match.
+        // The flag in the host is the truth, so a rebuild that copied it and a level that changed agree.
+        private JiggleLodLevel DecideLevel(
+            JiggleHost h, int r, JiggleLodSettings own, ref JiggleLodTracker tracker, Camera cam, Vector3 camPos, float frameDt,
+            ref bool planesRead)
+        {
+            JiggleLodLevel level = JiggleLodLevel.Full;
+            bool limited = own.CollisionDistance > 0f || own.CullDistance > 0f || own.CullOffscreen;
+            if (cam != null && limited)
+            {
+                bool visible = true;
+                if (own.CullOffscreen)
+                {
+                    if (!planesRead)
+                    {
+                        ReadViewPlanes(cam);
+                        planesRead = true;
+                    }
+                    visible = JiggleLod.SphereInFrustum(viewPlaneData, 6, anchors[r], h.Rigs[r].Extent + VisibleMargin);
+                }
+                level = JiggleLod.Decide(own, ref tracker, Distance(camPos, anchors[r]), visible, frameDt);
+            }
+            else
+            {
+                tracker = new JiggleLodTracker();
+            }
+
+            bool isOff = h.IsDisabled(r);
+            if (level == JiggleLodLevel.Off && !isOff)
+            {
+                h.SetDisabled(r, true);
+            }
+            else if (level != JiggleLodLevel.Off && isOff)
+            {
+                h.SetDisabled(r, false);
+            }
+            return level;
+        }
+
+        // Reads the anchors, decides the level of detail of every rig, switches rigs off and on, keeps chains and lattices that must
+        // not sleep awake and fills the layers each rig ignores. Runs before the colliders are written, because it decides who
+        // tests them. The rigs of the chains come first and those of the lattices after them. A lattice is measured from its anchor
+        // control point, and it tests no colliders, so all its layers are ignored.
         private void PrepareRigs(JiggleRuntime rt, float frameDt)
         {
             JiggleHost h = rt.Host;
@@ -461,45 +587,15 @@ namespace MidManStudio.AllThingsJiggle
 
             int noCollision = 0;
             int off = 0;
-            for (int r = 0; r < rigs; r++)
+            int chainCount = rt.Chains.Count;
+            for (int r = 0; r < chainCount; r++)
             {
                 JiggleChain c = rt.Chains[r];
                 Transform anchorTransform = c.Anchor;
                 Vector3 ap = anchorTransform != null ? anchorTransform.position : c.transform.position;
                 anchors[r] = new JVec3(ap.x, ap.y, ap.z);
 
-                JiggleLodLevel level = JiggleLodLevel.Full;
-                JiggleLodSettings own = c.ResolveLod(limits, lodHysteresis);
-                bool limited = own.CollisionDistance > 0f || own.CullDistance > 0f || own.CullOffscreen;
-                if (cam != null && limited)
-                {
-                    bool visible = true;
-                    if (own.CullOffscreen)
-                    {
-                        if (!planesRead)
-                        {
-                            ReadViewPlanes(cam);
-                            planesRead = true;
-                        }
-                        visible = JiggleLod.SphereInFrustum(viewPlaneData, 6, anchors[r], h.Rigs[r].Extent + VisibleMargin);
-                    }
-                    level = JiggleLod.Decide(own, ref c.LodTracker, Distance(camPos, anchors[r]), visible, frameDt);
-                }
-                else
-                {
-                    c.LodTracker = new JiggleLodTracker();
-                }
-
-                // The flag in the host is the truth, so a rebuild that copied it and a level that changed agree.
-                bool isOff = h.IsDisabled(r);
-                if (level == JiggleLodLevel.Off && !isOff)
-                {
-                    h.SetDisabled(r, true);
-                }
-                else if (level != JiggleLodLevel.Off && isOff)
-                {
-                    h.SetDisabled(r, false);
-                }
+                JiggleLodLevel level = DecideLevel(h, r, c.ResolveLod(limits, lodHysteresis), ref c.LodTracker, cam, camPos, frameDt, ref planesRead);
                 if (level == JiggleLodLevel.Off)
                 {
                     off++;
@@ -511,6 +607,29 @@ namespace MidManStudio.AllThingsJiggle
                 ignore[r] = level == JiggleLodLevel.Full ? unchecked((uint)c.ignoreLayers.value) : uint.MaxValue;
 
                 if (!c.allowSleep)
+                {
+                    h.Wake(r);
+                }
+            }
+            for (int i = 0; i < rt.Lattices.Count; i++)
+            {
+                int r = chainCount + i;
+                JiggleLattice l = rt.Lattices[i];
+                Vector3 ap = l.AnchorWorldNow();
+                anchors[r] = new JVec3(ap.x, ap.y, ap.z);
+
+                JiggleLodLevel level = DecideLevel(h, r, l.ResolveLod(limits, lodHysteresis), ref l.LodTracker, cam, camPos, frameDt, ref planesRead);
+                if (level == JiggleLodLevel.Off)
+                {
+                    off++;
+                }
+                else if (level == JiggleLodLevel.NoCollision)
+                {
+                    noCollision++;
+                }
+                ignore[r] = uint.MaxValue;
+
+                if (!l.allowSleep)
                 {
                     h.Wake(r);
                 }
@@ -571,8 +690,8 @@ namespace MidManStudio.AllThingsJiggle
 
         /// <summary>
         /// Runs one frame for frameDt seconds now: rebuilds if chains came or went, bakes edited settings, decides the level
-        /// of detail, writes the colliders and fields of the scene, reads the transforms, solves and writes the bone
-        /// rotations. The manager calls it every LateUpdate with the frame time. A script that wants to step by hand, for a
+        /// of detail, writes the colliders and fields of the scene, reads the transforms, solves, writes the bone rotations
+        /// and deforms the meshes of the lattices. The manager calls it every LateUpdate with the frame time. A script that wants to step by hand, for a
         /// replay or a test, calls it too and does not rely on the LateUpdate of that frame.
         /// </summary>
         public void Simulate(float frameDt)
@@ -593,6 +712,8 @@ namespace MidManStudio.AllThingsJiggle
             if (rt == null || rt.Host.RigCount == 0)
             {
                 stats.Rigs = 0;
+                stats.Lattices = 0;
+                stats.LatticeUploads = 0;
                 stats.Particles = 0;
                 stats.Steps = 0;
                 stats.FrameMs = 0f;
@@ -616,6 +737,8 @@ namespace MidManStudio.AllThingsJiggle
             // An impulse is given on the first step of a frame, so a frame that ran none, or failed, keeps it for the next.
             fieldQueue.Commit(code == JiggleConst.Ok ? rt.Host.Cfg->Steps : 0u);
             stats.Rigs = rt.Host.RigCount;
+            stats.Lattices = rt.Lattices.Count;
+            stats.LatticeUploads = rt.LatticeUploads;
             stats.Particles = rt.Host.ParticleCount;
             stats.Steps = rt.Host.Cfg->Steps;
             stats.FrameMs = (float)((double)(t1 - t0) * 1000.0 / (double)System.Diagnostics.Stopwatch.Frequency);

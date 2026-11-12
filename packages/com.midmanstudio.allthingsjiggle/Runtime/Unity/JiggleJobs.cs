@@ -57,11 +57,17 @@ namespace MidManStudio.AllThingsJiggle
     /// <summary>
     /// Builds the pose of every rig for the frame from the samples and hands it to <see cref="JigglePose.Write"/>.
     /// A rig in bind mode takes the pose its bones had at bind time, carried by the anchor's matrix. A rig in
-    /// animated mode takes the samples of its bones.
+    /// animated mode takes the samples of its bones. A rig in lattice mode (2) is a tree: its entries are its control points,
+    /// all of them on the one transform of the object, and the bind positions are the rest places of the control points in the
+    /// space of the mesh, which the matrix of the object carries into the world. Its pose goes to
+    /// <see cref="JigglePose.WriteTree"/>.
     /// </summary>
     [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
     internal unsafe struct JigglePoseJob : IJobParallelFor
     {
+        /// <summary>The rig mode of a lattice: a tree of control points that follows the matrix of one object.</summary>
+        public const byte RigModeLattice = 2;
+
         [NativeDisableUnsafePtrRestriction] public JiggleRig* Rigs;
         [NativeDisableUnsafePtrRestriction] public JVec4* PosePrev;
         [NativeDisableUnsafePtrRestriction] public JVec4* PoseCurr;
@@ -78,6 +84,11 @@ namespace MidManStudio.AllThingsJiggle
         {
             JiggleRig* r = Rigs + rig;
             int n = (int)r->ParticleCount;
+            if (RigMode[rig] == RigModeLattice)
+            {
+                PoseLattice(rig, r, n);
+                return;
+            }
             int entries = n - 1;
             if (entries < 2 || n > JiggleConst.MaxParticles)
             {
@@ -117,9 +128,38 @@ namespace MidManStudio.AllThingsJiggle
             int off = (int)r->ParticleOffset;
             JigglePose.Write(r, PosePrev + off, PoseCurr + off, PoseRot + off, TipScale[rig], wp, wr, entries);
         }
+
+        // The pose of a lattice: every control point at its rest place in the mesh, carried by the matrix of the object.
+        private void PoseLattice(int rig, JiggleRig* r, int n)
+        {
+            if (n < 2 || n > JiggleConst.MaxParticles)
+            {
+                return;
+            }
+            int e0 = RigEntry[rig];
+            JiggleSample* a = Samples + EntryTransform[e0];
+            if (!a->Pos.IsFinite())
+            {
+                return;
+            }
+            JVec3* wp = stackalloc JVec3[JiggleConst.MaxParticles];
+            for (int k = 0; k < n; k++)
+            {
+                JVec3 b = BindPos[e0 + k];
+                wp[k] = new JVec3(
+                    a->M00 * b.X + a->M01 * b.Y + a->M02 * b.Z + a->M03,
+                    a->M10 * b.X + a->M11 * b.Y + a->M12 * b.Z + a->M13,
+                    a->M20 * b.X + a->M21 * b.Y + a->M22 * b.Z + a->M23);
+            }
+            int off = (int)r->ParticleOffset;
+            JigglePose.WriteTree(r, PosePrev + off, PoseCurr + off, PoseRot + off, wp, null, 0);
+        }
     }
 
-    /// <summary>Turns the resolved world rotations of every rig into the local rotations of its bones.</summary>
+    /// <summary>
+    /// Turns the resolved world rotations of every rig into the local rotations of its bones. A lattice has no bones, and its
+    /// rig has no slots in the array of local rotations, so it is skipped.
+    /// </summary>
     [BurstCompile(FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.Standard)]
     internal unsafe struct JiggleLocalJob : IJobParallelFor
     {
@@ -128,9 +168,14 @@ namespace MidManStudio.AllThingsJiggle
         [NativeDisableUnsafePtrRestriction] public JiggleParticleOut* Out;
         [NativeDisableUnsafePtrRestriction] public int* RigLocal;
         [NativeDisableUnsafePtrRestriction] public JQuat* Locals;
+        [NativeDisableUnsafePtrRestriction] public byte* RigMode;
 
         public void Execute(int rig)
         {
+            if (RigMode[rig] == JigglePoseJob.RigModeLattice)
+            {
+                return;
+            }
             JiggleRig* r = Rigs + rig;
             int off = (int)r->ParticleOffset;
             int bones = (int)r->ParticleCount - 2;

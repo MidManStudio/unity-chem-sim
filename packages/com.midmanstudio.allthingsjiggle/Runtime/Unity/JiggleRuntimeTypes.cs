@@ -34,8 +34,12 @@ namespace MidManStudio.AllThingsJiggle
     /// <summary>What the last frame of the manager did. A plain copy, safe to keep.</summary>
     public struct JiggleFrameStats
     {
-        /// <summary>Rigs simulated.</summary>
+        /// <summary>Rigs simulated, chains and lattices.</summary>
         public int Rigs;
+        /// <summary>How many of the rigs are lattices.</summary>
+        public int Lattices;
+        /// <summary>Meshes of lattices that were given new vertices in the last frame. A lattice at rest, or asleep, gives none.</summary>
+        public int LatticeUploads;
         /// <summary>Particles over all rigs.</summary>
         public int Particles;
         /// <summary>Fixed steps run in the last frame.</summary>

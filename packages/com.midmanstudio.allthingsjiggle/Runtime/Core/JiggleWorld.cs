@@ -125,6 +125,63 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
+        /// Adds a tree rig from the rest pose of its particles in world space, and returns its index. restWorld[0] is the
+        /// anchor and the others are the particles in an order where every particle comes after its parent. parent holds, for
+        /// each particle after the anchor, the index in the rig of its parent, 0 for the anchor, so parent[i] belongs to
+        /// restWorld[i + 1] and is at most i. p holds one parameter set per particle after the anchor. With pinRoots
+        /// a particle whose parent is the anchor is a root particle, held to its pose position as the first bone of a chain
+        /// is; without it that particle hangs on the anchor like any other particle on its parent. A tree has no virtual end,
+        /// so every particle is a real point and its pose is set with <see cref="SetTreePose"/>. Links are coupled as in a
+        /// chain, between particles that both have a mass, and the kinematic anchor is never coupled. Throws
+        /// <see cref="ArgumentException"/> when the arguments do not make a tree.
+        /// </summary>
+        public int AddTree(JVec3[] restWorld, int[] parent, JiggleParams[] p, bool pinRoots = false)
+        {
+            JiggleTreeBuild.Validate(restWorld, parent, p);
+            int offset = Defs.Length;
+            JiggleParticleDef[] defs = JiggleTreeBuild.BakeDefs(parent, p, pinRoots);
+            for (int i = 0; i < defs.Length; i++)
+            {
+                Append(ref Defs, defs[i]);
+            }
+
+            int n = defs.Length;
+            JVec3 anchor = restWorld[0];
+            float extent = JiggleChainBuild.Extent(restWorld);
+            for (int i = 0; i < n; i++)
+            {
+                JVec3 rel = restWorld[i] - anchor;
+                JVec4 a = new JVec4(0f, 0f, 0f, 0f);
+                rel.Write4(ref a);
+                JiggleParticleState s = new JiggleParticleState();
+                s.Pos = a;
+                s.Prev = a;
+                Append(ref State, s);
+                Append(ref PosePrev, a);
+                Append(ref PoseCurr, a);
+                Append(ref PoseRot, JQuat.Identity.To4());
+                Append(ref Out, new JiggleParticleOut());
+            }
+            JiggleRig rig = new JiggleRig();
+            rig.ParticleOffset = (uint)offset;
+            rig.ParticleCount = (uint)n;
+            rig.RefOffset = (uint)Refs.Length;
+            rig.RefCount = 0;
+            rig.Extent = extent;
+            rig.AnchorWorld = anchor;
+            Append(ref Rigs, rig);
+            Append(ref TipScale, 1.0f);
+            return Rigs.Length - 1;
+        }
+
+        /// <summary>Whether a rig was added with <see cref="AddTree"/>: it has no virtual end particle.</summary>
+        public bool IsTree(int rig)
+        {
+            JiggleRig r = Rigs[rig];
+            return JiggleTreeBuild.IsTree(Defs[(int)r.ParticleOffset + (int)r.ParticleCount - 1]);
+        }
+
+        /// <summary>
         /// Sets the mass of particle <paramref name="particle"/> of a rig, counted in the rig: 1 is the first bone
         /// and the last index is the virtual end particle. 0 makes its links one way again.
         /// </summary>
@@ -175,6 +232,10 @@ namespace MidManStudio.AllThingsJiggle
         {
             int off = (int)Rigs[rig].ParticleOffset;
             int n = (int)Rigs[rig].ParticleCount;
+            if (IsTree(rig))
+            {
+                throw new ArgumentException("the rig is a tree, use SetTreePose");
+            }
             if (poseWorld.Length != n - 1)
             {
                 throw new ArgumentException("the pose needs the anchor and one position per bone");
@@ -188,6 +249,34 @@ namespace MidManStudio.AllThingsJiggle
             fixed (JQuat* pRots = rots)
             {
                 JigglePose.Write(pRig, pPrev, pCurr, pRot, TipScale[rig], pWorld, pRots, rots == null ? 0 : rots.Length);
+            }
+        }
+
+        /// <summary>
+        /// Sets the pose of a tree rig for the coming frame from world positions, one for every particle, the anchor
+        /// first. Rotations default to the identity. Throws <see cref="ArgumentException"/> for a chain or for the wrong
+        /// number of positions.
+        /// </summary>
+        public void SetTreePose(int rig, JVec3[] poseWorld, JQuat[] rots = null)
+        {
+            int off = (int)Rigs[rig].ParticleOffset;
+            int n = (int)Rigs[rig].ParticleCount;
+            if (!IsTree(rig))
+            {
+                throw new ArgumentException("the rig is a chain, use SetPose");
+            }
+            if (poseWorld.Length != n)
+            {
+                throw new ArgumentException("the pose needs one position for every particle, the anchor included");
+            }
+            fixed (JiggleRig* pRig = &Rigs[rig])
+            fixed (JVec4* pPrev = &PosePrev[off])
+            fixed (JVec4* pCurr = &PoseCurr[off])
+            fixed (JVec4* pRot = &PoseRot[off])
+            fixed (JVec3* pWorld = poseWorld)
+            fixed (JQuat* pRots = rots)
+            {
+                JigglePose.WriteTree(pRig, pPrev, pCurr, pRot, pWorld, pRots, rots == null ? 0 : rots.Length);
             }
         }
 

@@ -222,6 +222,86 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
+        /// Adds a tree rig exactly as <see cref="JiggleWorld.AddTree"/> does, and returns its index: restWorld[0] is the anchor,
+        /// parent[i] is the index in the rig of the parent of restWorld[i + 1] and is at most i, p has one parameter set for
+        /// each particle after the anchor, and pinRoots makes a particle that hangs on the anchor a root particle. Throws <see cref="ArgumentException"/> when they do not make a tree and
+        /// <see cref="ObjectDisposedException"/> after Dispose.
+        /// </summary>
+        public int AddTree(JVec3[] restWorld, int[] parent, JiggleParams[] p, bool pinRoots = false)
+        {
+            if (disposed)
+            {
+                throw new ObjectDisposedException("JiggleHost");
+            }
+            JiggleTreeBuild.Validate(restWorld, parent, p);
+            JiggleParticleDef[] defs = JiggleTreeBuild.BakeDefs(parent, p, pinRoots);
+            int n = defs.Length;
+            Reserve(RigCount + 1, ParticleCount + n);
+
+            JVec3 anchor = restWorld[0];
+            int offset = ParticleCount;
+            for (int i = 0; i < n; i++)
+            {
+                JVec4 a = new JVec4(0f, 0f, 0f, 0f);
+                (restWorld[i] - anchor).Write4(ref a);
+                JiggleParticleState s = new JiggleParticleState();
+                s.Pos = a;
+                s.Prev = a;
+                Defs[offset + i] = defs[i];
+                State[offset + i] = s;
+                PosePrev[offset + i] = a;
+                PoseCurr[offset + i] = a;
+                PoseRot[offset + i] = JQuat.Identity.To4();
+                Out[offset + i] = new JiggleParticleOut();
+            }
+            JiggleRig rig = new JiggleRig();
+            rig.ParticleOffset = (uint)offset;
+            rig.ParticleCount = (uint)n;
+            rig.RefOffset = 0;
+            rig.RefCount = 0;
+            rig.Extent = JiggleChainBuild.Extent(restWorld);
+            rig.AnchorWorld = anchor;
+            Rigs[RigCount] = rig;
+            TipScale[RigCount] = 1.0f;
+            ParticleCount += n;
+            RigCount++;
+            return RigCount - 1;
+        }
+
+        /// <summary>Whether a rig is a tree added with <see cref="AddTree"/>: it has no virtual end particle.</summary>
+        public bool IsTree(int rig)
+        {
+            CheckRig(rig);
+            JiggleRig r = Rigs[rig];
+            return JiggleTreeBuild.IsTree(Defs[(int)r.ParticleOffset + (int)r.ParticleCount - 1]);
+        }
+
+        /// <summary>
+        /// Bakes new parameters into a tree rig in place, one set per particle after the anchor, keeping its parents, its
+        /// root particles and its state. The number of sets must be the number the rig was built with. A mass given with <see cref="SetMass"/> is
+        /// replaced by the mass of the new set.
+        /// </summary>
+        public void SetTreeParams(int rig, JiggleParams[] p)
+        {
+            CheckRig(rig);
+            if (!IsTree(rig))
+            {
+                throw new ArgumentException("the rig is a chain, use SetParams");
+            }
+            int n = (int)Rigs[rig].ParticleCount;
+            if (p == null || p.Length != n - 1)
+            {
+                throw new ArgumentException("one parameter set per particle after the anchor is needed");
+            }
+            int offset = (int)Rigs[rig].ParticleOffset;
+            for (int i = 1; i < n; i++)
+            {
+                int parent = Defs[offset + i].Parent;
+                Defs[offset + i] = p[i - 1].Bake(parent, Defs[offset + i].Flags & JiggleConst.FlagRoot);
+            }
+        }
+
+        /// <summary>
         /// Sets the mass of particle <paramref name="particle"/> of a rig, counted in the rig: 1 is the first bone and
         /// the last index is the virtual end particle. 0 makes its links one way again.
         /// </summary>
@@ -243,6 +323,10 @@ namespace MidManStudio.AllThingsJiggle
         public void SetParams(int rig, JiggleParams[] p)
         {
             CheckRig(rig);
+            if (IsTree(rig))
+            {
+                throw new ArgumentException("the rig is a tree, use SetTreeParams");
+            }
             if (p == null || p.Length != (int)Rigs[rig].ParticleCount - 2)
             {
                 throw new ArgumentException("one parameter set per bone is needed");

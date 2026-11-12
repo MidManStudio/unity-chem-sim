@@ -11,10 +11,11 @@ using UnityEngine.Jobs;
 namespace MidManStudio.AllThingsJiggle
 {
     /// <summary>
-    /// Everything one build of the manager owns: a host with the rigs of all chains, the table of unique transforms
-    /// for the transform jobs, and the per rig and per entry arrays the jobs read. It is built from a list of
-    /// chains, run once a frame and thrown away when chains come or go, with the state of the chains that stay carried
-    /// over to the next build. It never changes while a frame runs.
+    /// Everything one build of the manager owns: a host with the rigs of all chains and lattices, the table of unique
+    /// transforms for the transform jobs, and the per rig and per entry arrays the jobs read. It is built from a list of
+    /// chains and a list of lattices, run once a frame and thrown away when they come or go, with the state of those that
+    /// stay carried over to the next build. The rigs of the chains come first, then those of the lattices. It never changes
+    /// while a frame runs.
     /// </summary>
     internal sealed unsafe class JiggleRuntime : IDisposable
     {
@@ -22,6 +23,10 @@ namespace MidManStudio.AllThingsJiggle
         internal readonly JiggleHost Host;
         /// <summary>The chains by rig index.</summary>
         internal readonly List<JiggleChain> Chains = new List<JiggleChain>();
+        /// <summary>The lattices by rig index minus the number of chains, because their rigs come after those of the chains.</summary>
+        internal readonly List<JiggleLattice> Lattices = new List<JiggleLattice>();
+        /// <summary>How many meshes the last frame uploaded. A lattice at rest, or asleep, uploads nothing.</summary>
+        internal int LatticeUploads;
 
         private TransformAccessArray taa;
         private bool taaCreated;
@@ -37,6 +42,7 @@ namespace MidManStudio.AllThingsJiggle
         private JQuat* locals;
         private int* status;
         private int statusCap;
+        private JiggleLatticeBatch latticeBatch;
         private bool disposed;
 
         private JiggleRuntime(JiggleHost host, int rigs, int entries, int localCount)
@@ -87,11 +93,12 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
-        /// Builds a runtime for the chains that can be simulated: a chain that cannot, or that wants a bone another
-        /// chain already drives, is logged and left out. A chain that was part of <paramref name="previous"/> keeps
-        /// what it had simulated as long as its particle count did not change, and the clock carries over.
+        /// Builds a runtime for the chains and lattices that can be simulated: one that cannot, or a chain that wants a bone
+        /// another chain already drives, is logged and left out. A chain that was part of <paramref name="previous"/> keeps
+        /// what it had simulated as long as its particle count did not change, a lattice as long as its mesh, box, grid and
+        /// anchor did not change, and the clock carries over.
         /// </summary>
-        internal static JiggleRuntime Build(List<JiggleChain> candidates, JiggleRuntime previous)
+        internal static JiggleRuntime Build(List<JiggleChain> candidates, List<JiggleLattice> latticeCandidates, JiggleRuntime previous)
         {
             List<JiggleChain> ok = new List<JiggleChain>(candidates.Count);
             Dictionary<Transform, JiggleChain> driven = new Dictionary<Transform, JiggleChain>();
@@ -139,12 +146,33 @@ namespace MidManStudio.AllThingsJiggle
                 particles += bones.Length + 2;
             }
 
-            JiggleHost host = new JiggleHost(ok.Count < 4 ? 4 : ok.Count, particles < 16 ? 16 : particles);
+            List<JiggleLattice> okLattices = new List<JiggleLattice>(latticeCandidates.Count);
+            for (int i = 0; i < latticeCandidates.Count; i++)
+            {
+                JiggleLattice l = latticeCandidates[i];
+                if (l == null)
+                {
+                    continue;
+                }
+                string problem;
+                if (!l.Prepare(out problem))
+                {
+                    Debug.LogWarning("Jiggle lattice '" + l.name + "' is not simulated: " + problem, l);
+                    l.Detach();
+                    continue;
+                }
+                okLattices.Add(l);
+                entries += l.Tree.Count;
+                particles += l.Tree.Count;
+            }
+
+            int rigCount = ok.Count + okLattices.Count;
+            JiggleHost host = new JiggleHost(rigCount < 4 ? 4 : rigCount, particles < 16 ? 16 : particles);
             if (previous != null)
             {
                 host.CopyClock(previous.Host);
             }
-            JiggleRuntime rt = new JiggleRuntime(host, ok.Count, entries, localCount);
+            JiggleRuntime rt = new JiggleRuntime(host, rigCount, entries, localCount);
             TransformTable table = new TransformTable();
             int entryCursor = 0;
             int localCursor = 0;
@@ -186,6 +214,44 @@ namespace MidManStudio.AllThingsJiggle
                 localCursor += n;
             }
 
+            List<int> latticeRigs = new List<int>(okLattices.Count);
+            List<int> latticeEntries = new List<int>(okLattices.Count);
+            for (int i = 0; i < okLattices.Count; i++)
+            {
+                JiggleLattice l = okLattices[i];
+                JiggleLatticeTree tree = l.Tree;
+                int n = tree.Count;
+                int rig = host.AddTree(l.RestWorld(), tree.ParentsOfParticles(), l.settings.ToParams(n - 1), false);
+                int old = l.RigIndex;
+                if (previous != null && object.ReferenceEquals(l.Runtime, previous) && l.AttachedStamp == l.BuildStamp
+                    && old >= 0 && old < previous.Host.RigCount
+                    && previous.Host.Rigs[old].ParticleCount == host.Rigs[rig].ParticleCount)
+                {
+                    host.CopyRigRuntime(previous.Host, old, rig);
+                }
+                l.Attach(rt, rig);
+                rt.Lattices.Add(l);
+                rt.rigEntry[rig] = entryCursor;
+                rt.rigLocal[rig] = localCursor;
+                rt.rigMode[rig] = JigglePoseJob.RigModeLattice;
+                // Every control point is an entry on the one transform of the object, and its bind position is its rest place in
+                // the space of the mesh. The transform is read for its matrix and never written.
+                int transformIndex = table.Add(l.transform, (byte)(JiggleReadJob.NeedPose | JiggleReadJob.NeedMatrix), -1);
+                for (int k = 0; k < n; k++)
+                {
+                    rt.entryTransform[entryCursor + k] = transformIndex;
+                    rt.bindPos[entryCursor + k] = l.RestLocal[k];
+                    rt.bindRot[entryCursor + k] = JQuat.Identity;
+                }
+                latticeRigs.Add(rig);
+                latticeEntries.Add(entryCursor);
+                entryCursor += n;
+            }
+            if (okLattices.Count > 0)
+            {
+                rt.latticeBatch = new JiggleLatticeBatch(okLattices, latticeRigs, latticeEntries);
+            }
+
             for (int i = 0; i < table.Transforms.Count; i++)
             {
                 rt.readFlags[i] = table.Flags[i];
@@ -210,8 +276,9 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
-        /// Runs one frame: reads the transforms, writes the pose, runs the solver on the chosen backend and writes the
-        /// bone rotations. The settings in the host must be set before. Returns 0 or the status of the solver.
+        /// Runs one frame: reads the transforms, writes the pose, runs the solver on the chosen backend, writes the bone
+        /// rotations and deforms the meshes of the lattices. The settings in the host must be set before. Returns 0 or the
+        /// status of the solver.
         /// </summary>
         internal int Frame(float frameDt, JiggleRuntimeBackend backend, int rigsPerBatch)
         {
@@ -264,11 +331,25 @@ namespace MidManStudio.AllThingsJiggle
                 }
                 ScheduleOutput(default(JobHandle)).Complete();
             }
+            LatticeUploads = latticeBatch != null ? latticeBatch.Apply() : 0;
             h.EndFrame();
             return code;
         }
 
+        // The jobs that hand the result to the scene: the bone rotations of the chains, and the control displacements and moved
+        // vertices of the lattices. They only read what the solver wrote and write different things, so they run side by side.
         private JobHandle ScheduleOutput(JobHandle dependsOn)
+        {
+            JobHandle bones = ScheduleBones(dependsOn);
+            if (latticeBatch == null)
+            {
+                return bones;
+            }
+            JobHandle lattices = latticeBatch.Schedule(Host, samples, entryTransform, dependsOn);
+            return JobHandle.CombineDependencies(bones, lattices);
+        }
+
+        private JobHandle ScheduleBones(JobHandle dependsOn)
         {
             JiggleHost h = Host;
             JiggleLocalJob local = new JiggleLocalJob();
@@ -277,6 +358,7 @@ namespace MidManStudio.AllThingsJiggle
             local.Out = h.Out;
             local.RigLocal = rigLocal;
             local.Locals = locals;
+            local.RigMode = rigMode;
             JobHandle jh = local.Schedule(h.RigCount, 16, dependsOn);
             JiggleWriteJob write = new JiggleWriteJob();
             write.Locals = locals;
@@ -308,6 +390,11 @@ namespace MidManStudio.AllThingsJiggle
             JiggleMem.Free(ref bindRot);
             JiggleMem.Free(ref locals);
             JiggleMem.Free(ref status);
+            if (latticeBatch != null)
+            {
+                latticeBatch.Dispose();
+                latticeBatch = null;
+            }
             Host.Dispose();
         }
     }

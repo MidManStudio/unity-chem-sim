@@ -34,23 +34,26 @@ What it does today:
   or kept as `JigglePreset` assets. Their frictions are per second, so they mean the same at any step rate
 - **Body colliders.** `JiggleBodyColliders` fits spheres and capsules to the joints of a humanoid or hand set rig, so hair
   and tails stay out of the body without placing colliders by hand
+- **Lattices.** A `JiggleLattice` on an object with a MeshFilter makes a prop or an enemy (a mesh that is not skinned) wobble as one
+  body: control points in a box around the mesh are simulated and pull their neighbours, and the vertices follow them
 - sleep and wake, teleport and reset, and a fixed step accumulator
 
 ## State of this release
 
-Version 0.5.0 is drop 3: presets and body colliders from the rig, on top of the colliders, fields, hits, level of detail
-and sleep controls of 0.4.0. **Nothing in it, or in the drops before it, has run inside Unity yet.** The C# Core is
+Version 0.6.0 is drop 4: the lattice modifier, on top of the presets and body colliders of 0.5.0 and the colliders, fields, hits,
+level of detail and sleep controls of 0.4.0. **Nothing in it, or in the drops before it, has run inside Unity yet.** The C# Core is
 tested under .NET 8 against the Rust library. The Unity layer, the editor lab and the Unity
 tests are compiled against stubs of the Unity API in CI, which proves they are well formed and
 nothing more. Burst compiling the kernel, the transform jobs and the lab are untried. Run the lab
 in your project first (it has a tab for colliders, one for fields and hits, one for the level of
-detail, one for the presets and one for the body colliders), and read the known limits in
+detail, one for the presets, one for the body colliders and one for the lattice), and read the known limits in
 `docs/com.midmanstudio.allthingsjiggle.md`.
 
 The numbers of the presets are starting points that nobody has judged by eye. Tune them in the Presets tab.
 
-Not in this drop: the Grand Theft Grimoire chest adapter, which waits for access to that repository. A lattice
-modifier for unskinned meshes (props and enemies) is planned as 0.6.0.
+The settings of the lattice are the numbers the test harness measured. Nobody has judged them by eye. Tune them in the Lattice tab.
+
+Not in this drop: the Grand Theft Grimoire chest adapter, which waits for access to that repository.
 
 Only local rotations are written, so a bone never stretches on screen. A chain is a path: each
 bone is the first child of the one above. A bone can be driven by one chain only.
@@ -95,6 +98,10 @@ To collide, turn on `Collide` in the settings of the chain and add a **Jiggle Co
 AllThingsJiggle, Jiggle Collider) to an object. For wind add a **Jiggle Force Field**. For the level of detail set
 `lodCollisionDistance` and `lodCullDistance` on the manager (0 is off).
 
+For a prop or an enemy that is not skinned, add a **Jiggle Lattice** (Add Component, MidManStudio, AllThingsJiggle, Jiggle Lattice) to the object
+that has the MeshFilter and press play. The mesh must be readable (Read/Write in its import settings). Select the object to see the box and
+the control points in the scene view.
+
 `poseSource` is **Bind** by default: the chain holds the pose its bones had when it was enabled, carried
 along by the anchor. Use **Animated** for bones that an Animator rewrites every frame.
 
@@ -130,8 +137,9 @@ on them directly. Both take the same arguments and give the same status codes.
 
 ## Tests
 
-`Tests/Editor/JiggleParityTests.cs` (30 tests) and `Tests/Editor/JiggleFeatureTests.cs` (23 tests, for colliders,
-fields, hits and the level of detail) run in the Unity Test Runner (Edit Mode). CI runs the same
+`Tests/Editor/JiggleParityTests.cs` (30 tests), `Tests/Editor/JiggleFeatureTests.cs` (23 tests, for colliders,
+fields, hits and the level of detail) and `Tests/Editor/JiggleLatticeTests.cs` (27 tests, for the lattice grid, the deformation and tree
+rigs) run in the Unity Test Runner (Edit Mode). CI runs the same
 files under .NET 8 against the freshly built library. The parity file checks every struct offset field by field, every
 exported function, random scenes of every feature (with and without masses) bit for bit between the two
 backends, the error codes, threaded batches, the host against the world, and two golden scenes, one way and
@@ -139,7 +147,7 @@ coupled, whose hashes the Rust tests assert too. The feature file checks the col
 queue, hits, the level of detail rules and the sleep rules.
 
 `Tests/Editor/JiggleUnityLayerTests.cs` (10 tests) needs the editor: the settings bake, Burst against the
-managed kernel within 1e-4 meters, the step and resolve as two jobs, and the components of this drop. CI compiles it against the Unity
-stubs in `Tests~/UnityStubs` but cannot run it.
+managed kernel within 1e-4 meters, the step and resolve as two jobs, and the components of this drop. `Tests/Editor/JiggleLatticeUnityTests.cs` (6 tests) is the same for the lattice. CI compiles both against the Unity
+stubs in `Tests~/UnityStubs` but cannot run them.
 
 See `docs/com.midmanstudio.allthingsjiggle.md` for the design and the known problems.

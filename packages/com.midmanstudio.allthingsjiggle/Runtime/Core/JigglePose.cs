@@ -47,6 +47,38 @@ namespace MidManStudio.AllThingsJiggle
         }
 
         /// <summary>
+        /// Writes the pose of one tree rig for the coming frame, the way <see cref="Write"/> does for a chain but with no
+        /// virtual end: worldPos holds one world position for every particle of the rig, ParticleCount entries, the anchor
+        /// first. rots holds their world rotations, rotCount entries, and a particle past them, or all of them when rots is
+        /// null, gets the identity. The old pose moves to posePrev and the anchor move since the last frame goes into the
+        /// rig header.
+        /// </summary>
+        public static void WriteTree(
+            JiggleRig* rig, JVec4* posePrev, JVec4* poseCurr, JVec4* poseRot,
+            JVec3* worldPos, JQuat* rots, int rotCount)
+        {
+            int n = (int)rig->ParticleCount;
+            if (n < 2)
+            {
+                return;
+            }
+            JVec3 anchor = worldPos[0];
+            JVec3 oldAnchor = rig->AnchorWorld;
+            for (int i = 0; i < n; i++)
+            {
+                posePrev[i] = poseCurr[i];
+                JVec3 rel = worldPos[i] - anchor;
+                rel.Write4(ref poseCurr[i]);
+                poseCurr[i].W = 0.0f;
+                JQuat q = (rots != null && i < rotCount) ? rots[i] : JQuat.Identity;
+                poseRot[i] = q.To4();
+            }
+            JVec3 delta = anchor - oldAnchor;
+            rig->AnchorDelta = delta;
+            rig->AnchorWorld = anchor;
+        }
+
+        /// <summary>
         /// The local rotation of every bone of a rig after resolve, so the host can set them in any order: bone b
         /// gets the rotation that, applied under the parent's resolved world rotation, gives its own resolved world
         /// rotation. The first bone's parent is the anchor, which keeps its pose rotation. local[b - 1] is bone b, for

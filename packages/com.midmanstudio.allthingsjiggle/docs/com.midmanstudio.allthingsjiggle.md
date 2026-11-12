@@ -7,7 +7,8 @@ component for each chain, a manager that simulates all of them once a frame with
 Burst jobs, and an editor lab that runs the same scenes on the Burst, native and
 managed backends) and since drop 2b the scene side: collider and force field
 components, hit impulses, level of detail and sleep controls, and since drop 3 the
-authoring side: presets for the usual kinds of chain and body colliders fitted to a rig.
+authoring side: presets for the usual kinds of chain and body colliders fitted to a rig, and since
+drop 4 a lattice modifier that makes a prop or an enemy wobble as one body.
 Nothing here has run inside Unity yet (see Known limits). The Rust half is documented in
 `rust_lib/jiggle_core/docs/jiggle_core.md`, including how a frame runs, the records,
 the C interface and the known limits of the solver itself. This file covers the C#
@@ -23,23 +24,26 @@ half.
   JiggleParams.cs, JiggleChainBuild.cs, JiggleClock.cs, JigglePose.cs,
   JiggleHost.cs, JiggleColliderSet.cs, JiggleFieldQueue.cs, JiggleImpulse.cs,
   JiggleLod.cs, JiggleWorld.cs, JiggleDamping.cs, JigglePresets.cs, JiggleBodyFit.cs,
-  AssemblyInfo.cs
+  JiggleTreeBuild.cs, JiggleLatticeGrid.cs, JiggleFfd.cs, AssemblyInfo.cs
 - Runtime/Unity: JiggleRuntimeTypes.cs, JiggleChainSettings.cs, JiggleChain.cs,
   JiggleChainLod.cs, JiggleColliderShape.cs, JigglePreset.cs, JiggleBodyColliders.cs,
-  JiggleForceField.cs, JiggleManager.cs, JiggleRuntime.cs, JiggleJobs.cs,
-  JiggleBurstSolver.cs, JiggleMem.cs
+  JiggleForceField.cs, JiggleLatticeSettings.cs, JiggleLattice.cs, JiggleLatticeMesh.cs,
+  JiggleLatticeJobs.cs, JiggleManager.cs, JiggleRuntime.cs, JiggleJobs.cs,
+  JiggleBurstSolver.cs, JiggleMem.cs, AssemblyInfo.cs
 - Editor: JiggleChainEditor.cs, JiggleShapeEditors.cs, JigglePresetEditors.cs,
-  JiggleBodyEditors.cs, Lab/JiggleBenchScenes.cs, Lab/JiggleLabRunner.cs,
+  JiggleBodyEditors.cs, JiggleLatticeEditor.cs, Lab/JiggleBenchScenes.cs, Lab/JiggleLabRunner.cs,
   Lab/JiggleLabScene.cs, Lab/JiggleColliderLab.cs, Lab/JiggleFieldLab.cs,
-  Lab/JiggleLodLab.cs, Lab/JigglePresetLab.cs, Lab/JiggleBodyLab.cs,
+  Lab/JiggleLodLab.cs, Lab/JigglePresetLab.cs, Lab/JiggleBodyLab.cs, Lab/JiggleLatticeLab.cs,
   Lab/JiggleLabWindow.cs
 - Assembly definitions
 - Tests/Editor/JiggleParityTests.cs
 - Tests/Editor/JiggleFeatureTests.cs
 - Tests/Editor/JigglePresetTests.cs
 - Tests/Editor/JiggleBodyFitTests.cs
+- Tests/Editor/JiggleLatticeTests.cs
 - Tests/Editor/JiggleUnityLayerTests.cs
 - Tests/Editor/JigglePresetUnityTests.cs
+- Tests/Editor/JiggleLatticeUnityTests.cs
 - Tests~/DotnetHarness
 - Tests~/UnityStubs
 - Native libraries
@@ -64,16 +68,18 @@ half.
    level of detail and culling by distance and by the camera, and one lab tab for each
    feature. The layer rule is the one of the MMD rig study with the sense that Unity
    uses for it: a set bit in a chain's `ignoreLayers` means no collision.
-3. **Presets and body colliders (this drop, 0.5.0).** Presets for hair, tail, ear, chest,
+3. **Presets and body colliders (0.5.0).** Presets for hair, tail, ear, chest,
    horn and wing, from the technique level findings of the rig study where it has them and from
    reasoning where it does not, with the frictions given per second so they mean the same at any
    step rate. Body colliders fitted to the joints of a rig, a humanoid one or one assigned by hand.
    A lab tab for each. No Rust and no interface change. The Grand Theft Grimoire chest adapter
    is not in this drop: it waits for access to that repository.
-4. **Lattice modifier (planned, 0.6.0).** A free form deformation of unskinned meshes, for props and
-   enemies, whose control points pull their neighbours. It needs a tree builder in the Core (the
-   solver already takes trees) and a Burst job over mesh vertices, and no native change. It ships
-   in its own archive after this drop.
+4. **Lattice modifier (this drop, 0.6.0).** A free form deformation of unskinned meshes, for props and
+   enemies, whose control points pull their neighbours. The Core has a tree builder for the grid, a tree
+   rig in `JiggleWorld` and `JiggleHost`, and the deformation itself on pointers. The Unity layer has the
+   `JiggleLattice` component, a Burst control job and a Burst vertex job after the solver, the upload to a
+   private copy of the mesh, an inspector with gizmos and a lab tab. The solver already took trees, so there
+   is no Rust change and no interface change. It ships in its own archive.
 
 Later: a SIMD lane batch kernel that uses the vendored mid-math wide types.
 
@@ -149,6 +155,19 @@ trunk, the arms, the legs and the feet. They follow the animation. Chains collid
 except for the layers they ignore. `scale` multiplies every radius, `height` overrides the height of the body, and
 `parts` leaves parts out. The scene view draws what a build would make before you build it. The **Body** tab of the lab
 builds a test figure and sweeps a hair strand across it.
+
+**Lattices.** For a prop or an enemy that is not skinned, add a **Jiggle Lattice** (Add Component, MidManStudio,
+AllThingsJiggle, Jiggle Lattice) to the object that has the MeshFilter and the renderer, and press play. The bounds of
+the mesh become a box with 1 to 5 control points on each axis (3 by 3 by 3 by default), the control points are simulated
+by the same manager as the chains, and the vertices follow them, so a shove travels through the body and it wobbles as one
+piece. One control point is held by the object and never moves: the one nearest the middle (`Center`), or the one nearest
+the pivot (`Pivot`, for a prop that stands on its pivot). Move or turn the object and the rest lags behind it. The mesh must
+be readable (Read/Write in its import settings). The manager swaps the mesh on the filter for a private copy while the
+lattice is enabled and gives the original back when it is disabled, so the asset is never changed. Skinned meshes and
+meshes under static batching cannot be deformed. Settings are in `JiggleLatticeSettings`: stiffness, soften, stretch, drag,
+air drag, gravity, ignore root motion, mass (0 turns the coupling between control points off), and the wind and impulse response. `lod` and `allowSleep` work as they do on a chain. From code: `lattice.AddImpulse(dv)` and `AddImpulseAt(point, dv, radius, falloff)`, `Wake()`,
+`ResetSimulation()` and `SettingsChanged()` after a script edits `settings`. The **Lattice** tab of the lab builds a cube and
+moves it so the lattice has to wobble.
 
 ## Layout and conventions
 
@@ -327,6 +346,11 @@ turns the resolved world rotations of a rig into the local rotations of its bone
 anchor. Both are plain pointer code that Burst compiles in the pose and local rotation jobs.
 `JiggleWorld.SetPose` uses `Write` too, so the world and the host cannot disagree about it.
 
+`WriteTree` (0.6.0) is the same for a tree rig: no virtual end, one world position for each particle with the anchor
+first, and the rotation of each particle taken from an optional array (the identity when there is none, which is what a
+lattice has, because a lattice never turns a bone). It moves the last pose, makes every position relative to the anchor
+and sets the anchor move and the world anchor, so the solver cannot tell a tree from a chain.
+
 ## Runtime/Core/JiggleHost.cs
 
 The solver arrays in unmanaged memory with room to grow, for a caller that runs the
@@ -336,6 +360,11 @@ until the next call that adds something, so nothing may be added while a frame r
 
 - `AddChain(rest, params, tipScale)` builds a rig the same way `JiggleWorld.AddChain` does and
   returns its index. `SetMass` sets the mass of one particle.
+- `AddTree(rest, parent, params, pinRoots)` (0.6.0) builds a tree rig: the anchor, then one particle for each entry of
+  `parent` (entry i is the parent of particle i + 1 and must be an earlier particle), with no virtual end. `IsTree(rig)`
+  says which kind a rig is, from its last particle, because a chain always ends in a virtual one. `SetTreeParams(rig,
+  params)` bakes new parameters into a tree in place, keeping its parents. The chain calls refuse a tree and the tree calls
+  refuse a chain, with an `ArgumentException`, because the two build different pose data.
 - `SetParams(rig, params)` bakes new parameters into a rig in place and leaves its state alone.
   `SetTipScale` moves the virtual end. `Reset(rig)` makes the rig snap to its pose on the next step.
 - `AddCollider`, `AddField` and `SetColliderList` fill the collider, field and index arrays.
@@ -459,6 +488,8 @@ It is what tests, tools and early users drive, and it is the C# twin of the Rust
   passes (clamped to 1 to 16, 0 counts as 1).
 - `AddCollider`, `AddField` and `SetColliderList` build the shared lists.
 - `SetPose` writes the pose of a rig for this frame and moves the last frame's pose.
+- `AddTree`, `IsTree` and `SetTreePose(rig, positions, rotations)` (0.6.0) are the tree forms, built on
+  `JiggleTreeBuild` and `JigglePose.WriteTree`, with the same refusals as the host.
 - `Step(frameDt, backend)` runs the fixed step accumulator and the two calls.
   `StepFixed(steps, backend)` runs an exact number of steps with alpha 1.
 - `WorldPos` and `WorldRot` read the output of a particle.
@@ -557,6 +588,60 @@ The head sphere is small on purpose. At 0.05 of the height it is about 8.5 cm in
 size of a head, so that a hair strand rooted at the scalp is not inside it. The cost is that hair can pass through the
 outer part of a real head. Raise `scale` for the head with the body, or give hair a collision radius to taste.
 
+## Runtime/Core/JiggleTreeBuild.cs
+
+`internal`. What adding a tree rig computes, in one place, so the world and the host cannot drift apart: `Validate`
+(an anchor and at least one more particle, at most 128 in all, one parent and one parameter set for each particle after
+the anchor, every parent an earlier particle), `BakeDefs` (the anchor, then the baked particles) and `IsTree`. With
+`pinRoots` a particle whose parent is the anchor is a root particle, held to its pose by its root stretch the way the first
+bone of a chain is. Without it that particle hangs on the anchor like any other on its parent, which is what a lattice
+uses (see the section on `JiggleLatticeGrid` for why).
+
+## Runtime/Core/JiggleLatticeGrid.cs
+
+The control grid of a lattice and the tree it is simulated as. A grid has 1 to 5 points on each axis, at most 125, so it
+fits the 128 particles of a rig, and a lattice needs at least two points to move. The points sit evenly from one side of
+the box to the other (an axis with one point puts it in the middle), which is what makes the deformation reproduce a
+straight stretch or turn of the whole box exactly. The grid index is `x + nx * (y + ny * z)`.
+
+`BuildTree(nx, ny, nz, rootPoint)` makes a `JiggleLatticeTree`. The root becomes the anchor of the rig, particle 0, and is
+`rootPoint` or, when that is not a point of the grid, the point nearest the middle (the lowest index when several are
+equally near). The other points are reached breadth first from the root through their six grid neighbours, in the order
+x up, x down, y up, y down, z up, z down. A point gets its particle number when it is reached, so the parent of every
+particle has a lower number, as the solver requires, and the result is the same every time. The tree has `PointOfParticle`,
+`ParticleOfPoint`, `Parent` and `ParentsOfParticles()` (the Count - 1 entries `AddTree` takes). `ParticleRest`, `PointRest`,
+`MiddlePoint` and `NearestPoint` give rest positions and pick roots.
+
+The anchor is a control point itself and not a separate particle sitting on top of it. This matters: a particle at the same
+place as its parent has no direction to measure a swing from, the solver turns all its children by a swing that is not
+there, and a coupled lattice blew up (see Fixes and Problems).
+
+## Runtime/Core/JiggleFfd.cs
+
+Free form deformation (Sederberg and Parry, 1986) on pointers, with no allocation, so a Burst job runs it. A position
+inside the box has coordinates (s, t, u) between 0 and 1 and moves by the sum over the control points of the product of three
+Bernstein weights times the displacement of the point. Control points sit evenly in the box, so any displacement that is an
+affine function of position is reproduced exactly (a test holds it to 2e-4 on grids up to 5 by 5 by 5), and every displacement is a weighted average of
+the control displacements, so it is never larger than the largest of them. That second property is why the bounds of a
+deformed mesh are the bounds of the original widened by the largest control displacement. A position outside the box takes
+the displacement of the nearest point on its surface. Only the control points at the corners of the box lie on the deformed
+surface: the weight of an interior point is small (0.125 for the centre of a 3 by 3 by 3 grid), which is a property of
+Bernstein deformation, so the surface follows the interior points loosely and the corners tightly.
+
+- `Weights` and `Derivatives` give the Bernstein weights of an axis and their derivatives by repeated linear steps. `InverseSize` is 0 for a flat
+  axis, so a mesh with no thickness has coordinate 0 on that axis and no division by zero. `Coordinate` clamps to 0..1 and maps a value that is
+  not a number to 0.
+- `FitBox` fits a box to positions with a padding. The component takes its box from the bounds of the mesh and does not use it. It is there for
+  scripts that fit a lattice to part of a mesh. `Coordinates` turns positions into coordinates once, at build time.
+- `Displace` and `DisplaceWithGradient` give the displacement, and with the gradient its Jacobian by the derivative weights.
+- `TransformNormal` moves a normal by the inverse transpose of the Jacobian (the cofactor matrix), flips the sign when the
+  determinant is negative, and keeps the input normal as it was when the result has no length. Tangents are not deformed.
+- `DeformRange` moves a range of vertices, writing positions and, when the normal pointers are not null, normals. It is what a job index runs.
+- `ControlDisplacement` turns the solver output into the displacement of each control point in the space of the mesh: where the solver put the
+  particle minus where the pose has it, both from the anchor, turned by the inverse of the linear part of the object's matrix. `MaxLength` is the
+  longest of a set of displacements.
+- `JiggleMat3` is the small matrix type for that, with `Mul` and `TryInvert` (the identity and false for a flat matrix or a value that is not a number).
+
 ## Runtime/Core/AssemblyInfo.cs
 
 Makes the internals visible to the editor test assembly, so the layout test can use the
@@ -569,7 +654,8 @@ Using the package) and `JiggleFrameStats`, a plain struct with what the last fra
 particles, steps, the frame time in milliseconds, the backend that ran, the solver status and
 the number of rebuilds. Since 0.4.0 it also has `Colliders` (shapes written), `ColliderRefs` (collider tests listed
 over all rigs), `Fields` (fields written, impulses included), `LodNoCollision`, `LodOff` and `Asleep` (counts of
-chains).
+chains). Since 0.6.0 it also has `Lattices` (how many of the rigs are lattices) and `LatticeUploads` (meshes given new
+vertices in the last frame, which is 0 when every lattice is at rest or asleep).
 
 ## Runtime/Unity/JiggleChainSettings.cs
 
@@ -648,16 +734,24 @@ Since 0.4.0 it also has `colliderMargin` (0 to 2 m, default 0.25), `lodCamera`, 
 `GetChains(list)` copies the chains, and `AddBurst` and `AddShove` queue a push of everything in reach. The collider
 and field components register themselves in `OnEnable`.
 
+Lattices (0.6.0) register in `OnEnable` and leave in `OnDisable` like chains, with their own lists for changes and resets.
+`LatticeCount` counts them and `GetLattices(list)` copies them. A lattice whose values changed is baked in place with
+`SetTreeParams`. One whose mesh, box, grid or anchor changed makes the manager rebuild, because its rig has a different
+shape. Its state is carried over a rebuild only while none of those changed. The rigs of the chains come first in a build,
+then those of the lattices.
+
 Each frame (`Simulate(dt)`, called from `LateUpdate`) does this:
 
 1. If chains came or went, rebuild: a new `JiggleRuntime` is built from all registered chains and the old
    one is disposed after the state of the chains that stayed was copied over.
 2. Bake the settings of the chains that changed, apply the manager settings to the host, and
    apply the reset requests.
-3. Prepare the rigs. Read each anchor (the transform of the chain's anchor, or the chain's own if there is none),
+3. Prepare the rigs. Read each anchor (the transform of the chain's anchor, or the chain's own if there is none; for a lattice the
+   world place of its anchor control point),
    decide the level of detail of each chain from the distance to the camera and whether the camera sees it, set or
    clear the disabled flag (switching a chain on again resets it), wake the chains that may not sleep, and build the
-   `ignore` mask of each rig. A chain that is NoCollision or Off gets the mask with every bit set.
+   `ignore` mask of each rig. A chain that is NoCollision or Off gets the mask with every bit set. A lattice tests no colliders,
+   so its mask always has every bit set. The level of detail is decided by one helper for both kinds.
 4. Write the scene: the collider lists (`JiggleColliderSet.Write`) and the fields (`JiggleFieldQueue.Write`).
 5. Run the frame on the backend asked for. Native falls back to Burst when the library does not
    load or does not have this package's interface version, with one warning. This is what happens
@@ -760,6 +854,13 @@ With Burst all five are scheduled with dependencies and completed once at the en
 backends the read and pose jobs complete first, the solver runs on the main thread, and the local
 rotation and write jobs complete after.
 
+Since 0.6.0 a build also holds lattices. Their rigs come after those of the chains, the list `Lattices` is indexed by rig
+number minus the number of chains, and a lattice rig has rig mode 2. It has one entry for each control point, all on the one
+transform of the object, and the bind position of an entry is the rest place of its control point in the space of the mesh. The
+transform is read for its matrix and never written, and it takes no slot in the array of local rotations. After the solver
+the lattice batch (`JiggleLatticeBatch`) schedules the control job and the vertex job, side by side with the bone
+rotation and write jobs, and when the frame is complete the main thread gives the moved vertices to the meshes.
+
 Nothing in a runtime changes while a frame runs. A build is thrown away and replaced when chains come
 or go, which costs one allocation of the arrays and the transform table, and chains keep their state.
 
@@ -773,7 +874,10 @@ fuse multiply and add or reorder. They hold raw pointers into the host and mark 
   transforms that have a flag in `Flags`.
 - `JigglePoseJob` builds the pose of each rig: in bind mode from the anchor matrix and the bind
   data, in animated mode from the samples of the bones, and calls `JigglePose.Write`.
-- `JiggleLocalJob` calls `JigglePose.LocalRotations` per rig.
+  Since 0.6.0 a rig in mode 2 (a lattice) goes to `PoseLattice`: each control point is the matrix of the object times its
+  rest place, and the result goes to `JigglePose.WriteTree`.
+- `JiggleLocalJob` calls `JigglePose.LocalRotations` per rig. It skips a lattice, which has no bones and no room in the array
+    of local rotations.
 - `JiggleWriteJob` sets `localRotation` of every bone that has a slot. A bone has one writer, so
   no ordering is needed. A non finite rotation is skipped.
 
@@ -788,6 +892,65 @@ step or resolve), `Worst` reads the status array, `RunNow` schedules and waits, 
 a probe job to say whether Burst really compiles the jobs now. The solve job is compiled
 synchronously, so the first call after a domain reload waits for Burst instead of running slowly as
 managed code.
+
+## Runtime/Unity/JiggleLatticeSettings.cs
+
+The values of a lattice, in the ranges of `JiggleParams`, the same for every control point: stiffness, soften, stretch, drag, air drag,
+gravity, ignore root motion, mass, wind response and impulse response. `ToParams()` makes the parameters of one control point and
+`ToParams(count)` an array of them for `AddTree`. A lattice never collides and has no root stretch, no angle limit and a blend of 1.
+The defaults are the numbers the response of a 3 by 3 by 3 lattice was measured with in the harness: stiffness 0.4, drag 0.2, stretch 0.3,
+mass 1, no gravity and no air drag. With them a jump of the object has settled in about 112 frames at 60 Hz. Larger grids settle slower,
+and a lattice always lags a little as a whole because the one anchor holds it. These were picked from numbers and not by eye.
+
+## Runtime/Unity/JiggleLattice.cs
+
+The component. It needs a MeshFilter and allows one lattice for each object. Fields: `settings`, `divisionsX`, `divisionsY`, `divisionsZ`
+(1 to 5), `padding` (0 to 1, how far the box reaches past the bounds of the mesh as a share of the size on each axis, 0 by default),
+`anchorPoint` (`Center` or `Pivot`), `allowSleep` and `lod`. An axis on which the box has no size, or almost none (under a thousandth of
+the largest), counts as one control point whatever its divisions say: points that lie on one another are the zero length link of the Fixes
+section. `TryGetBox` and `TryGetDivisions` give the box and the grid as they will be used, `TryGetControlPoint(index, out world)` the
+simulated place of a point, and the editor draws all of them. A box with fewer than two control points is refused with a warning.
+
+`Prepare` is called by the manager when it builds. It takes a private copy of the mesh when there is none, or when the filter shows
+another mesh or the padding changed, builds the tree and the rest places, and bumps `BuildStamp` whenever the mesh, the box, the grid or the
+anchor changed. The runtime carries the state of the rig over a rebuild only when `BuildStamp` equals what it was when the rig was attached.
+`OnDisable` unregisters, detaches and gives the original mesh back. The box is the bounds of the mesh and not a fit to its vertices, so
+what the editor draws is what is simulated and no scan of the vertices is needed in edit mode. A mesh with loose bounds makes a loose box.
+
+## Runtime/Unity/JiggleLatticeMesh.cs
+
+`internal`. What a lattice holds of its mesh, owned by the component and alive while it is enabled, so the arrays of the manager can be
+rebuilt without touching it: a private copy of the mesh (`Instantiate`, marked dynamic, which the filter shows), the vertices and normals at
+rest, the lattice coordinates of every vertex (computed once), room for the control displacements of this frame and of the frame the mesh shows (125
+points each), and two `NativeArray<Vector3>` that the vertex job writes into, which are also what `Mesh.SetVertices` and `SetNormals` read.
+The jobs get raw pointers into these buffers. Nothing frees them while a frame runs, because a frame is complete when it returns and
+`Dispose` is only called on the main thread outside the frame.
+
+`Create` refuses a filter with no mesh, a mesh with no vertices, a mesh that is not readable (it says to turn on Read/Write) and bounds
+that are not finite. `Upload(reach)` sets the vertices and normals with `MeshUpdateFlags.DontRecalculateBounds` and sets the bounds of the
+copy to the bounds of the source widened by `reach`, which is the largest control displacement and an upper bound of how far any vertex
+moved, so the mesh is culled only when it is really off screen and no pass over the vertices is needed. `Dispose` puts the original mesh back
+if the filter still shows the copy and destroys the copy.
+
+## Runtime/Unity/JiggleLatticeJobs.cs
+
+`JiggleLatticeData` holds what the jobs need for one lattice (rig, entry, grid, pointers). `JiggleLatticeControlJob` has one index for each
+lattice: it turns the output of the solver into control displacements in the space of the mesh (the inverse of the linear part of the
+object's matrix, which is the matrix the pose job used) and compares them with the displacements the mesh shows. When no control point
+differs by more than a hundred thousandth of the largest side of the box, or a value is not a number, it marks the lattice to skip, and then
+nothing is deformed and nothing is uploaded. That is what makes a lattice at rest, or asleep, cost almost nothing, and it also keeps a lattice
+whose displacement decays but never reaches exactly 0 from being uploaded every frame forever. `JiggleLatticeDeformJob` has one index for each
+chunk of 256 vertices and calls `JiggleFfd.DeformRange`. Both jobs use strict floating point mode like the others.
+
+`JiggleLatticeBatch` is made by the runtime from the lattices it accepted. It lays out the chunks, `Schedule` queues the control job and then
+the vertex job behind the solver, and `Apply` gives the moved vertices to the meshes that were not skipped and returns how many it uploaded (the
+`LatticeUploads` of the stats). On the Burst backend the two jobs follow the solver job. On the Native and Managed backends the solver runs on the
+main thread, and the same two jobs are scheduled after it and completed at once, so a lattice is always deformed by these jobs.
+
+## Runtime/Unity/AssemblyInfo.cs
+
+Makes the internals of the Unity assembly visible to the editor test assembly, so the lattice tests can run the control job, the vertex job and
+the mesh data on arrays they make by hand.
 
 ## Runtime/Unity/JiggleMem.cs
 
@@ -831,6 +994,14 @@ the new ones are registered with `Undo.RegisterCreatedObjectUndo`, and the group
 draws the colliders in green when they exist and a preview of the plan in blue when they do not, while the component is
 selected.
 
+## Editor/JiggleLatticeEditor.cs
+
+The inspector of `JiggleLattice`: the default fields, then an error when the mesh is missing or not readable, an error when the box has no size on two
+axes, a line with the grid, the number of control points, the box and the number of vertices, a note when an axis was reduced to one point, and in
+play mode whether the lattice is simulated, its level of detail, whether it sleeps, and buttons to reset it, wake it and hit it. `JiggleLatticeGizmos`
+draws, while the object is selected, the box and the rest places of the control points in blue in the space of the mesh, and in play mode the simulated
+control points in orange, joined along the grid.
+
 ## Editor/Lab/JiggleBenchScenes.cs
 
 The scene table, the geometry and the motion of the comparison, written to equal
@@ -864,6 +1035,8 @@ only for native and managed. Burst can differ in the last bits, and the Rust ben
 sine and cosine with the Rust libm, so its checksum is not the lab's either.
 
 ## Editor/Lab/JiggleLabScene.cs
+
+Since 0.6.0 it also builds a readable cube with many vertices (`SubdividedCube`) and a prop from it (`CubeProp`) for the lattice lab.
 
 The builders the feature labs share: `Root(name)` (an empty object, selected), `Chain(parent, name, position,
 bones, spacing, settings)` (an anchor, then bones hanging down, with the component on the first bone), `Tip(chain, out
@@ -914,16 +1087,27 @@ height the build used, how many colliders were made, and how close the closest b
 any body collider, minus the radius of the bone, where below 0 means inside. The figure has no animator, so it does
 not try the humanoid path.
 
+## Editor/Lab/JiggleLatticeLab.cs
+
+Builds a cube with 20 by 20 cells on each face (`JiggleLabScene.CubeProp`, which takes a primitive cube for its default material, removes its collider and gives it
+the readable mesh from `SubdividedCube`), puts a lattice on it and moves it from `EditorApplication.update`: back and forth with sudden stops (a
+sine clipped flat at the ends), round, or up and down, or not at all. Controls: the speed and the distance of the motion, the grid on each axis,
+the padding, the anchor, stiffness, drag, stretch, soften, mass, gravity, air drag and ignore root motion (all of them live, through
+`SettingsChanged`), a hit, and a reset. It shows whether the lattice is simulated, the number of control points and vertices, how many meshes were
+uploaded in the last frame (which drops to 0 when the cube is at rest), whether it sleeps and how far the simulated control point farthest from its
+pose is. Play mode only. This is the check of everything the harness cannot reach: the transform jobs, the control and vertex jobs, the mesh swap
+and the upload.
+
 ## Editor/Lab/JiggleLabWindow.cs
 
-MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Eight tabs:
+MidManStudio, AllThingsJiggle, Jiggle Lab (menu bar). Nine tabs:
 
 - **Live** checks that Burst compiles the jobs and that the native library loads with this package's
   interface version, and in play mode shows the manager: the backend (editable), the backend that runs, the
   counts (with the collider, field, level of detail and sleep counts since 0.4.0), the steps, the frame time and the
   status.
-- **Colliders**, **Fields and hits**, **LOD**, **Presets** and **Body** draw the five labs above. The window repaints
-  Live and these five tabs while the editor runs, subscribes a tick to `EditorApplication.update` in `OnEnable` (so the ball moves
+- **Colliders**, **Fields and hits**, **LOD**, **Presets**, **Body** and **Lattice** draw the six labs above. The window repaints
+  Live and these six tabs while the editor runs, subscribes a tick to `EditorApplication.update` in `OnEnable` (so the ball moves
   and the tip is followed between draws) and unsubscribes it in `OnDisable`.
 - **Parity** runs the comparison above on a scene and says what it found.
 - **Bench** runs the chosen scenes on the chosen backends and thread counts, shows the table and copies or
@@ -1047,6 +1231,18 @@ Eight tests of the body fit, also in the shared style.
   on both backends for 300 frames, with the same bits, while the pose of the strand is bent into the torso and back, and
   the strand does come close to the body, so the test is not passing because nothing touched.
 
+## Tests/Editor/JiggleLatticeTests.cs
+
+27 tests of the Core of the lattice, free of UnityEngine so the harness runs them. Grid and tree: the clamps and the point count, the tree of every grid from
+1 by 1 by 1 to 5 by 5 by 5 (every particle reached once, every parent earlier, every parent a grid neighbour, the same every time), the root in the middle,
+an explicit root and `NearestPoint`. Deformation: the Bernstein weights and their derivatives, any affine field reproduced exactly, the displacement never above the largest control
+displacement, positions outside the box clamped, normals under a turn and a stretch, the gradient against a finite difference, zero displacement
+changing nothing, a range split in two giving the same result as one call, `FitBox`, the matrix inverse, `ControlDisplacement`, and an end to end
+deformed mesh. Rigs: `AddTree` validation, a chain refusing the tree calls and a tree the chain calls, `WriteTree`, rest stability on both backends,
+a jump that settles, a turn, coupling that moves the whole body, sleeping, the managed kernel against the native one bit for bit on
+branching trees, the host against the world, and `SetTreeParams`. A test that the middle of the surface follows the middle control point
+more than the rim was dropped because it is false for Bernstein deformation (see Fixes and Problems): corner interpolation is tested instead.
+
 ## Tests/Editor/JiggleUnityLayerTests.cs
 
 Ten tests for the Unity layer that need the editor. The first five: the default settings bake to the defaults
@@ -1080,6 +1276,15 @@ only compiles them.
 - the height comes from the ankles, then the hips, and the given height wins;
 - a component with no joints plans nothing, fills nothing, builds nothing.
 
+## Tests/Editor/JiggleLatticeUnityTests.cs
+
+Six tests of the lattice Unity layer for the Unity Test Runner (Edit Mode), with no scene: the defaults of the settings and what they bake to, one set of
+parameters for every particle after the anchor, the box as the bounds widened by the padding (including a padding past 1 and one that is not a number), the
+control job on arrays made by hand (a scaled object turns a world displacement into the right one in the space of the mesh, an unchanged frame is skipped, a return to
+rest is shown once, and a value that is not a number is never shown), the mesh data deforming a quad by a straight move of all four control points (every vertex ends
+at the moved place, the original mesh is untouched, the bounds reach the moved vertices, and disposing puts the original back), and a filter with no mesh being
+refused with a reason. They are compiled in CI and have not run: they need the editor.
+
 ## Tests~/DotnetHarness
 
 `JiggleHarness.csproj` compiles `Runtime/Core`, the editor tests, a small `NUnitStubs.cs`
@@ -1094,8 +1299,8 @@ with a message, so the same file compiles under real NUnit in Unity.
 
 The folder name ends in a tilde, so Unity ignores it.
 
-The harness runs `JiggleParityTests.cs` (30 tests), `JiggleFeatureTests.cs` (23), `JigglePresetTests.cs` (8) and
-`JiggleBodyFitTests.cs` (8), 69 in all. It does not compile the Unity layer.
+The harness runs `JiggleParityTests.cs` (30 tests), `JiggleFeatureTests.cs` (23), `JigglePresetTests.cs` (8),
+`JiggleBodyFitTests.cs` (8) and `JiggleLatticeTests.cs` (27), 96 in all. It does not compile the Unity layer.
 
 Running it by hand needs the release library:
 
@@ -1126,6 +1331,12 @@ The stubs grew again with 0.5.0, checked against the scripting reference: `Scrip
 `HideInInspector`, `Animator` (`isHuman` and `GetBoneTransform`) and `HumanBodyBones`, `Component.GetComponent` and
 `GetComponentInChildren`, `Vector3.up`, `Quaternion.FromToRotation`, and in the editor `Undo`, `AssetDatabase`,
 `EditorUtility.SetDirty` and `SaveFilePanelInProject`, `EditorGUILayout.ObjectField` and `FloatField`.
+
+The stubs grew with 0.6.0, checked against the scripting reference: `Mesh` (vertices, normals, triangles, bounds, `isReadable`, `vertexCount`,
+`MarkDynamic`, `RecalculateBounds`, `RecalculateNormals` and the `SetVertices` and `SetNormals` that take a `NativeArray` with a start, a length and
+flags), `MeshFilter`, `Bounds`, `MeshUpdateFlags`, `Object.Instantiate`, `RequireComponent`, `GameObject.CreatePrimitive` with `PrimitiveType`,
+`Collider`, `Gizmos.matrix` and `DrawWireCube`, `JobHandle.CombineDependencies`, `NativeArray` with `NativeArrayOptions` and `CopyFrom`, and
+`NativeArrayUnsafeUtility.GetUnsafePtr`.
 
 Because each assembly is its own project, using an `internal` of the Core from the Unity layer fails
 with CS0122, as it would in Unity. This was tried on purpose when the projects were written.
@@ -1209,6 +1420,24 @@ No root level scripts are used.
   torso stops at the neck joint, so hair that hangs between the neck and the head is held by the neck capsule only.
 - The body colliders are not animated by this package. They are children of the joints and follow them, and a joint that
   is scaled non uniformly by an animation gives a collider that is wrong by the same amount.
+- Nothing about the lattice of 0.6.0 has run inside Unity. The Core (grid, tree, deformation, tree rigs) is tested under .NET 8 (27 tests, with the managed kernel
+  against the native one bit for bit on branching trees). The component, the mesh swap, the control and vertex jobs, the manager hooks, the inspector,
+  the gizmos, the lab tab and the six Edit Mode tests are compiled against stubs only. The calls on `Mesh` (`SetVertices` and `SetNormals` with flags,
+  `bounds`, `MarkDynamic`) and on `NativeArray` are from the scripting reference and have not been tried.
+- The lattice is for unskinned meshes. A skinned mesh, a mesh under static batching and a mesh that is not readable cannot be deformed. A mesh that is not
+  readable is refused with a warning that says to turn on Read/Write. A lattice copies the mesh once while it is enabled, so each lattice costs one mesh of memory.
+- The lattice has at most 125 control points, 5 on an axis, and it is simulated as a tree of 124 plus the anchor. Larger grids settle slower. In the harness
+  a 3 by 3 by 3 lattice at the defaults settles in about 112 frames at 60 Hz.
+- A lattice with one anchor lags as a whole when the object moves, because every control point except the anchor is pulled along by its neighbours. That
+  is inherent to deforming around one held point. Set `ignoreRootMotion` above 0 to make it lag less.
+- The anchor is a control point and may lie off the pivot. The anchor move the solver works with is a translation only.
+- Only the corner control points lie on the deformed surface. The surface follows interior points loosely (a weight of 0.125 for the centre of a 3 by 3 by 3
+  grid). Widen the box with `padding` or raise the divisions if a body does not follow a hit the way you want.
+- Normals are moved by the inverse transpose of the Jacobian at the clamped coordinates, so a vertex outside the box takes the normal of the
+  nearest point on its surface. Tangents are not deformed, so a normal map shows a small error on a strongly bent lattice.
+- A lattice tests no colliders. Force fields, hits, sleep and level of detail apply to it. Its numbers are tuned at 60 Hz and the coupling is per step, as for the
+  coupled presets.
+- Preset-style numbers for lattices do not exist yet: a lattice has the defaults and the lab sliders.
 - The transform jobs complete in the same `LateUpdate` that schedules them, so the main thread waits for
   them. There is no frame of delay to hide the cost behind.
 - Changing the bones of a running chain (reparenting, adding a first child) is not noticed. Call
@@ -1369,3 +1598,35 @@ No root level scripts are used.
 
 - The editor types had a placeholder base class, `ScriptableObjectStub`, instead of the real `ScriptableObject`. Drop 3
   needs `ScriptableObject.CreateInstance`, so the placeholder was replaced by the real name.
+
+### Runtime/Core/JiggleLatticeGrid.cs, JiggleTreeBuild.cs (0.6.0)
+
+- The first lattice had a separate root particle standing on the anchor, held by its root stretch, and the grid points hung under it. A jump of the
+  object made the lattice blow up. The cause: a root particle at the same place
+  as the anchor has a link of zero length, `AimRot` measures the swing of a link as the turn from the pose direction to the simulated direction, a zero
+  length link has no direction and gives a garbage turn, and the solver applies that turn to every child of the particle. On top of that the children drag a
+  root that is not heavy. The fix is that the middle control point is the anchor itself, there is no separate root and no `FlagRoot` (`pinRoots` is false), and the
+  anchor is never coupled because it is kinematic. The same rule is why the component gives a flat axis one control point: points that coincide are the same bug.
+
+
+### Runtime/Core/JiggleFfd.cs (0.6.0)
+
+- A test said the middle of the surface should follow the middle control point more than the rim does. That is false for Bernstein deformation: only the
+  corner control points are interpolated and an interior point has a small weight (0.125 at the centre of 3 by 3 by 3). The test now checks that the corners
+  are interpolated, and the limit is in Known limits.
+
+### Tests/Editor/JiggleLatticeTests.cs (0.6.0)
+
+- A loop ran `p <= a.Count` over an array of `Count` entries and was changed to `<`.
+- The "one short" cases of the pose tests needed 7 positions, one fewer than the particles of the rig.
+
+- The grid {1, 1, 1} of the parity test became {2, 1, 1}, because a tree needs at least two particles.
+
+
+### Runtime/Unity/JiggleJobs.cs, JiggleRuntime.cs (0.6.0)
+
+- The local rotation job now gets the rig mode and skips mode 2, because a lattice has no bones and no slots in the array of local rotations.
+
+### Tests~/UnityStubs (0.6.0)
+
+- `Mesh`, `MeshFilter`, `Bounds`, `NativeArray` and the other types listed in its section were added. Nothing was changed in the existing stubs.

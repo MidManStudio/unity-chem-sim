@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.0
+
+Drop 4: the lattice modifier. No Rust and no native change: the interface version stays 2.
+Nothing in this drop has run inside Unity: the Core part is tested under .NET 8 (27 new tests, 96 in the harness), the
+Unity layer, the inspector, the lab tab and the six new Edit Mode tests are only compiled against stubs of the Unity API.
+The Grand Theft Grimoire chest adapter is still not in.
+
+- **Lattice modifier.** `JiggleLattice` (menu `MidManStudio/AllThingsJiggle/Jiggle Lattice`) on an object with a MeshFilter. The
+  bounds of the mesh become a box with 1 to 5 control points on each axis (3 by 3 by 3 by default), the control points are
+  simulated as a tree by the same manager as the chains, and the vertices follow them by free form deformation. A shove
+  travels through the body and the whole prop wobbles. It is for props and enemies, meshes that are not skinned
+- **The anchor is a control point.** The middle control point (`Center`), or the one nearest the pivot (`Pivot`), is held by the
+  object. The other control points pull their neighbours, so the lattice moves as one body and lags behind the object
+- **Free form deformation.** `JiggleFfd` in the Core: Bernstein weights (Sederberg and Parry), displacement with and without
+  its gradient, normals by the inverse transpose, a range of vertices at a time on pointers so a Burst job runs it. A
+  straight stretch or turn of the whole box is reproduced exactly. Tangents are not deformed
+- **Trees in the Core.** `JiggleLatticeGrid` builds the control grid and the tree of its six neighbour links. `JiggleWorld` and
+  `JiggleHost` gain `AddTree` and `IsTree` for tree rigs, `SetTreePose` (world) and `SetTreeParams` (host), and `JigglePose.WriteTree` writes their pose. The solver
+  already took trees, so nothing in the Rust crate or the interface changes. Chain calls refuse a tree and tree calls refuse a chain
+- **Unity side.** Rig mode 2 in the transform jobs, a control job and a vertex job after the solver, and an upload to a private
+  copy of the mesh on the main thread. The component swaps the mesh on its filter for the copy while it is enabled and gives
+  the original back when it is disabled. A lattice at rest, or asleep, skips the vertex job and the upload
+- `JiggleLatticeSettings`: stiffness, soften, stretch, drag, air drag, gravity, ignore root motion, mass, wind response and
+  impulse response. The defaults are the numbers the harness measured, not numbers judged by eye. A lattice never collides
+- `JiggleLattice.AddImpulse`, `AddImpulseAt`, `Wake`, `ResetSimulation`, `SettingsChanged`, and the box and control points through
+  `TryGetBox`, `TryGetDivisions` and `TryGetControlPoint`. `JiggleFrameStats` gains `Lattices` and `LatticeUploads`
+- **Editor.** An inspector that says what the grid would be, shows problems (no mesh, a mesh that is not readable, a flat box)
+  and has the play mode buttons. Gizmos draw the box and the rest control points in blue and the simulated ones in orange. The
+  lab has a ninth tab, Lattice: a cube with a lattice on it that is shuttled with sudden stops, spun or hopped, with live
+  sliders, a hit, a reset and the uploads of the last frame
+- an axis of the box that has no size, or almost none, gets one control point, because control points on top of each other
+  have no direction between them (see the fix below)
+- `Tests/Editor/JiggleLatticeTests.cs` (27) runs in the shared harness. `Tests/Editor/JiggleLatticeUnityTests.cs` has 6 Edit Mode
+  tests
+- the Unity stubs gain `Mesh`, `MeshFilter`, `Bounds`, `NativeArray` and a few more types
+
+Fixed on the way: a first lattice with a separate root particle blew up, because a particle at the same place as its parent has no
+direction to measure a swing from. The middle control point is now the anchor itself. See the docs.
+
+Limits: the mesh must be readable, skinned and statically batched meshes cannot be deformed, tangents are not deformed, a lattice
+tests no colliders, a lattice lags as a whole behind its object, and a larger grid settles slower. Coupled values are tuned at
+60 Hz. Nothing here has been tuned by eye.
+
 ## 0.5.0
 
 Drop 3: presets, and body colliders from the rig. No Rust and no native change: the interface version stays 2.
