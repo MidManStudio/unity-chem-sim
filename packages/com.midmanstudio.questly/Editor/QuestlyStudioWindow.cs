@@ -14,7 +14,7 @@ using UnityEngine;
 namespace MidManStudio.Questly.Editor
 {
     /// <summary>
-    /// Questly Studio editor window. Open via Window → MDIX → Questly Studio.
+    /// Questly Studio editor window. Open via MidManStudio → Questly → Questly Studio.
     ///
     /// Tabs:
     ///   Overview — scan project for .mdix assets (Questly doesn't try to
@@ -27,7 +27,7 @@ namespace MidManStudio.Questly.Editor
     /// </summary>
     public sealed class QuestlyStudioWindow : EditorWindow
     {
-        [MenuItem("Window/MDIX/Questly Studio", priority = 202)]
+        [MenuItem("MidManStudio/Questly/Questly Studio", priority = 202)]
         public static void Open()
         {
             var window = GetWindow<QuestlyStudioWindow>("Questly Studio");

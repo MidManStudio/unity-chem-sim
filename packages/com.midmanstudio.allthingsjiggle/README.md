@@ -40,7 +40,7 @@ What it does today:
 
 ## State of this release
 
-Version 0.6.0 is drop 4: the lattice modifier, on top of the presets and body colliders of 0.5.0 and the colliders, fields, hits,
+Version 0.6.1 changes CI and documentation only, on top of 0.6.0. Version 0.6.0 is drop 4: the lattice modifier, on top of the presets and body colliders of 0.5.0 and the colliders, fields, hits,
 level of detail and sleep controls of 0.4.0. **Nothing in it, or in the drops before it, has run inside Unity yet.** The C# Core is
 tested under .NET 8 against the Rust library. The Unity layer, the editor lab and the Unity
 tests are compiled against stubs of the Unity API in CI, which proves they are well formed and
@@ -61,9 +61,11 @@ bone is the first child of the one above. A bone can be driven by one chain only
 The Burst package must stay on a 1.8 release up to 1.8.29 on Unity 2022.3, because 1.8.30 and
 later need Unity 6. The package asks for 1.8.4 as the lowest.
 
-The native libraries under `Runtime/Plugins/Native` were built for interface version 1. The
-current interface is 2, so until the `build-jiggle-rust-libs` workflow has run on this drop the
-Native backend is refused and the manager runs Burst instead, with one warning.
+The native libraries are built by the `build-jiggle-rust-libs` workflow, and that workflow only starts when it is
+run by hand (Actions, Build Jiggle Core Native Libs, Run workflow). It builds the current interface, version 2, and
+commits the libraries under `Runtime/Plugins/Native`. Until it has run, the package has no libraries (the folders hold
+a `NOTE.md` each), or has ones of another interface version. In both cases the manager logs one warning when the
+Native backend is picked and runs Burst instead.
 
 A bone is pulled by its parent and, unless both have a mass, never pulls it back. Set `mass` on the
 chain (or `JiggleParams.Mass` per bone) to turn the coupling on for the links between them, and

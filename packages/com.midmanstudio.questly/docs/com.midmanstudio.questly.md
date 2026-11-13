@@ -12,7 +12,7 @@ Only the files touched so far are covered here. The rest of the package is not y
 ## Modules
 
 ### `QuestlyStudioWindow.cs`
-**What it does:** Editor window, opened from `Window > MDIX > Questly Studio`. It has three tabs.
+**What it does:** Editor window, opened from `MidManStudio > Questly > Questly Studio`. It has three tabs.
 Overview lists every `MdixAsset` in the project and jumps to Validate or Bake for the one picked.
 Validate loads a `.mdix` quest database and lists the problems found by `QuestlySchema.Validate`.
 Bake fills a `QuestDataAsset` from a quest database, for builds that skip the native mdix library.
@@ -33,7 +33,7 @@ Bake fills a `QuestDataAsset` from a quest database, for builds that skip the na
 
 ## CI and Workflows
 
-No workflow in this repository builds or tests this package.
+No workflow in this repository builds or tests this package. The `menu-rule` workflow reads its menu path, with those of every other package, and fails when one is not `MidManStudio/<Package>/<Item>`.
 
 ## Fixes and Problems
 
@@ -46,3 +46,10 @@ does not exist, because `MdixValidationError` has `Path`, `Expected`, `Actual` a
 **Fix:** The window now stores the list that `new QuestlySchema().Validate(db)` returns, counts and
 loops over that list, and builds the text from `Expected` and `Actual`. Nothing compiled this file
 outside Unity before, so both errors went unseen until the first Unity run.
+
+**Problem (1.0.1):** The window was opened from `Window > MDIX > Questly Studio`. Every package of the studio
+keeps its editor menus under the top level `MidManStudio` menu, as `MidManStudio/<Package>/<Item>`, and never
+under Tools or Window.
+
+**Fix:** The menu item is now `MidManStudio/Questly/Questly Studio`, with the same priority. Anyone who had
+the old path in a shortcut or a menu layout needs to pick the new one. The `menu-rule` workflow keeps it there.

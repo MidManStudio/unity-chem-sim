@@ -1,6 +1,19 @@
 # Changelog
 
+## 0.6.1
+
+CI and documentation only. No code of the package changes, and the interface version stays 2.
+
+- `.github/workflows/jiggle-core.yml` also runs after a manual run of Apply Replacements that succeeded. Commits from that action are
+  marked `[skip ci]`, so the workflow never started by itself for a drop that arrived as an archive
+- `.github/workflows/menu-rule.yml` (new, repository wide) fails when a menu entry of any package is not
+  `MidManStudio/<Package>/<Item>`
+- the README no longer says the native libraries were built for interface version 1. None has been committed. The
+  `build-jiggle-rust-libs` workflow has to be run by hand once, and the docs say so
+- the Questly Studio menu moved to `MidManStudio/Questly/Questly Studio` in that package (1.0.1), so the new gate passes
+
 ## 0.6.0
+
 
 Drop 4: the lattice modifier. No Rust and no native change: the interface version stays 2.
 Nothing in this drop has run inside Unity: the Core part is tested under .NET 8 (27 new tests, 96 in the harness), the

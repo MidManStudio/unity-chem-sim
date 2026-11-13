@@ -755,7 +755,7 @@ Each frame (`Simulate(dt)`, called from `LateUpdate`) does this:
 4. Write the scene: the collider lists (`JiggleColliderSet.Write`) and the fields (`JiggleFieldQueue.Write`).
 5. Run the frame on the backend asked for. Native falls back to Burst when the library does not
    load or does not have this package's interface version, with one warning. This is what happens
-   until the build workflow has refreshed the committed binaries.
+   until the build workflow has been run by hand and has committed libraries of this interface version.
 6. Commit the impulses with the number of steps that ran (0 if the solver reported an error), so impulses wait through
    a frame that had no step.
 7. Record `Stats`.
@@ -1360,12 +1360,18 @@ The `.gitignore` of the repository ignores `*.csproj` and has a negation for thi
 workflow has run, and the libraries after. The workflow writes the `.meta` files with
 the right import settings. Do not add files there by hand.
 
+The build workflow starts only when it is run by hand: Actions, Build Jiggle Core Native Libs, Run workflow. Its
+`push` trigger does not fire for a change that arrived through Apply Replacements, because those commits are marked
+`[skip ci]`. It builds whatever `jiggle_core` is on the branch, so a run after the lattice drop gives libraries of
+interface version 2, which is what `JiggleLibrary.Verify` expects. A run commits six platforms in one commit.
+
 ## CI and workflows
 
 | Workflow | What it does |
 | --- | --- |
-| `.github/workflows/jiggle-core.yml` | The `ffi` job builds the release library and runs `Tests~/DotnetHarness` against it. The `unity-stubs` job compiles Core, Runtime/Unity, Editor and the editor tests against the Unity stubs, fails if `MathF` appears in the Core outside `JiggleParams.cs` (Burst does not support it), and fails if an asset has no `.meta` file. The manual bench job runs both Rust benches. The other jobs are described in the crate documentation |
-| `.github/workflows/build-jiggle-rust-libs.yml` | Builds and commits the native libraries |
+| `.github/workflows/jiggle-core.yml` | Runs on a push that touches the crate, the package or the workflow, by hand, and (0.6.1) after a manual run of Apply Replacements that succeeded. The last is needed because the commits of that action are marked `[skip ci]` and never start a `push` workflow, so before 0.6.1 nothing tested a drop that arrived as an archive unless somebody ran the workflow by hand. The `ffi` job builds the release library and runs `Tests~/DotnetHarness` against it. The `unity-stubs` job compiles Core, Runtime/Unity, Editor and the editor tests against the Unity stubs, fails if `MathF` appears in the Core outside `JiggleParams.cs` (Burst does not support it), and fails if an asset has no `.meta` file. The manual bench job runs both Rust benches. The other jobs are described in the crate documentation |
+| `.github/workflows/build-jiggle-rust-libs.yml` | Builds and commits the native libraries. Run it by hand, see Native libraries above |
+| `.github/workflows/menu-rule.yml` | Repository wide, not only this package. Reads every `MenuItem`, `AddComponentMenu` and `CreateAssetMenu` of every package and fails when its path is not `MidManStudio/<Package>/<Item>` (a `CreateAssetMenu` with no `menuName` fails too, because it would land under Assets/Create). Runs on a push that touches a `.cs` file under `packages`, by hand, and after a manual run of Apply Replacements. Comments are ignored. `SettingsProvider` and `ContextMenu` are not read, because no package has either |
 
 No root level scripts are used.
 
@@ -1450,11 +1456,9 @@ No root level scripts are used.
   these and the other solver limits.
 - Burst 1.8.30 and later need Unity 6. On Unity 2022.3 stay on a 1.8 release up to 1.8.29. The package
   manifest asks for 1.8.4 as the lowest.
-- The native plugin binaries committed under `Runtime/Plugins/Native` are rebuilt by the
-  build workflow when `rust_lib/jiggle_core` changes. Until it has run after this drop, the
-  package has the new C# and the old binaries (interface version 1), and
-  `JiggleLibrary.Verify` throws. The manager catches that and runs Burst instead. The managed
-  backend does not need the binaries.
+- The native plugin binaries under `Runtime/Plugins/Native` are built by the build workflow, which has to be run by hand. Until it
+  has, the folders hold only a `NOTE.md` each, the library does not load, `JiggleLibrary.Verify` or the load throws, and the manager
+  catches that, logs one warning and runs Burst instead. The managed backend does not need the binaries.
 - The Rust 1.75 floor is checked only by the `floor` job in CI, because the sandbox compiles with a
   newer toolchain.
 
@@ -1630,3 +1634,17 @@ No root level scripts are used.
 ### Tests~/UnityStubs (0.6.0)
 
 - `Mesh`, `MeshFilter`, `Bounds`, `NativeArray` and the other types listed in its section were added. Nothing was changed in the existing stubs.
+
+### .github/workflows and Runtime/Plugins/Native (0.6.1)
+
+- Apply Replacements commits its result as `chore: sync project structure from template [skip ci]`, so the `push` trigger of
+  `jiggle-core.yml` and of `build-jiggle-rust-libs.yml` does not start for a drop that arrived as an archive. Such a drop has a green
+  or red result only if somebody ran the workflow by hand. `jiggle-core.yml` now also starts when a manual run of Apply Replacements
+  completes with success, and checks out the branch as it stands, which has the commit the apply made. A run that only previews
+  (the push of an archive, or `dry_run` true) can start it as well, and then tests the same commit again, which does no harm. The
+  build workflow stays manual, because it builds six platforms.
+- The README said the libraries under `Runtime/Plugins/Native` were built for interface version 1. No library had ever been committed
+  there: the history of the folder, as far as commit 787fb84, holds only the `NOTE.md` files and the `.meta` files. The text now says what is true in either
+  state.
+- `menu-rule.yml` is new. The rule it checks was only kept by hand before. At the time of writing the only path it rejected was the
+  Questly Studio menu, which moved in version 1.0.1 of that package.
