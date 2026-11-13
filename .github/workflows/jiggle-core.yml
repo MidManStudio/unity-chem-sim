@@ -21,6 +21,14 @@ name: Jiggle core
 # fails here. It cannot say how the real engine behaves. Burst, the transform
 # jobs and the lab run only inside Unity.
 #
+# Starting after an apply: Apply Replacements commits its result as
+# "[skip ci]", so the push trigger below never fires for a drop that arrived as
+# an archive in .mdix/replacements. The workflow_run trigger covers that. It
+# starts when a manual run of Apply Replacements has completed with success and
+# tests the branch as it stands, which has the commit that apply made. A run
+# that only previews (the push of an archive, or dry_run true) can start it
+# as well, and then tests the same commit again.
+#
 # The benchmark job is manual: Actions -> Jiggle core -> Run workflow, then
 # tick "bench". It runs the step bench and the scene bench, and the results
 # land in that run's Job Summary. GitHub-hosted runners are shared hardware, so
@@ -33,6 +41,9 @@ on:
       - 'rust_lib/jiggle_core/**'
       - 'packages/com.midmanstudio.allthingsjiggle/**'
       - '.github/workflows/jiggle-core.yml'
+  workflow_run:
+    workflows: ['Apply replacements']
+    types: [completed]
   workflow_dispatch:
     inputs:
       bench:
@@ -45,6 +56,7 @@ permissions:
 
 jobs:
   test:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -75,6 +87,7 @@ jobs:
   # must equal the number of DllImports, so a function added in Rust and
   # forgotten in C# fails here.
   ffi:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -106,6 +119,7 @@ jobs:
   # dependencies of the other workspace crates (some of them need a newer
   # cargo than 1.75 just to read their manifests).
   floor:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -131,6 +145,7 @@ jobs:
   # Runtime/Unity, Editor and the tests with only the references their asmdefs
   # list. Also two repository rules a Unity build would only break on later.
   unity-stubs:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

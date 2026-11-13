@@ -1,0 +1,162 @@
+name: Menu rule
+
+# Every editor menu entry of every MidManStudio Unity package goes under the top
+# level MidManStudio menu as MidManStudio/<Package>/<Item>, never under Tools or
+# Window. This reads the attributes in every .cs file under packages and fails
+# on a path that breaks the rule:
+#
+#   MenuItem, AddComponentMenu    the first argument is the path
+#   CreateAssetMenu               menuName is the path. With no menuName the
+#                                 asset lands under Assets/Create, so that fails
+#
+# Comments are ignored, and so is code that only builds a menu at run time
+# (new MenuItem(...)). SettingsProvider and ContextMenu are not read, because no
+# package has either.
+#
+# Apply Replacements commits its result as "[skip ci]", so the push trigger
+# does not fire for a drop that arrived as an archive. The workflow_run trigger
+# starts the check when a manual run of Apply Replacements has completed with
+# success, on the branch as it stands. A run that only previews can start it as
+# well, and then it checks the same commit again.
+on:
+  push:
+    paths:
+      - 'packages/**/*.cs'
+      - '.github/workflows/menu-rule.yml'
+  workflow_run:
+    workflows: ['Apply replacements']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  menu-rule:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every menu path
+        run: |
+          python3 -I - packages <<'PY'
+          import os
+          import re
+          import sys
+
+          ROOT = sys.argv[1] if len(sys.argv) > 1 else "packages"
+          SKIP_DIRS = {"Library", "node_modules", "bin", "obj", ".git"}
+
+          # Text of a C# file with comments blanked out and the strings left alone, so a path
+          # quoted in a comment is not read as an attribute. Newlines are kept so line numbers hold.
+          def strip_comments(src):
+              out = []
+              i = 0
+              n = len(src)
+              while i < n:
+                  c = src[i]
+                  nxt = src[i + 1] if i + 1 < n else ""
+                  if c == "/" and nxt == "/":
+                      while i < n and src[i] != "\n":
+                          out.append(" ")
+                          i += 1
+                  elif c == "/" and nxt == "*":
+                      out.append("  ")
+                      i += 2
+                      while i < n and not (src[i] == "*" and i + 1 < n and src[i + 1] == "/"):
+                          out.append("\n" if src[i] == "\n" else " ")
+                          i += 1
+                      out.append("  ")
+                      i += 2
+                  elif c == "@" and nxt == '"':
+                      out.append('@"')
+                      i += 2
+                      while i < n:
+                          if src[i] == '"' and i + 1 < n and src[i + 1] == '"':
+                              out.append('""')
+                              i += 2
+                          elif src[i] == '"':
+                              break
+                          else:
+                              out.append(src[i])
+                              i += 1
+                      out.append('"')
+                      i += 1
+                  elif c == '"':
+                      out.append(c)
+                      i += 1
+                      while i < n and src[i] != '"' and src[i] != "\n":
+                          if src[i] == "\\" and i + 1 < n:
+                              out.append(src[i:i + 2])
+                              i += 2
+                          else:
+                              out.append(src[i])
+                              i += 1
+                      if i < n and src[i] == '"':
+                          out.append('"')
+                          i += 1
+                  else:
+                      out.append(c)
+                      i += 1
+              return "".join(out)
+
+          STR = r'"((?:[^"\\\n]|\\.)*)"'
+          # An attribute list entry: it follows "[" or ",", so "new MenuItem(...)" in code is not read.
+          SIMPLE = re.compile(r'(?<=[\[,])\s*(?:[A-Za-z_.]+\.)?(MenuItem|AddComponentMenu)(?:Attribute)?\s*\(\s*@?' + STR)
+          ASSET = re.compile(r'(?<=[\[,])\s*(?:[A-Za-z_.]+\.)?CreateAssetMenu(?:Attribute)?\s*\(((?:[^)"]|"(?:[^"\\\n]|\\.)*")*)\)')
+          ASSET_BARE = re.compile(r'(?<=[\[,])\s*(?:[A-Za-z_.]+\.)?CreateAssetMenu(?:Attribute)?\s*(?=[\],])')
+          MENUNAME = re.compile(r'\bmenuName\s*=\s*@?' + STR)
+
+          def problem(path):
+              if not path.strip():
+                  return "the menu path is empty"
+              parts = path.split("/")
+              if any(p.strip() == "" for p in parts):
+                  return "the menu path has an empty part"
+              if parts[0] in ("Tools", "Window"):
+                  return "it is under " + parts[0] + ". Everything goes under the MidManStudio menu"
+              if parts[0] != "MidManStudio":
+                  return "it is under '" + parts[0] + "'. The top level must be MidManStudio"
+              if len(parts) < 3:
+                  return "it is not MidManStudio/<Package>/<Item>"
+              return None
+
+          def line_of(text, pos):
+              return text.count("\n", 0, pos) + 1
+
+          def main():
+              bad = 0
+              checked = 0
+              for dirpath, dirnames, filenames in os.walk(ROOT):
+                  dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+                  for name in filenames:
+                      if not name.endswith(".cs"):
+                          continue
+                      path = os.path.join(dirpath, name)
+                      with open(path, encoding="utf-8-sig", errors="replace") as f:
+                          text = strip_comments(f.read())
+                      hits = []
+                      for m in SIMPLE.finditer(text):
+                          hits.append((m.start(), m.group(1), m.group(2)))
+                      for m in ASSET.finditer(text):
+                          mm = MENUNAME.search(m.group(1))
+                          hits.append((m.start(), "CreateAssetMenu", mm.group(1) if mm else None))
+                      for m in ASSET_BARE.finditer(text):
+                          hits.append((m.start(), "CreateAssetMenu", None))
+                      for pos, kind, menu in sorted(hits):
+                          checked += 1
+                          if menu is None:
+                              why = "CreateAssetMenu has no menuName, so it lands under Assets/Create"
+                          else:
+                              why = problem(menu)
+                          if why:
+                              bad += 1
+                              shown = "" if menu is None else " '" + menu + "'"
+                              print("::error file=%s,line=%d::%s%s: %s" % (path.replace(os.sep, "/"), line_of(text, pos), kind, shown, why))
+              print("menu entries checked: %d, problems: %d" % (checked, bad))
+              return 1 if bad else 0
+
+          sys.exit(main())
+          PY
