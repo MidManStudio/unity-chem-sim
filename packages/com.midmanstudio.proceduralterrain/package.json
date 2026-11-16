@@ -1,0 +1,29 @@
+{
+    "name": "com.midmanstudio.proceduralterrain",
+    "version": "0.1.0",
+    "displayName": "Procedural Terrain - Low Poly Worlds",
+    "description": "Procedural low poly terrain from a seed: layered noise, island falloff, a jittered lattice or Poisson-disc points with Delaunay triangulation, terraces with vertical walls, flat or smooth shading, hand made stamps (pads, roads, rivers, mounds), patches and locks, and scatter for trees and rocks. Every height is a pure function of the seed and a true position, so endless worlds are built chunk by chunk with no seams, in any order, on any thread. Standalone and game-agnostic.",
+    "unity": "2022.3",
+    "unityRelease": "0f1",
+    "documentationUrl": "",
+    "changelogUrl": "",
+    "licensesUrl": "",
+    "dependencies": {},
+    "keywords": [
+        "terrain",
+        "procedural",
+        "low poly",
+        "noise",
+        "delaunay",
+        "poisson",
+        "terraces",
+        "chunks",
+        "scatter",
+        "island"
+    ],
+    "author": {
+        "name": "MidMan Studio",
+        "email": "midmanstudio@proton.me",
+        "url": "https://github.com/MidManStudio/unity-chem-sim"
+    }
+}

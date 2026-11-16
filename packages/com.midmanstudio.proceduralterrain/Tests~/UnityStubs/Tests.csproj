@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The editor tests against the Core, with the NUnit stand in of the dotnet harness. It is only compiled, with the
+    references the test asmdef lists.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputType>Library</OutputType>
+    <AssemblyName>MidManStudio.ProceduralTerrain.Tests.Editor</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Tests/Editor/**/*.cs" />
+    <Compile Include="../DotnetHarness/NUnitStubs.cs" />
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+</Project>
