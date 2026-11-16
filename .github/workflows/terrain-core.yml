@@ -1,0 +1,93 @@
+name: Terrain core
+
+# Tests for packages/com.midmanstudio.proceduralterrain.
+#
+# The Core (Runtime/Core) has no Unity references, so its files and the editor
+# tests compile and run as a plain .NET program. The test job does that: every
+# test of Tests/Editor runs under the stand in for NUnit of the harness.
+#
+# The stubs job compiles the package the way its assembly definitions do, one
+# project per asmdef, with only the references each asmdef lists. The Core
+# project references nothing at all, so a Unity type in the Core fails there.
+# It also checks two repository rules a Unity build would only break on later:
+# every asset has a .meta file, and the Core uses nothing from UnityEngine.
+#
+# Starting after an apply: Apply Replacements commits its result as
+# "[skip ci]", so the push trigger below never fires for a drop that arrived as
+# an archive in .mdix/replacements. The workflow_run trigger covers that. It
+# starts when a manual run of Apply Replacements has completed with success and
+# tests the branch as it stands, which has the commit that apply made.
+on:
+  push:
+    paths:
+      - 'packages/com.midmanstudio.proceduralterrain/**'
+      - '.github/workflows/terrain-core.yml'
+  workflow_run:
+    workflows: ['Apply replacements']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # LangVersion 9.0 and warnings as errors are set in the project, so syntax
+      # newer than Unity 2022.3 compiles to an error here.
+      - name: Run the tests
+        run: |
+          dotnet run -c Release \
+            --project packages/com.midmanstudio.proceduralterrain/Tests~/DotnetHarness
+
+  stubs:
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Compile the Core and the tests the way the asmdefs do
+        run: |
+          cd packages/com.midmanstudio.proceduralterrain/Tests~/UnityStubs
+          dotnet build Tests.csproj -c Release -o /tmp/stub-out
+
+      # The asmdef says noEngineReferences, the compile project has no
+      # references, and this catches the names a comment or a string could hide.
+      - name: The Core does not use UnityEngine
+        run: |
+          if grep -rn 'UnityEngine\|UnityEditor' packages/com.midmanstudio.proceduralterrain/Runtime/Core --include=*.cs \
+              | grep -vE ':[0-9]+:[[:space:]]*(//|\*)'; then
+            echo "::error::UnityEngine or UnityEditor in Runtime/Core."
+            exit 1
+          fi
+
+      # A package that is not embedded in a project is read only, and Unity
+      # ignores an asset that has no .meta file next to it. Folders ending in
+      # a tilde (Tests~, Documentation~) are not imported and need none.
+      - name: Every asset has a .meta file
+        run: |
+          cd packages/com.midmanstudio.proceduralterrain
+          missing=0
+          while IFS= read -r f; do
+            if [ ! -f "$f.meta" ]; then
+              echo "::error file=packages/com.midmanstudio.proceduralterrain/${f#./}::no .meta file"
+              missing=1
+            fi
+          done < <(find . -mindepth 1 -name '*~' -prune -o ! -name '*.meta' -print | sort)
+          exit $missing
