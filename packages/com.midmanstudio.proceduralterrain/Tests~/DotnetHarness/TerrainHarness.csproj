@@ -23,6 +23,11 @@
   <ItemGroup>
     <Compile Include="../../Runtime/Core/**/*.cs" />
     <Compile Include="../../Tests/Editor/**/*.cs" />
+    <!-- The Unity layer and the tests that use only plain structs of the engine, against the stub of the Unity API. -->
+    <Compile Include="../../Runtime/Unity/**/*.cs" />
+    <Compile Include="../../Editor/TerraPatchImport.cs" />
+    <Compile Include="../../Tests/EditorUnity/TerraUnityPureTests.cs" />
+    <Compile Include="../UnityStubs/UnityApiStubs.cs" />
     <Compile Include="NUnitStubs.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

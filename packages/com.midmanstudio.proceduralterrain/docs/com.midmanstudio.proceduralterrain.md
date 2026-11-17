@@ -1,9 +1,12 @@
 # com.midmanstudio.proceduralterrain
 
-Procedural Terrain is a Unity package that builds low poly landscapes from a seed. This file covers the Core, which is drop 1:
-the noise, the height field, the two ways to triangulate (a jittered lattice for endless chunked worlds, Poisson-disc points
-with a Delaunay triangulation for one island), the terraces, the colouring, the scatter and the world that ties them together.
-The Core builds meshes as plain arrays and has no Unity references. Nothing here has run inside Unity yet (see Known limits).
+Procedural Terrain is a Unity package that builds low poly landscapes from a seed. It has two layers. The Core (drop 1) is the
+noise, the height field, the two ways to triangulate (a jittered lattice for endless chunked worlds, Poisson-disc points
+with a Delaunay triangulation for one island), the terraces, the colouring, the scatter, the world that ties them together, and
+the planner and background builder that stream chunks. It builds meshes as plain arrays and has no Unity references. The Unity
+layer (drop 2) turns those arrays into meshes, streams chunks around a viewer, draws them with a vertex colour shader for the
+Universal Render Pipeline, and has an editor window, a baker and a patch import. **Nothing here has run inside Unity yet**
+(see Known limits): the Core is tested under .NET 8, the Unity layer is compiled against a stand in of the Unity API.
 
 ## Contents
 
@@ -12,7 +15,10 @@ The Core builds meshes as plain arrays and has no Unity references. Nothing here
 - Layout and conventions
 - Runtime/Core: TerraHash.cs, TerraColor.cs, TerraCurve.cs, TerraNoise.cs, TerraFalloff.cs, TerraStamp.cs, TerraBiome.cs,
   TerraHeightField.cs, TerraTriangulation.cs, TerraLattice.cs, TerraPoisson.cs, TerraDelaunay.cs, TerraMeshData.cs,
-  TerraColoring.cs, TerraTerrace.cs, TerraScatter.cs, TerraWorld.cs, TerraPresets.cs
+  TerraColoring.cs, TerraTerrace.cs, TerraScatter.cs, TerraWorld.cs, TerraPresets.cs, TerraStream.cs, TerraChunkBuilder.cs
+- Runtime/Unity: TerraMeshConverter.cs, TerraWorldProfile.cs, TerraMaterials.cs, TerraChunk.cs, TerraStreamer.cs,
+  TerraBakedArea.cs, Shaders/TerraVertexColor.shader
+- Editor: TerraPatchImport.cs, TerraBaker.cs, TerraMenu.cs, TerraWorldProfileEditor.cs, TerraPreviewWindow.cs
 - Assembly definitions
 - Tests/Editor/TerraBasicsTests.cs
 - Tests/Editor/TerraHeightTests.cs
@@ -21,6 +27,10 @@ The Core builds meshes as plain arrays and has no Unity references. Nothing here
 - Tests/Editor/TerraTerraceTests.cs
 - Tests/Editor/TerraScatterTests.cs
 - Tests/Editor/TerraPresetTests.cs
+- Tests/Editor/TerraStreamTests.cs
+- Tests/Editor/TerraChunkBuilderTests.cs
+- Tests/EditorUnity/TerraUnityPureTests.cs
+- Tests/EditorUnity/TerraUnityEngineTests.cs
 - Tests~/DotnetHarness
 - Tests~/UnityStubs
 - CI and workflows
@@ -86,7 +96,13 @@ so a carved river turns the colour of deep water by itself.
 stored counter-clockwise in (x, z) (`TerraGeom.Cross` positive), the opposite, and the mesh builder turns them. A test checks
 that every triangle of every kind of mesh faces the way its stored normal points.
 
-**Colours** are gamma-space values, the ones a colour picker shows. The shader of drop 2 converts them to linear.
+**Colours** are gamma-space values, the ones a colour picker shows. The mesh carries them as `Color32` vertex colours and the
+shader of the package converts them to linear in the vertex stage when the project uses the Linear colour space (Unity does not
+convert vertex colours by itself).
+
+**Streaming and the origin.** A streamed chunk object sits at its true corner minus a world origin that the streamer holds, so near
+the viewer the numbers are small. A game that shifts its origin tells the streamer (`SetWorldOrigin` or `ShiftWorldOrigin`), moves
+everything else by the opposite amount, and the chunks follow. The mesh inside a chunk never changes when the origin moves.
 
 **Indices.** `TerraMeshData.indices` is `int[]`. `RequiresUInt32` says whether 16 bits are enough. A flat shaded chunk of 64 by
 64 cells has 26 112 vertices with skirts, which fits; a 256 m chunk at 2 m spacing (128 cells) has about 100 000 and does not.
@@ -386,14 +402,174 @@ drop 2 builds on worker threads.
 falloff over finer noise, built with `BuildIsland`), `Highlands` (Ridged noise, remap 0.47..0.94, 170 m of height) and `Mesas` (seven
 uniform terraces). They are starting points: nobody has looked at them in an engine yet. `Trees` and `Rocks` build scatter layers.
 
+### TerraStream.cs
+
+The decision of what to build, with no meshes and no threads in it, so it can be tested.
+
+`TerraChunkKey` is a chunk's integer address (a struct with `Equals` and a hash, usable as a dictionary key). `TerraStreamSettings`:
+`loadDistance` (900 m), `unloadMargin` (128 m), `lodMargin` (24 m) and `maxChunks` (1024). `TerraStreamPlan` holds two lists: the chunks to
+build, each with a step and its distance, nearest first, and the keys to let go.
+
+`TerraStreamPlanner.Plan(viewerX, viewerZ, have, plan)` takes the viewer's true position and the chunks held (a dictionary from key to the
+step it is held or being built at). A held chunk farther than the load distance plus the margin is let go. A held chunk nearer is kept,
+unless the step it should have has changed, in which case it is asked for again at the new step. A chunk not held whose nearest point is
+within the load distance is asked for, at the step of `StepForDistance`. The distance is horizontal, from the viewer to the nearest point
+of the chunk's rectangle, 0 inside it; the height of the viewer is not used. The candidates are the square of chunks around the viewer's
+chunk that reaches the load distance, so the cost does not depend on how many chunks are held.
+
+**Hysteresis.** `StepFor(distance, currentStep)` returns the exact tier for a chunk with no step. A chunk with a step changes it only when
+the distance has passed the tier boundary by the LOD margin in either direction (the step at `distance - margin` is larger, or the step at
+`distance + margin` is smaller), so a viewer standing on a boundary does not rebuild the same chunk each plan. A jump of several tiers is allowed.
+
+**Cap.** The new chunks are sorted nearest first and the farthest are dropped so that held plus new does not pass `maxChunks`. Held chunks
+are never dropped by the cap.
+
+The answer depends on the viewer's position relative to the chunk grid only. A test moves the viewer a million chunks away and gets the
+same plan shifted by a million. The lists are sorted (builds by distance, then position; unloads by position), so the same input gives the same plan.
+
+### TerraChunkBuilder.cs
+
+Builds chunks on background threads. `Enqueue(key, step, withScatter, ticket)` puts a request in a first in first out queue; worker threads
+(background threads, count given at construction, 0 to 64) call `TerraWorld.BuildChunk`, and `ScatterChunk` when asked, then put the finished
+`TerraChunkJob` in a second queue. `TryTake` returns finished jobs, `Pending` counts waiting and running requests, `Cancel(key)` removes
+requests no worker has started, `Dispose` stops the workers after their current job and drops what waits.
+
+The world is immutable and every call on it is pure, so any number of workers can run at once and a chunk built here is vertex for vertex the
+chunk a direct call returns (a test builds twelve at mixed steps on three workers and compares each array with a direct call).
+
+`OnBuilt` is a callback run on the worker after the build; the Unity layer uses it to make the engine arrays so that the main thread only copies
+them into a mesh. Its result goes in `job.payload`. An exception in the build or the callback does not kill the worker: it is stored in
+`job.error` and the job is still delivered. The `ticket` is the caller's own number: a caller that asks for a chunk twice tells the answers apart
+by it, because a build already running cannot be cancelled. With zero workers nothing runs by itself and the caller builds a few requests per frame
+with `RunSome(max)`, which is the way for platforms without threads.
+
+Keep the number of requests in flight small (the streamer's default is 4): the queue is first in first out, so a chunk that became the nearest
+waits behind what was asked before it, and the planner can only reorder what has not been handed over.
+
+## Runtime/Unity
+
+The assembly `MidManStudio.ProceduralTerrain.Unity` references the Core and the engine. It holds no algorithm: the arrays come from the Core.
+
+### TerraMeshConverter.cs
+
+`Prepare(TerraMeshData)` makes `Vector3[]` vertices and normals, `Color32[]` colours (each float clamped to 0..1 and rounded to a byte) and bounds,
+and shares the index array. It touches no engine object, only structs, so it runs on a worker. `Apply(prepared, mesh)` clears a mesh, sets the
+index format first (32 bit when `RequiresUInt32`, because setting vertices past 65 535 on a 16 bit mesh is refused), then vertices, normals,
+colours, the triangles with `SetIndices(..., calculateBounds: false)` and the bounds from the data. `ToMesh` does both. Main thread only.
+
+### TerraWorldProfile.cs
+
+A `ScriptableObject` (menu MidManStudio > ProceduralTerrain > World Profile) holding the `TerraWorldSettings`, the `TerraStreamSettings`, the
+material, shadow casting, layer, collider options (`colliders`, `colliderMaxStep`) and `scatterBindings`: for each scatter layer by name, the prefabs
+a point can pick by its variant number. `CreateWorld()` returns a `TerraWorld` from the settings. The settings classes of the Core are
+`[Serializable]` so the inspector draws them; a profile made fresh starts as the Rolling Hills preset.
+
+### TerraMaterials.cs
+
+`FindShader()` returns the package shader or, failing that, URP Lit or Standard; `Create()` makes a material from it. In the editor
+`Shader.Find` reaches every shader of the project; in a player only a shader that a material or the Always Included list pulls in, so a build should
+give the profile a material asset (the menu entry makes one) and not rely on this fallback.
+
+### TerraChunk.cs
+
+One streamed chunk: public chunk address, step and true corner, a `MeshFilter`, a `MeshRenderer` and optionally a `MeshCollider`. `SetMesh`
+makes the mesh object on first use and refills it afterwards (a new level of detail reuses the object), and cooks a collider only when asked: the
+collider's mesh is set to null and back, because assigning the same mesh does not cook it again. `Place(originX, originZ)` sets the position to the
+true corner minus the world origin. `Release` destroys the mesh; the streamer calls it before it destroys the object, because `OnDestroy` does not
+run outside play mode. `TerraObjects.Discard` uses `Destroy` in play mode and `DestroyImmediate` otherwise, since each is refused in the other.
+
+### TerraStreamer.cs
+
+The manager. Each `Update` it takes the viewer's position (the `viewer` transform, or the main camera) plus the world origin and calls
+`Tick(x, z, deltaTime)`, which does this in order:
+
+1. every `replanInterval` seconds, build the `have` table (each chunk with the step it has or is being built at), ask the planner, destroy the chunks it
+   lets go (cancelling their waiting builds) and keep its build list;
+2. hand builds from that list to the builder while fewer than `maxInFlight` are pending (each gets a new ticket; a chunk that has no scatter yet asks for
+   it with every request until it arrives);
+3. with zero worker threads, build `syncBuildsPerFrame` chunks on the spot;
+4. take finished jobs, drop any whose chunk was let go or whose ticket is stale, log failures, and show up to `applyPerFrame` meshes (the first
+   one creates the chunk object; a later one changes the level of detail and the old mesh stays visible until the new one is ready);
+5. place up to `scatterPerFrame` prefabs over all chunks.
+
+Events: `ChunkBuilt` (every shown mesh, `chunk.step` says which level), `ChunkRemoved` (just before destruction), `ScatterReady` (once per chunk,
+with the points on `chunk.ScatterPoints`, whether or not the streamer places them itself). A throwing handler is logged and does not stop the streamer.
+
+Scatter placing: for a point, the layer name looks up a binding, the variant number (wrapped) picks the prefab, and the instance is a child of the chunk at
+the point's position relative to the chunk's corner, with yaw and optionally aligned to the normal, scaled by the point's scale. It is not pooled; to pool,
+turn `spawnScatter` off and use `ScatterReady`.
+
+Origin API: `SetWorldOrigin`, `ShiftWorldOrigin`, `WorldToScene`, `SceneToWorld`, `WorldOriginX/Z`. `HeightAtWorld` reads the height field. `Restart` builds the
+world again from the profile; `Shutdown` drops everything and stops the workers; `OnEnable` and `OnDisable` call them. `TryGetChunk`, `LoadedChunkCount`,
+`PendingBuilds` and `IsSettled` are for tools and tests.
+
+A chunk whose build threw is logged once and stays a hole: its step is remembered as asked for so it is not retried every plan; it is tried again after the
+viewer has gone away and come back, or when its step should change.
+
+The streamer's own transform should be left alone (identity): chunks are children of it for tidiness but are placed by world position.
+
+### TerraBakedArea.cs
+
+A component on the root of a baked area that remembers its profile, seed, chunk rectangle and step, so it can be baked again. It does nothing at run time.
+
+### Shaders/TerraVertexColor.shader
+
+`MidManStudio/ProceduralTerrain/Vertex Color Lit`, a Universal Render Pipeline shader written for 2022.3 (URP 14). Three passes: ForwardLit, ShadowCaster
+and DepthOnly. Lighting is Lambert from the main light with its shadows (directional, cascades, soft shadows), the additional lights per pixel or per vertex as the
+pipeline asset says, spherical harmonics for ambient (scaled by `_AmbientBoost`), a `_Tint`, and fog. The vertex colour is converted from gamma to linear in the
+vertex stage (the polynomial Unity itself uses for a fast conversion) unless `UNITY_COLORSPACE_GAMMA` is defined; doing it per vertex costs nothing and, with flat shading,
+equals doing it per pixel. All three passes share one `UnityPerMaterial` buffer so the SRP Batcher can batch it.
+
+Not handled: Forward+ (the additional light loop is empty under it, so only the main light shows), screen space shadows (that variant is left out,
+so the terrain has no shadows from the main light when the renderer feature is on), the DepthNormals pass (use the Depth source for SSAO), lightmaps and light probes beyond
+ambient. **The shader has not been compiled by Unity.** It follows the structure of the URP shaders, but a typo in an include name or a macro that changed
+between URP versions would only show as a pink material in the editor.
+
+## Editor
+
+The assembly `MidManStudio.ProceduralTerrain.Editor` is editor only and references the Core and the Unity layer. All menu paths start with
+MidManStudio/ProceduralTerrain/ as the repository's menu rule wants.
+
+### TerraPatchImport.cs
+
+`FromColors` and `FromTexture` make a `TerraPatch` from a picture. Rows run from the bottom of the picture, which is the minimum z, so the top of the picture is
+north. The grey value is 0.299 R + 0.587 G + 0.114 B of the stored bytes (no colour space conversion), mapped from the black height to the white height in metres. The
+texture needs Read/Write enabled. Pictures smaller than 2 by 2 or with too few colours are refused.
+
+### TerraBaker.cs
+
+`TerraBaker.Bake(profile, options)` builds a rectangle of chunks into the open scene at one step: a root object with a `TerraBakedArea`, and a child per chunk with mesh,
+renderer, collider (when the profile asks and the step is small enough) and static flag, with the scatter prefabs placed as prefab instances under each chunk. The meshes are saved as
+assets in a folder (default `Assets/TerraBake`) so the scene does not carry them; the folders are made as needed. A progress bar can cancel, and the root is one undo step.
+Chunks are placed at their true positions, so a baked area is for a world that fits one scene or for pieces of a bigger one (floats lose precision far from the origin).
+
+### TerraMenu.cs
+
+MidManStudio > ProceduralTerrain: Preview and Bake (opens the window), Create Vertex Color Material (saves a material of the shader, and puts it on the selected profile),
+Add Terrain Streamer (a game object with a streamer, using the selected profile).
+
+### TerraWorldProfileEditor.cs
+
+The default inspector plus: a warning when there is no material; a preset menu that replaces all settings after a confirmation; Random seed; Measure noise range (runs
+`TerraNoise.MeasureRange` over 40 000 points at the 1st and 99th percentile and writes the remap, and says what it wrote); Open preview; and a foldout to import a picture
+as a height patch (texture, name, corner, size, black and white heights). Each change is one undo step and marks the profile dirty.
+
+### TerraPreviewWindow.cs
+
+A top down picture of the world from the same height field the chunks use, north up. Settings: centre, width, resolution (128, 256, 512), what it shows (colour, height or
+slope), light and shade, water level, chunk lines, and buttons to pan by half a width. It evaluates the height, a normal and the biome colour per pixel, so 512 by 512 takes
+a moment. Below it, the baker's controls: chunk rectangle, step, save meshes and folder, scatter; more than 64 chunks asks for confirmation.
+
 ## Assembly definitions
 
 - `Runtime/MidManStudio.ProceduralTerrain.asmdef`: the Core. `noEngineReferences` is on, so a Unity type in it will not compile.
   No unsafe code.
-- `Tests/Editor/MidManStudio.ProceduralTerrain.Tests.Editor.asmdef`: the tests, Edit Mode only, with the NUnit reference, behind
+- `Runtime/Unity/MidManStudio.ProceduralTerrain.Unity.asmdef`: the Unity layer, references the Core and the engine.
+- `Editor/MidManStudio.ProceduralTerrain.Editor.asmdef`: the editor code, editor platform only, references the Core and the Unity layer.
+- `Tests/Editor/MidManStudio.ProceduralTerrain.Tests.Editor.asmdef`: the tests of the Core, Edit Mode only, with the NUnit reference, behind
   `UNITY_INCLUDE_TESTS`.
-
-Drop 2 adds `Runtime/Unity` and `Editor`.
+- `Tests/EditorUnity/MidManStudio.ProceduralTerrain.Tests.EditorUnity.asmdef`: the tests that touch the Unity layer, the same way, also
+  referencing the Unity layer, the editor assembly and the test runner.
 
 ## Tests
 
@@ -454,9 +630,39 @@ scatter keeps its distance.
 
 The remap numbers of the presets match a fresh measurement to 0.045, each preset reaches at least five of its biomes, and every preset builds.
 
+### Tests/Editor/TerraStreamTests.cs
+
+The plan asks for exactly the chunks within the load distance (counted by brute force over a square), nearest first, with the viewer's own chunk first at
+distance 0; steps follow the tiers and three different steps appear within 400 m; a plan has nothing to do once its own answer is held; a held chunk is let go
+only beyond the load distance plus the margin (distances 480 and 544 around a limit of 500); a chunk held at the wrong step is asked for at the right one;
+the hysteresis holds the step inside the margin on both sides of a boundary and allows a jump; a viewer a million chunks away gets the same plan shifted; negative
+coordinates work; the cap keeps the nearest; the same input gives the same plan; keys compare and hash as a dictionary needs.
+
+### Tests/Editor/TerraChunkBuilderTests.cs
+
+Twelve chunks at mixed steps built by three workers equal the direct builds (positions, normals, colours, indices and every scatter point); with no workers `RunSome`
+builds only as many as asked and jobs come out in order; `Cancel` removes only requests not started; the callback runs on a worker thread and its payload comes with the job;
+a throwing callback becomes an error on the job and does not stop the worker; `Dispose` stops the workers and refuses new requests; forty jobs from four workers all arrive
+exactly once. The tests wait with a timeout, never a fixed sleep.
+
+### Tests/EditorUnity/TerraUnityPureTests.cs
+
+Tests of the Unity layer that need only plain structs of the engine, so they run in the Unity Test Runner and, against the stand in of the API, in the dotnet harness:
+`Prepare` copies every position and normal, shares the index array and gets the bounds; colours round to bytes, clamp and keep alpha; the 16 and 32 bit threshold at 65 535
+and 65 536 vertices; patch import maps grey to heights in the right row order (south west black, south east white, checked through `SampleMetres`), uses the luma weights,
+and refuses pictures that are too small or short.
+
+### Tests/EditorUnity/TerraUnityEngineTests.cs
+
+Edit Mode tests that need the real engine, written but **not yet run** (they compile against the stubs): `ToMesh` copies every vertex and index and uses 16 bit indices; 70 000
+vertices make a 32 bit mesh; a fresh profile makes a world; the streamer (no workers, one tick builds everything) shows exactly the planned chunks, settles, lets the old ring go when the
+viewer is far away and builds a new one; a shift of the world origin moves the chunk objects as `position = corner - origin`; a bound scatter layer puts a prefab on every point; the baker
+makes a child per chunk and remembers the seed and rectangle. The streamer is driven by `Restart` and `Tick` because `OnEnable` and `Update` do not run in Edit Mode.
+
 ## Tests~/DotnetHarness
 
-`TerrainHarness.csproj` compiles `Runtime/Core` and `Tests/Editor` into a console program (net8.0, `LangVersion` 9.0, warnings as
+`TerrainHarness.csproj` compiles `Runtime/Core`, `Tests/Editor`, the Unity layer (`Runtime/Unity`), `Editor/TerraPatchImport.cs`, the one test file of
+`Tests/EditorUnity` that needs no engine behaviour, and the stand in of the Unity API into a console program (net8.0, `LangVersion` 9.0, warnings as
 errors, no unsafe) next to a small stand in for NUnit (`NUnitStubs.cs`, the same file the other packages of the repository use), and
 `Program.cs` runs every `[Test]` method of every `[TestFixture]` class by reflection. An optional argument filters by name.
 
@@ -469,12 +675,18 @@ Unity ignores the folder because its name ends in a tilde.
 ## Tests~/UnityStubs
 
 `Core.csproj` compiles `Runtime/Core` with no references, as its asmdef does, so anything from Unity in it fails. `Tests.csproj` compiles
-the tests against the Core and the NUnit stand in, as the test asmdef does. Drop 2 adds the projects for `Runtime/Unity` and `Editor` and the
-stub of the Unity API.
+the tests against the Core and the NUnit stand in, as the test asmdef does. `UnityApiStubs.csproj` is a stand in of the part of the Unity 2022.3 API that the
+package uses (`UnityApiStubs.cs`: UnityEngine, UnityEngine.Rendering, UnityEditor), written with the real names, namespaces and signatures; nothing in it runs.
+`Unity.csproj` compiles `Runtime/Unity` against the Core and the stubs, `Editor.csproj` compiles `Editor` against those, and `TestsUnity.csproj` compiles
+`Tests/EditorUnity` against all of them.
+
+What this proves and what it does not: a compile catches a misspelled member, a wrong argument or a missing using. It does not catch an API that behaves differently from what the
+code expects, and a member added to the stub that does not exist in Unity would hide an error, so each addition was written from the scripting reference, not from the code that needed it.
+An overload that exists in Unity but not in the stub fails the compile and is added to the stub only after checking the reference.
 
 ## CI and workflows
 
-`.github/workflows/terrain-core.yml` runs the harness and compiles the stub projects on every push that touches the package, and
+`.github/workflows/terrain-core.yml` runs the harness (the Core tests and the engine free Unity layer tests) and compiles the stub projects (Core, Tests, Unity, Editor and the Unity tests) on every push that touches the package, and
 after a successful manual run of Apply Replacements (those commits carry `[skip ci]`). It also checks that every asset has a `.meta` file.
 The workflow is delivered next to the package, not inside it.
 
@@ -501,8 +713,10 @@ recommends against commercial use of them, and the project is not published as a
 
 ## Known limits
 
-- **Nothing has run in Unity.** The Core is tested under .NET 8 only. The Unity layer of drop 2 will be compiled against stubs, which
-  proves it is well formed and nothing more.
+- **Nothing has run in Unity.** The Core is tested under .NET 8 only. The Unity layer, the editor code and the shader are compiled against stubs (the shader is not
+  compiled at all), which proves the C# is well formed and nothing more. The seven engine tests of `Tests/EditorUnity` have never run. Expect to fix something the first time
+  the package is imported; the likeliest places are the shader (pink material), a changed signature in the editor code, and the first meshes (a wrong winding would show
+  as terrain seen from below, though the Core tests check the winding of the arrays).
 - **Level of detail pops.** A chunk jumps from one step to the next. Skirts hide the gap between levels but nothing morphs. A terraced
   chunk shows more: the cut line of a band edge through a coarse triangle lies in another place than through the fine ones, so a cliff
   moves a little when the level changes. Use terraces with fewer levels of detail or a long distance for the first change.
@@ -516,6 +730,16 @@ recommends against commercial use of them, and the project is not published as a
 - **The height of the lattice is evaluated once per vertex per chunk build.** A chunk and its neighbour both evaluate the border. That is
   what makes them agree and it costs one row.
 - **No water.** `waterLevel` is a number for whatever draws water.
+- **Colliders are cooked on the main thread.** A collider for a 26 000 vertex chunk takes noticeable time to cook and the streamer does it when it shows the mesh. Keep
+  `colliderMaxStep` at 1, `applyPerFrame` low, and let far gameplay use `HeightAtWorld`. Cooking on a worker with `Physics.BakeMesh` is not done.
+- **Scatter prefabs are instantiated, not pooled or instanced**, a budget per frame at a time. A forest of several thousand will cost. For GPU instancing or pooling, turn `spawnScatter`
+  off and place from `ScatterReady`.
+- **The shader** has no Forward+ additional lights, no screen space shadows, no DepthNormals pass, no lightmaps.
+- **The streamer plans by horizontal distance** and ignores the viewer's height, so a viewer high above the ground loads the same chunks and at the same detail.
+- **The window and the baker are plain.** The preview is a picture, not a tool for painting: there is no painting of patches in the scene, only import from a picture. The baker places chunks at their
+  true positions and has no re-bake button beyond running it again.
+- **Platforms without threads** (WebGL) need `workerThreads` set to 0; the streamer then builds `syncBuildsPerFrame` chunks per frame and a chunk takes 5 to 15 ms on a desktop core.
+- **A world profile edited while the streamer runs** is not picked up until `Restart`.
 
 ## Fixes and Problems
 
@@ -536,5 +760,18 @@ recommends against commercial use of them, and the project is not published as a
   flat meshes compared lists with repeats (each triangle repeats its vertex) instead of sets; the lowest band test picked a chunk with no
   low ground; walls were expected to face downhill everywhere (about one in two hundred disagreed with the field by a coarse triangle's error, so the test allows one in a hundred);
   and tilt 1 was expected to put cut points on the field (a cut point lies on the triangle, as the plain mesh does).
+- **Colour conversion moved to the vertex stage.** The first sketch of the shader converted the vertex colour from gamma to linear per pixel. That costs a pow per
+  pixel on a phone and gives the same result for flat shaded chunks, so it is done per vertex.
+- **Screen space shadows left out of the shader.** The main light shadow coordinate is computed from the world position; with the screen space variant it would have to come from the
+  screen position, and getting both right without a compiler is a risk, so that variant is not compiled and the limit is written above.
+- **Streamer duplicates and stale answers.** A chunk asked for twice (its level of detail changed while the first build was still running) would have shown the old mesh after the new. Each request has
+  a ticket, the streamer remembers the latest one for a chunk and drops an answer that carries another, and a chunk asks for its scatter again until the scatter arrives so a dropped answer cannot lose it.
+- **`OnEnable` and `Update` do not run in Edit Mode**, so the tests of the streamer would have tested nothing. The streamer has public `Restart` and `Tick`, and `Update` only finds the viewer and calls `Tick`.
+- **`Destroy` is refused outside play mode and `DestroyImmediate` inside it**, so every destruction goes through one helper that checks `Application.isPlaying`.
+- **`UnityEngine.Object` and `System.Object`** are both in scope in files that use `System` and `UnityEngine`; those files name `UnityEngine.Object` in full.
+- **The preview window** first used a placeholder for the window width because the stub had no `EditorWindow.position`. The property is a `Rect` in Unity; the stub has it now and the
+  window uses `position.width`.
+- **A test mistake found while writing the Unity tests:** `Assert.AreEqual(255, color.r)` compared an `int` with a `byte` as objects, which are not equal in the stand in (real NUnit compares numbers
+  by value). The values are cast to `int` so the test means the same under both.
 - **`dotnet` could not restore** in the build container (NuGet is not reachable there). Restoring against an empty local source
   (`dotnet restore -s <empty folder>`) works because nothing needs downloading. CI is not affected.

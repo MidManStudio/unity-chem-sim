@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Unity side tests against the Core, the Unity layer, the editor code and the Unity stubs, with the NUnit stand in
+    of the dotnet harness. Only compiled, with the references the test asmdef lists. They run in the Unity Test Runner.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputType>Library</OutputType>
+    <AssemblyName>MidManStudio.ProceduralTerrain.Tests.EditorUnity</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Tests/EditorUnity/**/*.cs" />
+    <Compile Include="../DotnetHarness/NUnitStubs.cs" />
+    <ProjectReference Include="Core.csproj" />
+    <ProjectReference Include="Unity.csproj" />
+    <ProjectReference Include="Editor.csproj" />
+    <ProjectReference Include="UnityApiStubs.csproj" />
+  </ItemGroup>
+
+</Project>

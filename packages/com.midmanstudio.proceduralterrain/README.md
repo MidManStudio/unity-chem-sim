@@ -32,14 +32,27 @@ What it does today:
   stamps and off biome edges. The rule looks only at nearby candidates, so a chunk border cannot cut a forest in two
 - **Skirts.** A wall under the edge of every chunk hides the crack between two levels of detail
 - **Presets.** Rolling hills, archipelago, highlands and mesas, as plain settings objects to start from
+- **Streaming.** A planner decides which chunks should exist around a viewer and at which level of detail (with hysteresis, so a chunk on a
+  boundary does not flicker); worker threads build them in the background; a streamer component shows a few meshes per frame, drops far chunks,
+  and keeps its chunks consistent with a shifting world origin
+- **A shader** for the Universal Render Pipeline that reads the vertex colours (and converts them to linear), with the main light, shadows,
+  additional lights, ambient light and fog
+- **Editor tools.** A world profile asset, a preview window (a top down picture of the world with chunk lines), a baker that builds an area of chunks
+  into the open scene with saved meshes and scatter prefabs, a noise range measurement, presets, and import of a painted height patch from a picture
 - the Core has no Unity references, so the same files compile and run under plain .NET. That is how CI tests them
 
 ## State of this release
 
-Version 0.1.0 is drop 1: the Core only. It builds the meshes as plain arrays (`TerraMeshData`) and has no Unity components,
-no editor and no shader yet. **Nothing here has run inside Unity.** The Core is tested under .NET 8 (72 tests, which check
-borders between chunks, terraces, scatter and the geometry). Drop 2 adds the Unity layer: chunk components and a streaming
-manager, an editor window, a URP shader for the colours and the editor baking.
+Version 0.2.0 has the Core (drop 1) and the Unity layer (drop 2). **Nothing here has run inside Unity.**
+
+- The Core is tested under .NET 8: 96 tests in all, which check borders between chunks, terraces, scatter, the geometry, the
+  streaming planner and the background builder (against direct builds), and the parts of the Unity layer that need no engine.
+- The Unity layer (`Runtime/Unity`), the editor code and the tests that need the engine are compiled against a stand in of the Unity API. That
+  proves they are well formed, not that they work. Seven Edit Mode tests wait for the Unity Test Runner.
+- The URP shader has not been compiled by Unity.
+
+Expect to fix something the first time the package is imported into a project. The likeliest places are the shader, the editor code and the first
+meshes on screen.
 
 Read the known limits in `docs/com.midmanstudio.proceduralterrain.md`.
 
@@ -49,9 +62,25 @@ Add the package from the repository with Package Manager, "Add package from git 
 
     https://github.com/MidManStudio/unity-chem-sim.git?path=packages/com.midmanstudio.proceduralterrain
 
-## Use
+The shader is for the Universal Render Pipeline (Unity 2022.3).
 
-The Core is a library. A world is a settings object and a call:
+## Quick start in Unity
+
+1. Assets > Create > MidManStudio > ProceduralTerrain > World Profile. Pick a preset in its inspector, press Measure noise range if you changed the noise.
+2. With the profile selected: MidManStudio > ProceduralTerrain > Create Vertex Color Material. It saves a material and puts it on the profile.
+3. MidManStudio > ProceduralTerrain > Preview and Bake shows the world from above. Change the numbers and press Render.
+4. For a streamed world: MidManStudio > ProceduralTerrain > Add Terrain Streamer (with the profile selected), and press Play. Chunks appear around the main camera, or around the
+   `viewer` transform you give it, and go when you move away.
+5. For a world that fits a scene: bake an area from the preview window. The chunks, their meshes and the scatter prefabs become ordinary objects.
+
+To put trees on the land, add a binding to the profile with the name of a scatter layer (`Trees` in the presets) and the prefabs to use.
+
+A game that shifts its origin calls `streamer.SetWorldOrigin(x, z)` (or `ShiftWorldOrigin`) with the new true position of the scene's (0, 0, 0), and moves everything else by the opposite amount.
+`streamer.HeightAtWorld(x, z)` gives the height of the ground at a true position; `ChunkBuilt`, `ChunkRemoved` and `ScatterReady` are the events to hook.
+
+## Use in code
+
+The Core is a library, usable without the Unity layer. A world is a settings object and a call:
 
 ```csharp
 using MidManStudio.ProceduralTerrain;
@@ -97,15 +126,17 @@ The Core and its tests run outside Unity:
     cd Tests~/DotnetHarness
     dotnet run -c Release
 
-`Tests~/UnityStubs` compiles the Core and the tests the way their assembly definitions do. The editor tests also run in the
-Unity Test Runner (Edit Mode).
+`Tests~/UnityStubs` compiles every assembly (the Core, the Unity layer, the editor code and the tests) the way their assembly definitions do, against a stand in of the
+Unity API. The tests of `Tests/Editor` and `Tests/EditorUnity` also run in the Unity Test Runner (Edit Mode); the seven in `TerraUnityEngineTests` can only run there.
 
 ## Layout
 
-- `Runtime/Core` noise, height field, lattice, Poisson, Delaunay, terraces, colouring, scatter, the world and its settings
-- `Tests/Editor` the NUnit tests
-- `Tests~/DotnetHarness` runs those tests under .NET
-- `Tests~/UnityStubs` compile projects, one per assembly definition
+- `Runtime/Core` noise, height field, lattice, Poisson, Delaunay, terraces, colouring, scatter, the world and its settings, the streaming planner and the background builder
+- `Runtime/Unity` meshes from the arrays, the world profile asset, the chunk and streamer components, the URP shader (`Shaders/`)
+- `Editor` the preview window, the baker, the profile inspector, the patch import and the menu
+- `Tests/Editor` the NUnit tests of the Core; `Tests/EditorUnity` the tests of the Unity layer
+- `Tests~/DotnetHarness` runs the tests that need no engine under .NET
+- `Tests~/UnityStubs` the stand in of the Unity API and compile projects, one per assembly definition
 - `docs/com.midmanstudio.proceduralterrain.md` the design of each file, the known limits and the problems found
 
 ## Credits

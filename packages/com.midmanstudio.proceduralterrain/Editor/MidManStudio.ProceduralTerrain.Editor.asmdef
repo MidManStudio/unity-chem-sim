@@ -1,0 +1,19 @@
+{
+    "name": "MidManStudio.ProceduralTerrain.Editor",
+    "rootNamespace": "MidManStudio.ProceduralTerrain.EditorTools",
+    "references": [
+        "MidManStudio.ProceduralTerrain",
+        "MidManStudio.ProceduralTerrain.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
