@@ -4,11 +4,16 @@ name: Terrain core
 #
 # The Core (Runtime/Core) has no Unity references, so its files and the editor
 # tests compile and run as a plain .NET program. The test job does that: every
-# test of Tests/Editor runs under the stand in for NUnit of the harness.
+# test of Tests/Editor runs under the stand in for NUnit of the harness, and so
+# do the tests of the Unity layer that use only plain structs of the engine
+# (against a stand in of the Unity API, Tests~/UnityStubs/UnityApiStubs.cs).
 #
 # The stubs job compiles the package the way its assembly definitions do, one
 # project per asmdef, with only the references each asmdef lists. The Core
 # project references nothing at all, so a Unity type in the Core fails there.
+# The Unity layer, the editor code and the Unity side tests are compiled against
+# the stand in of the Unity API. That proves they are well formed, not that they
+# behave in the engine.
 # It also checks two repository rules a Unity build would only break on later:
 # every asset has a .meta file, and the Core uses nothing from UnityEngine.
 #
@@ -62,10 +67,12 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Compile the Core and the tests the way the asmdefs do
+      - name: Compile every assembly the way the asmdefs do
         run: |
           cd packages/com.midmanstudio.proceduralterrain/Tests~/UnityStubs
           dotnet build Tests.csproj -c Release -o /tmp/stub-out
+          # Unity layer, editor code and the Unity side tests, with the projects they reference.
+          dotnet build TestsUnity.csproj -c Release -o /tmp/stub-out-unity
 
       # The asmdef says noEngineReferences, the compile project has no
       # references, and this catches the names a comment or a string could hide.
